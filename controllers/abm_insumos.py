@@ -5,11 +5,11 @@ from PyQt5.QtWidgets import (
     QPushButton, QWidget, QLabel, QLineEdit, QComboBox, QMessageBox
 )
 from PyQt5.QtGui import QIcon
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt,QSize
 from utils.db import SessionLocal
 from models.insumo import Insumo
 
-ICON_PATH = os.path.join(os.path.dirname(__file__), 'icons')
+ICON_PATH = os.path.join(os.path.dirname(__file__), 'imagenes')
 
 TIPOS = [
     "MEDICAMENTO",
@@ -62,10 +62,8 @@ class ABMInsumos(QDialog):
 
         # Botón agregar insumo
         self.btn_agregar = QPushButton(" Agregar insumo")
-        self.btn_agregar.setIcon(QIcon(os.path.join(ICON_PATH, "add.png")))
-        self.btn_agregar.setStyleSheet(
-            "QPushButton { background-color: #198754; color: white; font-size: 16px; border-radius: 24px; padding: 12px 32px; }"
-        )
+        self.btn_agregar.setIcon(QIcon("imagenes/agregar.png"))
+        self.btn_agregar.setIconSize(QSize(50, 50))
         self.btn_agregar.clicked.connect(self.abrir_dialogo_agregar)
 
         hbox = QHBoxLayout()
@@ -99,11 +97,11 @@ class ABMInsumos(QDialog):
             widget = QWidget()
             h = QHBoxLayout(widget)
             btn_editar = QPushButton()
-            btn_editar.setIcon(QIcon(os.path.join(ICON_PATH, "edit.png")))
+            btn_editar.setIcon(QIcon("imagenes/editar.png"))
             btn_editar.setToolTip("Editar")
             btn_editar.clicked.connect(lambda _, row=row_pos: self.abrir_dialogo_editar(row))
             btn_eliminar = QPushButton()
-            btn_eliminar.setIcon(QIcon(os.path.join(ICON_PATH, "delete.png")))
+            btn_eliminar.setIcon(QIcon("imagenes/eliminar.png"))
             btn_eliminar.setToolTip("Eliminar")
             btn_eliminar.clicked.connect(lambda _, row=row_pos: self.eliminar_insumo(row))
             h.addWidget(btn_editar)
@@ -169,9 +167,10 @@ class FormularioInsumo(QDialog):
 
         botones = QHBoxLayout()
         self.btn_guardar = QPushButton("Guardar")
-        self.btn_guardar.setIcon(QIcon(os.path.join(ICON_PATH, "save.png")))
+        self.btn_guardar.setIcon(QIcon("imagenes/save.png"))
         self.btn_guardar.clicked.connect(self.guardar)
         self.btn_cancelar = QPushButton("Cancelar")
+        self.btn_cancelar.setIcon(QIcon("imagenes/cancelar.png"))
         self.btn_cancelar.clicked.connect(self.reject)
         botones.addStretch()
         botones.addWidget(self.btn_guardar)

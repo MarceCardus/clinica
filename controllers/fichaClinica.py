@@ -776,6 +776,18 @@ class FichaClinicaForm(QDialog):
 
 
     def guardar_todo(self):
+        ci_ingresado = self.txt_ci.text().strip()
+        if ci_ingresado:
+            # Buscar si ya existe ese CI en otro paciente (excepto este)
+            paciente_existente = (
+                self.session.query(Paciente)
+                .filter(Paciente.ci_pasaporte == ci_ingresado)
+                .filter(Paciente.idpaciente != self.idpaciente)
+                .first()
+            )
+            if paciente_existente:
+                QMessageBox.warning(self, "Error", "Ya existe un paciente con ese número de CI/Pasaporte.")
+                return
         p = self.paciente_db
         p.nombre = self.txt_nombre.text().strip()
         p.apellido = self.txt_apellido.text().strip()
@@ -819,6 +831,7 @@ class FichaClinicaForm(QDialog):
         ap.otros = self.txt_otros_patologicos.toPlainText().strip()
         self.session.commit()
         QMessageBox.information(self, "Guardado", "Datos actualizados correctamente.")
+        self.accept()
 
     def cargar_encargados(self):
         self.table_encargados.setRowCount(0)

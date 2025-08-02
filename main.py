@@ -55,6 +55,7 @@ from models.usuario import Usuario
 from controllers.abm_paquete import ABMPaquete
 from controllers.venta_form import VentaForm
 from controllers.abm_insumos import ABMInsumos
+from controllers.abm_compras_form import ABMCompra
 from models.paciente import Paciente
 from models.profesional import Profesional
 from models.clinica import Clinica
@@ -168,28 +169,20 @@ class MainWindow(QMainWindow):
         
 
         # Menú Compras
-        self.menu_compras = menubar.addMenu("Compras")
-        action_nueva_compra = QAction("Nueva Compra", self)
-        action_anular_compra = QAction("Anular Compra", self)
-        action_informe_compra = QAction("Informes de Compra", self)
-        # Ejemplo: estos muestran mensaje de "en desarrollo"
-        action_nueva_compra.triggered.connect(lambda: QMessageBox.information(self, "Falta", "Funcionalidad en desarrollo"))
-        action_anular_compra.triggered.connect(lambda: QMessageBox.information(self, "Falta", "Funcionalidad en desarrollo"))
-        action_informe_compra.triggered.connect(lambda: QMessageBox.information(self, "Falta", "Funcionalidad en desarrollo"))
-        self.menu_compras.addAction(action_nueva_compra)
-        self.menu_compras.addAction(action_anular_compra)
-        self.menu_compras.addAction(action_informe_compra)
+        action_compras = QAction("Compras", self)
+        action_compras.triggered.connect(self.abrir_compra)
+        menubar.addAction(action_compras)
 
            # Menú Agendar
         self.menu_ventas = menubar.addMenu("Ventas")
         
-        action_nueva_venta  = QAction("Nueva Venta", self)
-        action_nueva_venta.triggered.connect(self.abrir_venta)
-        self.menu_ventas.addAction(action_nueva_venta)
+        self.action_compras = QAction("Compras", self)
+        self.action_compras.triggered.connect(self.abrir_compra)
+        menubar.addAction(self.action_compras)
 
         # --- BLOQUEO DE MENÚ SEGÚN ROL ---
         if self.rol != "superusuario":
-            self.menu_compras.setEnabled(False)
+            self.action_compras.setEnabled(False)
 
     def init_status_bar(self):
         status_bar = QStatusBar()
@@ -214,6 +207,19 @@ class MainWindow(QMainWindow):
         self.ajustar_subventana(sub)
         sub.show()
         
+    def abrir_compra(self):
+        for subwin in self.mdi_area.subWindowList():
+            widget = subwin.widget()
+            if widget is not None and isinstance(widget, ABMCompra):
+                subwin.setFocus()
+                subwin.showNormal()
+                return
+        sub = QMdiSubWindow()
+        sub.setWidget(ABMCompra())
+        sub.setWindowTitle("ABM de Compras")
+        sub.setAttribute(Qt.WA_DeleteOnClose)
+        self.mdi_area.addSubWindow(sub)
+        sub.show()
 
     def abrir_especialidad(self):
         for subwin in self.mdi_area.subWindowList():

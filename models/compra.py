@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, Date, ForeignKey, Numeric, String
+from sqlalchemy import Column, Integer, Date, ForeignKey, Numeric, String, Enum,Boolean
 from .base import Base
 
 class Compra(Base):
@@ -7,5 +7,9 @@ class Compra(Base):
     fecha = Column(Date, nullable=False)
     idproveedor = Column(Integer, ForeignKey('proveedor.idproveedor'))
     idclinica = Column(Integer, ForeignKey('clinica.idclinica'))
+    tipo_comprobante = Column(String(30))        # Factura, Nota de Remisión, etc.
+    nro_comprobante = Column(String(30))         # Número de factura, etc.
+    condicion_compra = Column(Enum('CONTADO', 'CREDITO', name='condicion_compra'))
     montototal = Column(Numeric(14,2))
     observaciones = Column(String)
+    anulada = Column(Boolean, default=False)
