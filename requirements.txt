@@ -1,0 +1,6 @@
+PyQt5==5.15.11
+numpy==1.26.4
+opencv-python==4.9.0.80
+mediapipe==0.10.11
+sqlalchemy==2.0.41
+psycopg2-binary==2.9.10
