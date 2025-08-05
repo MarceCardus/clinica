@@ -30,6 +30,7 @@ class ABMInsumos(QDialog):
         self.session = SessionLocal()
         self.init_ui()
         self.load_data()
+        
 
     def init_ui(self):
         layout = QVBoxLayout(self)
@@ -50,6 +51,7 @@ class ABMInsumos(QDialog):
         filtro_layout.addWidget(self.filtro_tipo)
         filtro_layout.addStretch()
         layout.addWidget(filtro_widget)
+        
 
         # Grilla de Insumos
         self.table = QTableWidget(0, 6)
@@ -146,8 +148,6 @@ class FormularioInsumo(QDialog):
     def init_ui(self):
         layout = QVBoxLayout(self)
         form_widget = QWidget()
-        form_layout = QHBoxLayout()
-        form_grid = QVBoxLayout()
 
         self.input_nombre = QLineEdit()
         self.input_tipo = QComboBox()
@@ -156,7 +156,6 @@ class FormularioInsumo(QDialog):
         self.input_categoria.addItems(CATEGORIAS)
         self.input_unidad = QLineEdit()
 
-        # Layout sencillo y compacto
         grid = QVBoxLayout()
         grid.addWidget(QLabel("Nombre"));      grid.addWidget(self.input_nombre)
         grid.addWidget(QLabel("Tipo"));        grid.addWidget(self.input_tipo)
@@ -169,6 +168,7 @@ class FormularioInsumo(QDialog):
         self.btn_guardar = QPushButton("Guardar")
         self.btn_guardar.setIcon(QIcon("imagenes/save.png"))
         self.btn_guardar.clicked.connect(self.guardar)
+        self.btn_guardar.setDefault(False)
         self.btn_cancelar = QPushButton("Cancelar")
         self.btn_cancelar.setIcon(QIcon("imagenes/cancelar.png"))
         self.btn_cancelar.clicked.connect(self.reject)
@@ -176,6 +176,31 @@ class FormularioInsumo(QDialog):
         botones.addWidget(self.btn_guardar)
         botones.addWidget(self.btn_cancelar)
         layout.addLayout(botones)
+
+        # ---- Configuración especial ----
+        self.input_nombre.setFocus()
+
+        if not self.insumo:
+            self.input_unidad.setText("1")
+
+        # Navegación con Enter en los campos
+        self.input_nombre.returnPressed.connect(self.input_tipo.setFocus)
+        self.input_unidad.returnPressed.connect(self.btn_guardar.setFocus)
+
+        # Agregar eventFilter para los ComboBox
+        self.input_tipo.installEventFilter(self)
+        self.input_categoria.installEventFilter(self)
+        # --------------------------------
+
+    def eventFilter(self, obj, event):
+        if event.type() == event.KeyPress and event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            if obj == self.input_tipo:
+                self.input_categoria.setFocus()
+                return True
+            elif obj == self.input_categoria:
+                self.input_unidad.setFocus()
+                return True
+        return super().eventFilter(obj, event)
 
     def cargar_datos(self):
         self.input_nombre.setText(self.insumo.nombre or "")
@@ -211,6 +236,7 @@ class FormularioInsumo(QDialog):
 
         self.session.commit()
         self.accept()
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

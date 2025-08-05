@@ -788,7 +788,19 @@ class FichaClinicaForm(QDialog):
             if paciente_existente:
                 QMessageBox.warning(self, "Error", "Ya existe un paciente con ese número de CI/Pasaporte.")
                 return
-        p = self.paciente_db
+
+        # ALTA O EDICIÓN
+        if self.paciente_db is None:
+            # ALTA
+            p = Paciente()
+            self.session.add(p)
+            self.paciente_db = p  # por si necesitás después
+            # Si tu modelo requiere idclinica, idusuario, u otros, ponelos aquí
+        else:
+            # EDICIÓN
+            p = self.paciente_db
+
+        # Cargar los datos
         p.nombre = self.txt_nombre.text().strip()
         p.apellido = self.txt_apellido.text().strip()
         p.ci_pasaporte = self.txt_ci.text().strip()
@@ -799,20 +811,28 @@ class FichaClinicaForm(QDialog):
         p.email = self.txt_email.text().strip()
         p.direccion = self.txt_direccion.text().strip()
         p.observaciones = self.txt_observaciones.toPlainText().strip()
+
+        # Familiares
         if p.antecedentes_familiares:
             af = p.antecedentes_familiares[0]
         else:
-            af = AntecedenteFamiliar(idpaciente=self.idpaciente); self.session.add(af)
+            af = AntecedenteFamiliar()
+            self.session.add(af)
+            p.antecedentes_familiares.append(af)  # Relación correcta
         af.aplica = self.chk_aplica.isChecked()
         af.patologia_padre = self.txt_patologia_padre.text().strip()
         af.patologia_madre = self.txt_patologia_madre.text().strip()
         af.patologia_hermanos = self.txt_patologia_hermanos.text().strip()
         af.patologia_hijos = self.txt_patologia_hijos.text().strip()
         af.observaciones = self.txt_fliares_obs.toPlainText().strip()
+
+        # Patológicos personales
         if p.antecedentes_patologicos_personales:
             ap = p.antecedentes_patologicos_personales[0]
         else:
-            ap = AntecedentePatologicoPersonal(idpaciente=self.idpaciente); self.session.add(ap)
+            ap = AntecedentePatologicoPersonal()
+            self.session.add(ap)
+            p.antecedentes_patologicos_personales.append(ap)  # Relación correcta
         ap.cardiovasculares = self.chk_cardiovasculares.isChecked()
         ap.respiratorios = self.chk_respiratorios.isChecked()
         ap.alergicos = self.chk_alergicos.isChecked()
@@ -829,9 +849,11 @@ class FichaClinicaForm(QDialog):
         ap.audiovisuales = self.chk_audiovisuales.isChecked()
         ap.transfusiones = self.chk_transfusiones.isChecked()
         ap.otros = self.txt_otros_patologicos.toPlainText().strip()
+
         self.session.commit()
         QMessageBox.information(self, "Guardado", "Datos actualizados correctamente.")
         self.accept()
+
 
     def cargar_encargados(self):
         self.table_encargados.setRowCount(0)
