@@ -155,11 +155,21 @@ class FormularioInsumo(QDialog):
         self.input_categoria = QComboBox()
         self.input_categoria.addItems(CATEGORIAS)
         self.input_unidad = QLineEdit()
+        tooltip_categoria = (
+            "Categoría del insumo:\n"
+            "• CONSUMO_INTERNO: Insumos para uso interno de la clínica (ej: limpieza, oficina).\n"
+            "• USO_PROCEDIMIENTO: Insumos utilizados directamente en procedimientos o atención a pacientes."
+        )
+        self.input_categoria.setToolTip(tooltip_categoria)
+
+        # También podés crear el label con tooltip
+        label_categoria = QLabel("Categoría")
+        label_categoria.setToolTip(tooltip_categoria)
 
         grid = QVBoxLayout()
         grid.addWidget(QLabel("Nombre"));      grid.addWidget(self.input_nombre)
         grid.addWidget(QLabel("Tipo"));        grid.addWidget(self.input_tipo)
-        grid.addWidget(QLabel("Categoría"));   grid.addWidget(self.input_categoria)
+        grid.addWidget(label_categoria);        grid.addWidget(self.input_categoria)  # <- usá el label con tooltip
         grid.addWidget(QLabel("Unidad"));      grid.addWidget(self.input_unidad)
         form_widget.setLayout(grid)
         layout.addWidget(form_widget)
