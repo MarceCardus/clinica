@@ -5,9 +5,10 @@ from PyQt5.QtWidgets import (
     QDateEdit, QTableWidget, QTableWidgetItem, QComboBox, QGridLayout, QMessageBox,
     QSpinBox, QTimeEdit
 )
-from PyQt5.QtGui import QIcon
+from PyQt5.QtGui import QIcon,QColor
 from PyQt5.QtCore import QDate, Qt, QSize,QTime
 from sqlalchemy.orm import joinedload
+from sqlalchemy import func
 from utils.db import SessionLocal
 from models.paciente import Paciente
 from models.antecPatologico import AntecedentePatologicoPersonal
@@ -19,6 +20,7 @@ from controllers.abm_encargados import DialogoEncargado
 from functools import partial
 from models.indicacion import Indicacion
 from models.insumo import Insumo
+from models.producto import Producto
 from controllers.generador_recordatorios import (
     generar_recordatorios_medicamento,
     validar_indicacion_medicamento,
@@ -63,12 +65,15 @@ class FichaClinicaForm(QDialog):
         self.ui_tab_procedimientos()
         self.tab_recetas = QWidget()
         self.ui_tab_recetas()
+        self.tab_recordatorios = QWidget()
+        self.ui_tab_recordatorios()
 
         # SOLO agregamos los tabs acá, según el modo:
         if getattr(self, 'solo_control', False):
             self.tabs.addTab(self.tab_enfactual, "📈 Control de Estado")
             self.tabs.addTab(self.tab_procedimientos, "💉 Procedimientos")
             self.tabs.addTab(self.tab_recetas, "📋 Indicaciones")
+            self.tabs.addTab(self.tab_recordatorios, "🔔 Recordatorios")
         else:
             self.tabs.addTab(self.tab_basicos, "🧑 Datos Personales")
             self.tabs.addTab(self.tab_encargados, "👤 Encargados")
@@ -92,11 +97,6 @@ class FichaClinicaForm(QDialog):
 
 
             main_layout.addWidget(self.tabs)
-
-            self.btn_guardar = QPushButton("Guardar Cambios")
-            self.btn_guardar.clicked.connect(self.guardar_todo)
-            main_layout.addWidget(self.btn_guardar)
-
             if self.solo_control:
                 while self.tabs.count() > 1:
                     self.tabs.removeTab(0)
@@ -274,21 +274,29 @@ class FichaClinicaForm(QDialog):
                 row = self.table_procedimientos.rowCount()
                 self.table_procedimientos.insertRow(row)
                 self.table_procedimientos.setItem(row, 0, QTableWidgetItem(str(proc.fecha)))
-                self.table_procedimientos.setItem(row, 1, QTableWidgetItem(proc.comentario or ""))
+
+                # Mostrar nombre del procedimiento (producto)
+                producto = self.session.query(Producto).filter_by(idproducto=proc.idproducto).first()
+                nombre_proc = producto.nombre if producto else "-"
+                self.table_procedimientos.setItem(row, 1, QTableWidgetItem(nombre_proc))
+
+                self.table_procedimientos.setItem(row, 2, QTableWidgetItem(proc.comentario or ""))
+
                 # Botón editar
                 btn_e = QPushButton()
                 btn_e.setIcon(QIcon("imagenes/editar.png"))
                 btn_e.setIconSize(QSize(24, 24))
                 btn_e.setFlat(True)
                 btn_e.clicked.connect(partial(self.cargar_procedimiento_en_form, proc))
-                self.table_procedimientos.setCellWidget(row, 2, btn_e)
+                self.table_procedimientos.setCellWidget(row, 3, btn_e)
+
                 # Botón eliminar
                 btn_d = QPushButton()
                 btn_d.setIcon(QIcon("imagenes/eliminar.png"))
                 btn_d.setIconSize(QSize(24, 24))
                 btn_d.setFlat(True)
                 btn_d.clicked.connect(partial(self.eliminar_procedimiento, proc.id))
-                self.table_procedimientos.setCellWidget(row, 3, btn_d)
+                self.table_procedimientos.setCellWidget(row, 4, btn_d)
         if paciente:
             self.txt_nombre.setText(paciente.nombre)
             self.txt_apellido.setText(paciente.apellido)
@@ -367,20 +375,41 @@ class FichaClinicaForm(QDialog):
                 btn_eliminar.clicked.connect(partial(self.eliminar_control, ctrl.id))
                 self.table_controles.setCellWidget(row, 13, btn_eliminar)
         self.paciente_db = paciente
-    
+        self.cargar_recordatorios()
     
     def ui_tab_procedimientos(self):
+        from models.producto import Producto
+        from models.tipoproducto import TipoProducto
+
         layout = QVBoxLayout(self.tab_procedimientos)
 
-        self.table_procedimientos = QTableWidget(0, 4)
-        self.table_procedimientos.setHorizontalHeaderLabels(["Fecha", "Comentario", "", ""])
+        self.table_procedimientos = QTableWidget(0, 5)
+        self.table_procedimientos.setHorizontalHeaderLabels(
+            ["Fecha", "Procedimiento", "Comentario", "", ""]
+        )
         layout.addWidget(self.table_procedimientos)
 
         form = QFormLayout()
         self.proc_fecha = QDateEdit(calendarPopup=True)
         self.proc_fecha.setDate(QDate.currentDate())
+
+        # Combo de procedimientos (productos de tipo 'PROCEDIMIENTO')
+        self.proc_combo = QComboBox()
+        self.proc_combo.addItem("Seleccionar...", None)
+
+        procedimientos = (
+            self.session.query(Producto)
+            .join(Producto.tipoproducto)
+            .filter(func.lower(TipoProducto.nombre) == 'procedimientos')
+            .order_by(Producto.nombre)
+            .all()
+        )
+        for prod in procedimientos:
+            self.proc_combo.addItem(prod.nombre, prod.idproducto)
+
         self.proc_comentario = QLineEdit()
         form.addRow("Fecha:", self.proc_fecha)
+        form.addRow("Procedimiento:", self.proc_combo)
         form.addRow("Comentario:", self.proc_comentario)
         layout.addLayout(form)
 
@@ -399,6 +428,7 @@ class FichaClinicaForm(QDialog):
         hl.addStretch()
         layout.addLayout(hl)
         self.procedimiento_editando_id = None
+
 
     def ui_tab_recetas(self):
         from models.profesional import Profesional
@@ -432,7 +462,7 @@ class FichaClinicaForm(QDialog):
         self.receta_medicamento.clear()
         self.receta_medicamento.addItem("Seleccionar...", None)
         insumos = self.session.query(Insumo).filter(
-            Insumo.categoria == 'CONSUMO_INTERNO'  # Cambia el filtro si corresponde a "MEDICAMENTO" según tu modelo
+            Insumo.categoria == 'USO_PROCEDIMIENTO'  # Cambia el filtro si corresponde a "MEDICAMENTO" según tu modelo
         ).order_by(Insumo.nombre).all()
         for insumo in insumos:
             self.receta_medicamento.addItem(insumo.nombre, insumo.idinsumo)
@@ -477,16 +507,84 @@ class FichaClinicaForm(QDialog):
         layout.addLayout(hl)
         self.receta_editando_id = None
 
+    def ui_tab_recordatorios(self):
+        from PyQt5.QtWidgets import QVBoxLayout, QTableWidget, QTableWidgetItem, QPushButton
+        from PyQt5.QtCore import QSize
 
+        layout = QVBoxLayout(self.tab_recordatorios)
+        self.table_recordatorios = QTableWidget(0, 6)
+        self.table_recordatorios.setHorizontalHeaderLabels([
+            "Fecha", "Mensaje", "Estado", "Editar", "Realizado", "Eliminar"
+        ])
+        layout.addWidget(self.table_recordatorios)
+        
 
+    def cargar_recordatorios(self):
+        from models.recordatorio_paciente import RecordatorioPaciente
+        self.table_recordatorios.setRowCount(0)
+        recordatorios = (
+            self.session.query(RecordatorioPaciente)
+            .filter_by(idpaciente=self.idpaciente)
+            .order_by(RecordatorioPaciente.fecha_recordatorio.desc())
+            .all()
+        )
+        for i, r in enumerate(recordatorios):
+            self.table_recordatorios.insertRow(i)
+            self.table_recordatorios.setItem(i, 0, QTableWidgetItem(str(r.fecha_recordatorio)))
+            self.table_recordatorios.setItem(i, 1, QTableWidgetItem(r.mensaje or ""))
+            item_estado = QTableWidgetItem(r.estado or "")
+            if r.estado == "realizado":
+                item_estado.setBackground(QColor("#b6fcb6"))
+            self.table_recordatorios.setItem(i, 2, item_estado)
+            # Botón editar (si querés)
+            btn_editar = QPushButton("Editar")
+            btn_editar.setIconSize(QSize(16,16))
+            btn_editar.setFlat(True)
+            # btn_editar.clicked.connect(lambda _, rid=r.id: self.editar_recordatorio(rid))
+            self.table_recordatorios.setCellWidget(i, 3, btn_editar)
+            # Botón marcar realizado
+            btn_realizado = QPushButton("Realizado")
+            btn_realizado.setStyleSheet("color: green; font-weight: bold")
+            btn_realizado.setEnabled(r.estado != "realizado")
+            btn_realizado.clicked.connect(lambda _, rid=r.id: self.marcar_recordatorio_realizado(rid))
+            self.table_recordatorios.setCellWidget(i, 4, btn_realizado)
+            # Botón eliminar (opcional)
+            btn_eliminar = QPushButton("Eliminar")
+            btn_eliminar.setStyleSheet("color: red")
+            btn_eliminar.clicked.connect(lambda _, rid=r.id: self.eliminar_recordatorio(rid))
+            self.table_recordatorios.setCellWidget(i, 5, btn_eliminar)
+
+    def marcar_recordatorio_realizado(self, rid):
+        from models.recordatorio_paciente import RecordatorioPaciente
+        rec = self.session.query(RecordatorioPaciente).filter_by(id=rid).first()
+        if rec:
+            rec.estado = "realizado"
+            self.session.commit()
+            QMessageBox.information(self, "Recordatorio", "Marcado como realizado.")
+            self.cargar_recordatorios()
+
+    def eliminar_recordatorio(self, rid):
+        from models.recordatorio_paciente import RecordatorioPaciente
+        rec = self.session.query(RecordatorioPaciente).filter_by(id=rid).first()
+        if rec:
+            self.session.delete(rec)
+            self.session.commit()
+            self.cargar_recordatorios()
 
     def agregar_o_editar_procedimiento(self):
         from models.procedimiento import Procedimiento
+
+        idproducto = self.proc_combo.currentData()
+        if not idproducto:
+            QMessageBox.warning(self, "Falta procedimiento", "Seleccioná un procedimiento.")
+            return
+
         if self.procedimiento_editando_id:
             # Editar
             proc = self.session.query(Procedimiento).filter_by(id=self.procedimiento_editando_id).first()
             if proc:
                 proc.fecha = self.proc_fecha.date().toPyDate()
+                proc.idproducto = idproducto
                 proc.comentario = self.proc_comentario.text().strip()
                 self.session.commit()
         else:
@@ -494,17 +592,41 @@ class FichaClinicaForm(QDialog):
             proc = Procedimiento(
                 idpaciente=self.idpaciente,
                 fecha=self.proc_fecha.date().toPyDate(),
+                idproducto=idproducto,
                 comentario=self.proc_comentario.text().strip()
             )
             self.session.add(proc)
             self.session.commit()
+
+            # --- Generar recordatorio automático si el producto lo requiere ---
+            producto = self.session.query(Producto).get(idproducto)
+            if producto and producto.requiere_recordatorio and producto.dias_recordatorio:
+                from datetime import timedelta
+                from models.recordatorio_paciente import RecordatorioPaciente
+                fecha_recordatorio = proc.fecha + timedelta(days=producto.dias_recordatorio)
+                mensaje = producto.mensaje_recordatorio or f"Control de {producto.nombre}"
+                recordatorio = RecordatorioPaciente(
+                    idpaciente=self.idpaciente,
+                    idprocedimiento=proc.id,
+                    fecha_recordatorio=fecha_recordatorio,
+                    mensaje=mensaje
+                )
+                self.session.add(recordatorio)
+                self.session.commit()
+
         self.cancelar_edicion_procedimiento()
         self.cargar_todo()
+        self.cargar_recordatorios()
         QMessageBox.information(self, "Procedimiento", "Guardado correctamente.")
+
 
     def cargar_procedimiento_en_form(self, proc):
         self.procedimiento_editando_id = proc.id
         self.proc_fecha.setDate(QDate(proc.fecha.year, proc.fecha.month, proc.fecha.day))
+
+        idx = self.proc_combo.findData(proc.idproducto)
+        self.proc_combo.setCurrentIndex(idx if idx != -1 else 0)
+
         self.proc_comentario.setText(proc.comentario or "")
         self.btn_agregar_procedimiento.setText("Guardar cambios")
         self.btn_cancelar_procedimiento.setVisible(True)
@@ -512,10 +634,11 @@ class FichaClinicaForm(QDialog):
     def cancelar_edicion_procedimiento(self):
         self.procedimiento_editando_id = None
         self.proc_fecha.setDate(QDate.currentDate())
+        self.proc_combo.setCurrentIndex(0)
         self.proc_comentario.clear()
         self.btn_agregar_procedimiento.setText("Agregar")
         self.btn_cancelar_procedimiento.setVisible(False)
-
+        
     def eliminar_procedimiento(self, idproc):
         reply = QMessageBox.question(self, "Confirmar", "¿Eliminar procedimiento?", QMessageBox.Yes | QMessageBox.No)
         if reply == QMessageBox.No:
@@ -619,8 +742,6 @@ class FichaClinicaForm(QDialog):
             self.receta_profesional.setCurrentIndex(idx)
         else:
             self.receta_profesional.setCurrentIndex(0)
-        self.receta_texto.setText(receta.textolibremedicamento or "")
-        self.receta_dosis.setText(receta.dosisindicaciones or "")
         self.btn_agregar_receta.setText("Guardar Cambios")
         self.btn_cancelar_receta.setVisible(True)
 

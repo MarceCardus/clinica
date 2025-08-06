@@ -19,10 +19,10 @@ class ABMProducto(QWidget):
         layout = QVBoxLayout(self)
 
         # — Grilla con 8 columnas (incluye Editar y Eliminar) —
-        self.table = QTableWidget(0, 8)
+        self.table = QTableWidget(0, 10)
         self.table.setHorizontalHeaderLabels([
             "ID", "Nombre", "Descripción", "Duración",
-            "Precio", "Tipo", "Editar", "Eliminar"
+            "Precio", "Tipo", "Requiere rec.", "Días rec.", "Editar", "Eliminar"
         ])
 
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -55,16 +55,17 @@ class ABMProducto(QWidget):
             self.table.setItem(i, 1, QTableWidgetItem(p.nombre))
             self.table.setItem(i, 2, QTableWidgetItem(p.descripcion or ""))
             self.table.setItem(i, 3, QTableWidgetItem(str(p.duracion or "")))
-            self.table.setItem(i, 4, QTableWidgetItem(f"{p.precio:.2f}"))
+            self.table.setItem(i, 4, QTableWidgetItem(f"{p.precio:,.0f}".replace(',', '.')))
             self.table.setItem(i, 5, QTableWidgetItem(p.tipoproducto.nombre if p.tipoproducto else ""))
-
+            self.table.setItem(i, 6, QTableWidgetItem("Sí" if p.requiere_recordatorio else "No"))
+            self.table.setItem(i, 7, QTableWidgetItem(str(p.dias_recordatorio or "")))
             # botón Editar
             btn_e = QPushButton()
             btn_e.setIcon(QIcon("imagenes/editar.png"))
             btn_e.setIconSize(QSize(24,24))
             btn_e.setFlat(True)
             btn_e.clicked.connect(lambda _, pid=p.idproducto: self.edit_producto(pid))
-            self.table.setCellWidget(i, 6, btn_e)
+            self.table.setCellWidget(i, 8, btn_e)
 
             # botón Eliminar
             btn_d = QPushButton()
@@ -72,7 +73,7 @@ class ABMProducto(QWidget):
             btn_d.setIconSize(QSize(24,24))
             btn_d.setFlat(True)
             btn_d.clicked.connect(lambda _, pid=p.idproducto: self.delete_producto(pid))
-            self.table.setCellWidget(i, 7, btn_d)
+            self.table.setCellWidget(i, 9, btn_d)
 
     def add_producto(self):
         session = SessionLocal()

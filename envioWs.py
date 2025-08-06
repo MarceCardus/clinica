@@ -41,6 +41,23 @@ def normalizar_telefono_py(telefono):
         return "+595" + telefono
     return telefono
 
+def clasificar_respuesta(texto):
+    texto = texto.lower().strip()
+    positivos = ["si", "sí", "ok", "dale", "voy", "perfecto", "listo", "de una", "seguro", "presente", "👍", "👏", "👌"]
+    negativos = ["no", "no voy", "cancelo", "no puedo", "no podré", "no asistiré", "❌", "🚫"]
+
+    for p in positivos:
+        if p in texto:
+            return "Confirmada"
+    for n in negativos:
+        if n in texto:
+            return "Cancelada"
+    if texto in ["👍", "👌", "👏", "😅"]:
+        return "Confirmada"
+    if texto in ["❌", "🚫"]:
+        return "Cancelada"
+    return None  # No se pudo interpretar
+
 def cerrar_popup_si_existe(driver, wait_time=2):
     """Cierra cualquier popup o modal que tape la caja de mensaje en WhatsApp Web."""
     try:
@@ -78,9 +95,9 @@ def main():
         # Calcular la fecha de mañana
         manana = (datetime.datetime.now() + datetime.timedelta(days=1)).date()
 
-        # Consulta: citas para mañana
+        # Consulta: citas para mañana (traer idcita para actualizar)
         query = text("""
-            SELECT c.fecha_inicio, p.nombre, p.apellido, p.sexo, p.telefono
+            SELECT c.idcita, c.fecha_inicio, p.nombre, p.apellido, p.sexo, p.telefono
             FROM cita c
             JOIN paciente p ON c.idpaciente = p.idpaciente
             WHERE date(c.fecha_inicio) = :manana AND c.estado = 'Programada'
@@ -112,7 +129,7 @@ def main():
         time.sleep(60)
 
         for row in rows:
-            fecha_inicio, nombre, apellido, sexo, telefono = row
+            idcita, fecha_inicio, nombre, apellido, sexo, telefono = row
 
             logging.info(f"Procesando cita: {fecha_inicio} - {nombre} {apellido} ({telefono})")
 
@@ -132,7 +149,6 @@ def main():
                 "❌ *NO* para cancelar\n"
                 "Gracias por su tiempo y preferencia 💖"
             )
-
 
             # Codificar el mensaje para la URL
             mensaje_url = mensaje.replace(" ", "%20").replace("\n", "%0A")
@@ -163,6 +179,45 @@ def main():
                 msg_box.send_keys(Keys.ENTER)
                 logging.info(f"Mensaje enviado a {telefono_norm}: {mensaje}")
                 time.sleep(7)
+
+                # -- Leer y analizar la respuesta del paciente --
+                try:
+                    mensajes = driver.find_elements(By.XPATH, '//div[contains(@class,"message-in")]')
+                    respuestas_paciente = []
+                    for msg in mensajes[-5:]:
+                        try:
+                            texto = msg.find_element(By.XPATH, './/span[contains(@class,"selectable-text")]').text
+                            if texto.strip():
+                                respuestas_paciente.append(texto)
+                        except Exception:
+                            pass  # No es texto (puede ser sticker)
+
+                    if respuestas_paciente:
+                        respuesta = respuestas_paciente[-1]
+                        nuevo_estado = clasificar_respuesta(respuesta)
+                        logging.info(f"Respuesta paciente ({telefono_norm}): {respuesta} -> {nuevo_estado if nuevo_estado else 'Ambigua'}")
+
+                        # Si reconociste la respuesta, actualizar la cita
+                        if nuevo_estado:
+                            session.execute(
+                                text("""
+                                    UPDATE cita
+                                    SET estado = :nuevo_estado, modificado_en = :ahora
+                                    WHERE idcita = :idcita
+                                """),
+                                {
+                                    'nuevo_estado': nuevo_estado,
+                                    'ahora': datetime.datetime.now(),
+                                    'idcita': idcita
+                                }
+                            )
+                            session.commit()
+                    else:
+                        logging.info(f"No hay respuesta del paciente ({telefono_norm}) aún.")
+                except Exception as e:
+                    logging.error(f"Error al leer respuesta o actualizar cita de {telefono_norm}: {e}")
+                    logging.error(traceback.format_exc())
+
             except TimeoutException:
                 logging.error(f"No se encontró la caja de mensaje para {telefono_norm}. El chat puede no existir o el número no está en WhatsApp.")
             except Exception as e:

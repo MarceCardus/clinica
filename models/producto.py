@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, ForeignKey, Boolean
 from sqlalchemy.orm import relationship
 from .base import Base
 
@@ -11,6 +11,9 @@ class Producto(Base):
     precio = Column(Float)
     idtipoproducto = Column(Integer, ForeignKey("tipoproducto.idtipoproducto"))
     idespecialidad = Column(Integer, ForeignKey("especialidad.idespecialidad"))
+    requiere_recordatorio = Column(Boolean, default=False)
+    dias_recordatorio = Column(Integer, nullable=True)
+    mensaje_recordatorio = Column(String(160), nullable=True)
 
     tipoproducto = relationship("TipoProducto")
     especialidad = relationship("Especialidad")

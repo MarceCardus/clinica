@@ -6,7 +6,6 @@ from PyQt5.QtCore import QDate, Qt
 from PyQt5.QtGui import QPixmap
 from models.fotoavance import FotoAvance
 from utils.db import SessionLocal
-from controllers.analisis_fotos import analizar_fotos_completo_multi
 from controllers.analisis_resultados import AnalisisResultadoDialog
 from models.paciente import Paciente
 import os
@@ -105,6 +104,7 @@ class FotosAvanceDialog(QDialog):
         self.reset_form()
 
     def analizar_fotos_seleccionadas(self):
+        from controllers.analisis_fotos import analizar_fotos_completo_multi
         selected = self.table.selectionModel().selectedRows()
         if len(selected) != 2:
             QMessageBox.warning(self, "Análisis", "Seleccione dos fotos con la misma etiqueta para analizar.")

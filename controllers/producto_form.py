@@ -1,6 +1,6 @@
 from PyQt5.QtWidgets import (
     QDialog, QFormLayout, QLineEdit, QSpinBox, QDoubleSpinBox,
-    QComboBox, QPushButton, QHBoxLayout, QMessageBox
+    QComboBox, QPushButton, QHBoxLayout, QMessageBox, QCheckBox
 )
 from PyQt5.QtCore import Qt
 from models.producto import Producto
@@ -16,7 +16,7 @@ class ProductoFormDialog(QDialog):
         self.own_session = session is None
         self.setWindowTitle("Producto" + (" – Editar" if producto else " – Nuevo"))
         self.init_ui()
-        self.setFixedSize(400, 300)
+        self.setFixedSize(400, 400)  # un poco más alto por los campos extra
         if self.prod:
             self.load_data()
 
@@ -43,12 +43,32 @@ class ProductoFormDialog(QDialog):
         for e in self.session.query(Especialidad).order_by(Especialidad.nombre).all():
             self.especialidad.addItem(e.nombre, e.idespecialidad)
 
+        # ----- Campos de recordatorio -----
+        self.chk_requiere_recordatorio = QCheckBox("¿Requiere recordatorio?")
+        self.input_dias_recordatorio = QSpinBox()
+        self.input_dias_recordatorio.setRange(1, 3650)
+        self.input_dias_recordatorio.setEnabled(False)
+        self.input_mensaje_recordatorio = QLineEdit()
+        self.input_mensaje_recordatorio.setEnabled(False)
+
+        # Vincular enable/disable
+        self.chk_requiere_recordatorio.toggled.connect(
+            lambda v: [
+                self.input_dias_recordatorio.setEnabled(v),
+                self.input_mensaje_recordatorio.setEnabled(v)
+            ]
+        )
+
         layout.addRow("Nombre:", self.nombre)
         layout.addRow("Descripción:", self.descripcion)
         layout.addRow("Duración (hs):", self.duracion)
         layout.addRow("Precio:", self.precio)
         layout.addRow("Tipo de producto:", self.tipo_combo)
         layout.addRow("Especialidad:", self.especialidad)
+        # --- Aquí los nuevos campos ---
+        layout.addRow(self.chk_requiere_recordatorio)
+        layout.addRow("Días para recordatorio:", self.input_dias_recordatorio)
+        layout.addRow("Mensaje recordatorio:", self.input_mensaje_recordatorio)
 
         btns = QHBoxLayout()
         btn_guardar = QPushButton("Guardar")
@@ -60,9 +80,9 @@ class ProductoFormDialog(QDialog):
         btn_guardar.clicked.connect(self.accept)
         btn_cancel.clicked.connect(self.reject)
 
-        self.setMinimumSize(400, 300)      # Menor alto
-        self.setMaximumSize(400, 350)      # Un poco de margen
-        self.resize(400, 250)              # Tamaño inicial al abrir
+        self.setMinimumSize(400, 400)
+        self.setMaximumSize(400, 450)
+        self.resize(400, 400)
         self.nombre.setFocus()
 
     def keyPressEvent(self, event):
@@ -84,6 +104,13 @@ class ProductoFormDialog(QDialog):
         idx_esp = self.especialidad.findData(self.prod.idespecialidad)
         if idx_esp >= 0:
             self.especialidad.setCurrentIndex(idx_esp)
+        # ---------- Carga de recordatorio ----------
+        self.chk_requiere_recordatorio.setChecked(bool(self.prod.requiere_recordatorio))
+        self.input_dias_recordatorio.setValue(self.prod.dias_recordatorio or 1)
+        self.input_mensaje_recordatorio.setText(self.prod.mensaje_recordatorio or "")
+        # Habilitar/deshabilitar según estado
+        self.input_dias_recordatorio.setEnabled(bool(self.prod.requiere_recordatorio))
+        self.input_mensaje_recordatorio.setEnabled(bool(self.prod.requiere_recordatorio))
 
     def accept(self):
         if not self.nombre.text().strip():
@@ -101,6 +128,11 @@ class ProductoFormDialog(QDialog):
         self.prod.precio = self.precio.value()
         self.prod.idtipoproducto = self.tipo_combo.currentData()
         self.prod.idespecialidad = self.especialidad.currentData()
+
+        # -------- Guardar campos de recordatorio --------
+        self.prod.requiere_recordatorio = self.chk_requiere_recordatorio.isChecked()
+        self.prod.dias_recordatorio = self.input_dias_recordatorio.value() if self.chk_requiere_recordatorio.isChecked() else None
+        self.prod.mensaje_recordatorio = self.input_mensaje_recordatorio.text() if self.chk_requiere_recordatorio.isChecked() else None
 
         self.session.commit()
         if self.own_session:
