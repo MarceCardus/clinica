@@ -82,6 +82,7 @@ class FichaClinicaForm(QDialog):
             self.tabs.addTab(self.tab_enfactual, "📈 Control de Estado")
             self.tabs.addTab(self.tab_procedimientos, "💉 Procedimientos")
             self.tabs.addTab(self.tab_recetas, "📋 Indicaciones/Recetas")
+            self.tabs.addTab(self.tab_recordatorios, "🔔 Recordatorios")
 
         main_layout.addWidget(self.tabs)
 
@@ -258,14 +259,17 @@ class FichaClinicaForm(QDialog):
         
 
     def cargar_todo(self):
-        paciente = (
-            self.session.query(Paciente)
+        paciente = (self.session.query(Paciente)
             .options(
                 joinedload(Paciente.antecedentes_patologicos_personales),
                 joinedload(Paciente.antecedentes_enfermedad_actual),
                 joinedload(Paciente.antecedentes_familiares),
-                joinedload(Paciente.encargados)
-            ).filter_by(idpaciente=self.idpaciente).first()
+                joinedload(Paciente.encargados),
+                # opcional si existen relaciones:
+                joinedload(Paciente.indicaciones),
+                joinedload(Paciente.procedimientos),
+            )
+            .filter_by(idpaciente=self.idpaciente).first()
         )
         # Procedimientos
         if hasattr(self, "table_procedimientos"):
@@ -376,6 +380,7 @@ class FichaClinicaForm(QDialog):
                 self.table_controles.setCellWidget(row, 13, btn_eliminar)
         self.paciente_db = paciente
         self.cargar_recordatorios()
+        self.cargar_indicaciones()
     
     def ui_tab_procedimientos(self):
         from models.producto import Producto
@@ -437,7 +442,7 @@ class FichaClinicaForm(QDialog):
         layout = QVBoxLayout(self.tab_recetas)
 
         # Grilla de indicaciones
-        self.table_recetas = QTableWidget(0, 7)
+        self.table_recetas = QTableWidget(0, 8)
         self.table_recetas.setHorizontalHeaderLabels([
             "Fecha", "Profesional", "Medicamento", "Dosis", "Frecuencia (h)", "Duración (d)", "Editar", "Eliminar"
         ])
@@ -530,29 +535,43 @@ class FichaClinicaForm(QDialog):
         )
         for i, r in enumerate(recordatorios):
             self.table_recordatorios.insertRow(i)
-            self.table_recordatorios.setItem(i, 0, QTableWidgetItem(str(r.fecha_recordatorio)))
+
+            # --- Fecha con hora (si hay) ---
+            try:
+                dt = r.fecha_recordatorio  # puede ser datetime o date
+                txt_fecha = dt.strftime("%d/%m/%Y %H:%M") if hasattr(dt, "hour") else dt.strftime("%d/%m/%Y")
+            except Exception:
+                txt_fecha = str(r.fecha_recordatorio)
+            self.table_recordatorios.setItem(i, 0, QTableWidgetItem(txt_fecha))
+            # --------------------------------
+
             self.table_recordatorios.setItem(i, 1, QTableWidgetItem(r.mensaje or ""))
+
             item_estado = QTableWidgetItem(r.estado or "")
             if r.estado == "realizado":
                 item_estado.setBackground(QColor("#b6fcb6"))
             self.table_recordatorios.setItem(i, 2, item_estado)
+
             # Botón editar (si querés)
             btn_editar = QPushButton("Editar")
-            btn_editar.setIconSize(QSize(16,16))
+            btn_editar.setIconSize(QSize(16, 16))
             btn_editar.setFlat(True)
             # btn_editar.clicked.connect(lambda _, rid=r.id: self.editar_recordatorio(rid))
             self.table_recordatorios.setCellWidget(i, 3, btn_editar)
+
             # Botón marcar realizado
             btn_realizado = QPushButton("Realizado")
             btn_realizado.setStyleSheet("color: green; font-weight: bold")
             btn_realizado.setEnabled(r.estado != "realizado")
             btn_realizado.clicked.connect(lambda _, rid=r.id: self.marcar_recordatorio_realizado(rid))
             self.table_recordatorios.setCellWidget(i, 4, btn_realizado)
-            # Botón eliminar (opcional)
+
+            # Botón eliminar
             btn_eliminar = QPushButton("Eliminar")
             btn_eliminar.setStyleSheet("color: red")
             btn_eliminar.clicked.connect(lambda _, rid=r.id: self.eliminar_recordatorio(rid))
             self.table_recordatorios.setCellWidget(i, 5, btn_eliminar)
+
 
     def marcar_recordatorio_realizado(self, rid):
         from models.recordatorio_paciente import RecordatorioPaciente
@@ -773,7 +792,7 @@ class FichaClinicaForm(QDialog):
         self.receta_dosis.clear()
         self.receta_frecuencia.setValue(8)
         self.receta_duracion.setValue(7)
-        self.receta_hora_inicio.setTime(Qt.QTime.currentTime())
+        self.receta_hora_inicio.setTime(QTime.currentTime())
         self.receta_recordatorio.setChecked(False)
         self.receta_obs.clear()
         self.btn_agregar_receta.setText("Agregar")
@@ -782,18 +801,42 @@ class FichaClinicaForm(QDialog):
     def cargar_indicacion_en_form(self, ind):
         self.receta_editando_id = ind.idindicacion
         self.receta_fecha.setDate(QDate(ind.fecha.year, ind.fecha.month, ind.fecha.day))
+
         idx_prof = self.receta_profesional.findData(ind.idprofesional)
         self.receta_profesional.setCurrentIndex(idx_prof if idx_prof != -1 else 0)
+
         idx_insumo = self.receta_medicamento.findData(ind.idinsumo)
         self.receta_medicamento.setCurrentIndex(idx_insumo if idx_insumo != -1 else 0)
+
         self.receta_dosis.setText(ind.dosis or "")
         self.receta_frecuencia.setValue(ind.frecuencia_horas or 8)
         self.receta_duracion.setValue(ind.duracion_dias or 7)
-        self.receta_hora_inicio.setTime(ind.hora_inicio if ind.hora_inicio else Qt.QTime.currentTime())
+
+        # --- Conversión segura a QTime ---
+        if ind.hora_inicio:
+            try:
+                # si es datetime.time
+                h = getattr(ind.hora_inicio, 'hour', None)
+                m = getattr(ind.hora_inicio, 'minute', None)
+                s = getattr(ind.hora_inicio, 'second', 0)
+                if h is not None and m is not None:
+                    self.receta_hora_inicio.setTime(QTime(h, m, s))
+                else:
+                    # si viene como string "HH:MM[:SS]"
+                    parts = str(ind.hora_inicio).split(':')
+                    hh = int(parts[0]); mm = int(parts[1]); ss = int(parts[2]) if len(parts) > 2 else 0
+                    self.receta_hora_inicio.setTime(QTime(hh, mm, ss))
+            except Exception:
+                self.receta_hora_inicio.setTime(QTime.currentTime())
+        else:
+            self.receta_hora_inicio.setTime(QTime.currentTime())
+        # ----------------------------------
+
         self.receta_recordatorio.setChecked(ind.recordatorio_activo)
         self.receta_obs.setPlainText(ind.observaciones or "")
         self.btn_agregar_receta.setText("Guardar Cambios")
         self.btn_cancelar_receta.setVisible(True)
+
      
 
     def eliminar_indicacion(self, idindicacion):
@@ -807,6 +850,7 @@ class FichaClinicaForm(QDialog):
             self.session.delete(indicacion)
             self.session.commit()
             self.cargar_indicaciones()
+            self.cargar_recordatorios()
     
     
     def agregar_o_editar_indicacion(self):
@@ -865,6 +909,7 @@ class FichaClinicaForm(QDialog):
 
         self.cargar_indicaciones()
         self.cancelar_edicion_receta()
+        self.cargar_recordatorios()
         QMessageBox.information(self, "Indicacion", "Guardado correctamente.")
     
     def cargar_indicaciones(self):

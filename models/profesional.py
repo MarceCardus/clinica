@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String,Boolean
 from .base import Base
-
+from sqlalchemy.orm import relationship
 class Profesional(Base):
     __tablename__ = 'profesional'
 
@@ -14,4 +14,4 @@ class Profesional(Base):
     direccion = Column(String(200))
     observaciones = Column(String)
     estado = Column(Boolean, default=True)   # <-- Esto es clave
-
+    indicaciones = relationship('Indicacion', back_populates='profesional')

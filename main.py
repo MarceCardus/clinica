@@ -53,7 +53,8 @@ from controllers.abm_producto import ABMProducto
 from controllers.abm_turnos import CitaForm
 from models.usuario import Usuario
 from controllers.abm_paquete import ABMPaquete
-from controllers.venta_form import VentaForm
+from controllers.ventas_form import ABMVenta
+from controllers.ventas_controller import VentasController
 from controllers.abm_insumos import ABMInsumos
 from controllers.abm_compras_form import ABMCompra
 from controllers.InformeStockForm import InformeStockForm
@@ -175,9 +176,15 @@ class MainWindow(QMainWindow):
         self.action_compras.triggered.connect(self.abrir_compra)
         menubar.addAction(self.action_compras)
 
-           # Menú Agendar
+           # Menú Ventas
         self.menu_ventas = menubar.addMenu("Ventas")
-        
+        self.action_nueva_venta = QAction("Nueva Venta", self)
+        self.action_nueva_venta.triggered.connect(self.abrir_venta)
+        self.menu_ventas.addAction(self.action_nueva_venta)
+        self.action_plan_cuotas = QAction("Venta Cuotas", self)
+        self.action_plan_cuotas.triggered.connect(self.abrir_venta_cuotas)  # stub abajo
+        self.menu_ventas.addAction(self.action_plan_cuotas)
+
         # Menú Informes
         self.menu_informes = menubar.addMenu("Informes")
         action_abm_informe_stock = QAction("Stock", self)
@@ -191,6 +198,8 @@ class MainWindow(QMainWindow):
         # --- BLOQUEO DE MENÚ SEGÚN ROL ---
         if self.rol != "superusuario":
             self.action_compras.setEnabled(False)
+            self.action_nueva_venta.setEnabled(False)
+            self.action_plan_cuotas.setEnabled(False)
 
     def init_status_bar(self):
         status_bar = QStatusBar()
@@ -214,7 +223,25 @@ class MainWindow(QMainWindow):
         self.mdi_area.addSubWindow(sub)
         self.ajustar_subventana(sub)
         sub.show()
-        
+
+    def abrir_venta(self):
+        for subwin in self.mdi_area.subWindowList():
+            if isinstance(subwin.widget(), ABMVenta):
+                subwin.setFocus()
+                subwin.showNormal()
+                self.ajustar_subventana(subwin)
+                return
+        sub = QMdiSubWindow()
+        sub.setWidget(ABMVenta(usuario_id=self.usuario_id))
+        sub.setWindowTitle("ABM de Ventas")
+        sub.setAttribute(Qt.WA_DeleteOnClose)
+        self.mdi_area.addSubWindow(sub)
+        self.ajustar_subventana(sub)
+        sub.show()
+    
+    def abrir_venta_cuotas(self):
+        self._abrir_plan_cuotas()
+
     def abrir_compra(self):
         for subwin in self.mdi_area.subWindowList():
             widget = subwin.widget()
@@ -225,6 +252,20 @@ class MainWindow(QMainWindow):
         sub = QMdiSubWindow()
         sub.setWidget(ABMCompra())
         sub.setWindowTitle("ABM de Compras")
+        sub.setAttribute(Qt.WA_DeleteOnClose)
+        self.mdi_area.addSubWindow(sub)
+        sub.show()
+
+    def abrir_venta(self):
+        for subwin in self.mdi_area.subWindowList():
+            widget = subwin.widget()
+            if widget is not None and isinstance(widget, ABMVenta):
+                subwin.setFocus()
+                subwin.showNormal()
+                return
+        sub = QMdiSubWindow()
+        sub.setWidget(ABMVenta(usuario_id=self.usuario_id))
+        sub.setWindowTitle("ABM de Ventas")
         sub.setAttribute(Qt.WA_DeleteOnClose)
         self.mdi_area.addSubWindow(sub)
         sub.show()
@@ -368,17 +409,7 @@ class MainWindow(QMainWindow):
         self.ajustar_subventana(sub)
         sub.show()
 
-    def abrir_venta(self):
-      # Consultar datos de la base antes de abrir el form
-        pacientes = self.session.query(Paciente).all()
-        profesionales = self.session.query(Profesional).all()
-        clinicas = self.session.query(Clinica).all()
-        productos = self.session.query(Producto).all()
-        paquetes = self.session.query(Paquete).all()
-
-        form = VentaForm(self.session, pacientes, profesionales, clinicas, productos, paquetes)
-        if form.exec_() == QDialog.Accepted:
-            QMessageBox.information(self, "Venta", "Venta registrada correctamente.")
+    
 
     def abrir_informe_stock(self):
         # Si ya existe la ventana, traerla al frente

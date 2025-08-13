@@ -1,3 +1,4 @@
+# models/paciente.py
 from sqlalchemy import Column, Integer, String, Date, Boolean, ForeignKey
 from sqlalchemy.orm import relationship
 from .base import Base
@@ -6,6 +7,9 @@ from .antecEnfActual import AntecedenteEnfermedadActual
 from .antecFliar import AntecedenteFamiliar
 from .barrio import Barrio
 from .pacienteEncargado import PacienteEncargado
+# (Opcional) si realmente necesitás, importá aquí arriba:
+from .procedimiento import Procedimiento
+from .indicacion import Indicacion
 
 class Paciente(Base):
     __tablename__ = 'paciente'
@@ -28,14 +32,25 @@ class Paciente(Base):
     estado = Column(Boolean, default=True)
     observaciones = Column(String)
     idbarrio = Column(Integer, ForeignKey('barrio.idbarrio'))
+
     barrio = relationship("Barrio", back_populates="pacientes")
-    antecedentes_patologicos_personales = relationship("AntecedentePatologicoPersonal", back_populates="paciente", cascade="all, delete-orphan")
-    antecedentes_enfermedad_actual = relationship("AntecedenteEnfermedadActual", back_populates="paciente", cascade="all, delete-orphan")
-    antecedentes_familiares = relationship("AntecedenteFamiliar", back_populates="paciente", cascade="all, delete-orphan")
-    encargados = relationship("PacienteEncargado", back_populates="paciente", cascade="all, delete-orphan")
-    procedimientos = relationship(
-        "Procedimiento",
-        back_populates="paciente",
-        cascade="all, delete-orphan"
+    antecedentes_patologicos_personales = relationship(
+        "AntecedentePatologicoPersonal", back_populates="paciente", cascade="all, delete-orphan"
     )
-    from .procedimiento import Procedimiento
+    antecedentes_enfermedad_actual = relationship(
+        "AntecedenteEnfermedadActual", back_populates="paciente", cascade="all, delete-orphan"
+    )
+    antecedentes_familiares = relationship(
+        "AntecedenteFamiliar", back_populates="paciente", cascade="all, delete-orphan"
+    )
+    encargados = relationship(
+        "PacienteEncargado", back_populates="paciente", cascade="all, delete-orphan"
+    )
+    procedimientos = relationship(
+        "Procedimiento", back_populates="paciente", cascade="all, delete-orphan"
+    )
+    indicaciones = relationship(
+        "Indicacion", back_populates="paciente", cascade="all, delete-orphan"
+        # sin order_by aquí para evitar el error
+    )
+   

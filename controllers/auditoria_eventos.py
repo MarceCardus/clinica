@@ -1,18 +1,38 @@
 import json
-from datetime import datetime
+from datetime import datetime, date, time
 from sqlalchemy import event
 from sqlalchemy.orm import object_session
 from sqlalchemy import inspect
 from models.auditoria import Auditoria
 import models.usuario_actual as usuario_id 
-import datetime
-import decimal
+from decimal import Decimal
+import uuid
 
 def default_json(obj):
-    if isinstance(obj, (datetime.date, datetime.datetime)):
+    # Fechas y horas
+    if isinstance(obj, (datetime, date, time)):
         return obj.isoformat()
-    if isinstance(obj, decimal.Decimal):
+
+    # Decimales
+    if isinstance(obj, Decimal):
+        # o str(obj) si querés mantener precisión exacta
         return float(obj)
+
+    # Sets / frozensets
+    if isinstance(obj, (set, frozenset)):
+        return list(obj)
+
+    # UUID
+    if isinstance(obj, uuid.UUID):
+        return str(obj)
+
+    # Objetos SQLAlchemy (opcional: convierte a dict de columnas simples)
+    if hasattr(obj, "__table__"):
+        data = {}
+        for col in obj.__table__.columns.keys():
+            data[col] = default_json(getattr(obj, col))
+        return data
+
     raise TypeError(f"Tipo no serializable: {type(obj)}")
 
 
@@ -29,7 +49,7 @@ def get_current_user():
 
 def registrar_auditoria(session, idusuario, modulo, accion, observaciones):
     nueva_auditoria = Auditoria(
-        fechahora = datetime.datetime.now(),
+        fechahora = datetime.now(),
         idusuario=idusuario,
         modulo=modulo,
         accion=accion,

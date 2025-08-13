@@ -17,3 +17,4 @@ class Producto(Base):
 
     tipoproducto = relationship("TipoProducto")
     especialidad = relationship("Especialidad")
+    indicaciones = relationship('Indicacion', back_populates='producto')
