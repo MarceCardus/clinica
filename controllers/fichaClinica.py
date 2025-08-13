@@ -639,16 +639,36 @@ class FichaClinicaForm(QDialog):
         self.btn_agregar_procedimiento.setText("Agregar")
         self.btn_cancelar_procedimiento.setVisible(False)
         
+   
     def eliminar_procedimiento(self, idproc):
+        from sqlalchemy.exc import IntegrityError
         reply = QMessageBox.question(self, "Confirmar", "¿Eliminar procedimiento?", QMessageBox.Yes | QMessageBox.No)
         if reply == QMessageBox.No:
             return
+
         from models.procedimiento import Procedimiento
         proc = self.session.query(Procedimiento).filter_by(id=idproc).first()
         if proc:
-            self.session.delete(proc)
-            self.session.commit()
-            self.cargar_todo()
+            try:
+                self.session.delete(proc)
+                self.session.commit()
+                self.cargar_todo()
+            except IntegrityError:
+                self.session.rollback()
+                QMessageBox.warning(
+                    self,
+                    "No se puede eliminar",
+                    "No se puede eliminar el procedimiento porque tiene recordatorios asociados.\n"
+                    "Elimine primero los recordatorios."
+                )
+            except Exception as e:
+                self.session.rollback()
+                QMessageBox.critical(
+                    self,
+                    "Error inesperado",
+                    f"Ocurrió un error inesperado:\n{str(e)}"
+                )
+
 
     def agregar_o_editar_control(self):
         if self.control_editando_id:

@@ -1,11 +1,14 @@
+# models/venta_detalle.py
 from sqlalchemy import Column, Integer, ForeignKey, Numeric
+from sqlalchemy.orm import relationship
 from .base import Base
 
 class VentaDetalle(Base):
     __tablename__ = 'venta_detalle'
-    idventa = Column(Integer, ForeignKey('venta.idventa'), primary_key=True)
-    idproducto = Column(Integer, ForeignKey('producto.idproducto'), primary_key=True)
-    idpaquete = Column(Integer, ForeignKey('paquete.idpaquete'), primary_key=True)
-    cantidad = Column(Integer)
-    preciounitario = Column(Numeric(14,2))
-    descuento = Column(Numeric(14,2))
+    idventadet = Column(Integer, primary_key=True, autoincrement=True)  # <- NUEVO
+    idventa = Column(Integer, ForeignKey('venta.idventa'), nullable=False)
+    idproducto = Column(Integer, ForeignKey('producto.idproducto'), nullable=False)
+    idpaquete = Column(Integer, ForeignKey('paquete.idpaquete'))  # nullable OK
+    cantidad = Column(Numeric(14,2), nullable=False)
+    preciounitario = Column(Numeric(14,2), nullable=False)
+    descuento = Column(Numeric(14,2), default=0)

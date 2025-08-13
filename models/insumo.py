@@ -10,6 +10,7 @@ class Insumo(Base):
         'DESCARTABLE', 
         'REACTIVO', 
         'ANTIBIOTICO',
+        'VARIOS',
         name='tipo_insumo'
     ), nullable=False)
     unidad = Column(String(20), nullable=False)

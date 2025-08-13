@@ -8,6 +8,9 @@ from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import Qt,QSize
 from utils.db import SessionLocal
 from models.insumo import Insumo
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy import exists
+from models.compra_detalle import CompraDetalle
 
 ICON_PATH = os.path.join(os.path.dirname(__file__), 'imagenes')
 
@@ -15,7 +18,8 @@ TIPOS = [
     "MEDICAMENTO",
     "DESCARTABLE",
     "REACTIVO",
-    "ANTIBIOTICO"
+    "ANTIBIOTICO",
+    "VARIOS"
 ]
 CATEGORIAS = [
     "CONSUMO_INTERNO",
@@ -126,12 +130,40 @@ class ABMInsumos(QDialog):
 
     def eliminar_insumo(self, row):
         idinsumo = int(self.table.item(row, 0).text())
-        if QMessageBox.question(self, "Eliminar", "¿Está seguro que desea eliminar este insumo?", QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
-            insumo = self.session.query(Insumo).filter_by(idinsumo=idinsumo).first()
-            if insumo:
-                self.session.delete(insumo)
-                self.session.commit()
-                self.load_data()
+        if QMessageBox.question(
+            self, "Eliminar",
+            "¿Está seguro que desea eliminar este insumo?",
+            QMessageBox.Yes | QMessageBox.No
+        ) != QMessageBox.Yes:
+            return
+
+        insumo = self.session.query(Insumo).filter_by(idinsumo=idinsumo).first()
+        if not insumo:
+            return
+
+        # Pre-chequeo: ¿está referenciado?
+        tiene_usos = self.session.query(
+            exists().where(CompraDetalle.idinsumo == idinsumo)
+        ).scalar()
+
+        if tiene_usos:
+            QMessageBox.warning(
+                self, "No se puede eliminar",
+                "El insumo no puede eliminarse porque ya fue utilizado en compras.\n"
+                "Sugerencia: marcá el insumo como inactivo (soft delete) para que no se use más."
+            )
+            return
+
+        try:
+            self.session.delete(insumo)
+            self.session.commit()
+            self.load_data()
+        except IntegrityError:
+            self.session.rollback()
+            QMessageBox.warning(
+                self, "No se puede eliminar",
+                "El insumo no puede eliminarse porque está referenciado por otros registros."
+            )
 
 # --------- FORMULARIO MODAL DE INSUMO ---------
 class FormularioInsumo(QDialog):

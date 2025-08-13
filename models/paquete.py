@@ -1,4 +1,5 @@
 from sqlalchemy import Column, Integer, String, Numeric
+from sqlalchemy.orm import relationship
 from .base import Base
 
 class Paquete(Base):
@@ -9,3 +10,4 @@ class Paquete(Base):
     cantidadsesiones = Column(Integer)
     preciototal = Column(Numeric(14,2), nullable=False)
     observaciones = Column(String)
+    componentes = relationship("PaqueteProducto", back_populates="paquete", cascade="all, delete-orphan")

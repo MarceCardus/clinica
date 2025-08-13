@@ -56,6 +56,8 @@ from controllers.abm_paquete import ABMPaquete
 from controllers.venta_form import VentaForm
 from controllers.abm_insumos import ABMInsumos
 from controllers.abm_compras_form import ABMCompra
+from controllers.InformeStockForm import InformeStockForm
+from controllers.informe_compras import ComprasReportForm
 from models.paciente import Paciente
 from models.profesional import Profesional
 from models.clinica import Clinica
@@ -169,16 +171,22 @@ class MainWindow(QMainWindow):
         
 
         # Menú Compras
-        action_compras = QAction("Compras", self)
-        action_compras.triggered.connect(self.abrir_compra)
-        menubar.addAction(action_compras)
+        self.action_compras = QAction("Compras", self)
+        self.action_compras.triggered.connect(self.abrir_compra)
+        menubar.addAction(self.action_compras)
 
            # Menú Agendar
         self.menu_ventas = menubar.addMenu("Ventas")
         
-        self.action_compras = QAction("Compras", self)
-        self.action_compras.triggered.connect(self.abrir_compra)
-        menubar.addAction(self.action_compras)
+        # Menú Informes
+        self.menu_informes = menubar.addMenu("Informes")
+        action_abm_informe_stock = QAction("Stock", self)
+        action_abm_informe_stock.triggered.connect(self.abrir_informe_stock)
+        self.menu_informes.addAction(action_abm_informe_stock)
+        # Informes → Compras
+        self.action_informe_compras = QAction("Compras", self)
+        self.action_informe_compras.triggered.connect(self.abrir_informe_compras)
+        self.menu_informes.addAction(self.action_informe_compras)
 
         # --- BLOQUEO DE MENÚ SEGÚN ROL ---
         if self.rol != "superusuario":
@@ -219,6 +227,25 @@ class MainWindow(QMainWindow):
         sub.setWindowTitle("ABM de Compras")
         sub.setAttribute(Qt.WA_DeleteOnClose)
         self.mdi_area.addSubWindow(sub)
+        sub.show()
+
+    def abrir_informe_compras(self):
+        # Si ya existe, traer al frente
+        for subwin in self.mdi_area.subWindowList():
+            widget = subwin.widget()
+            if widget and isinstance(widget, ComprasReportForm):
+                subwin.setFocus()
+                subwin.showNormal()
+                self.ajustar_subventana(subwin)
+                return
+
+        # Si no existe, crear nueva subventana
+        sub = QMdiSubWindow()
+        sub.setWidget(ComprasReportForm(self))   # el form crea su propia SessionLocal
+        sub.setWindowTitle("Informe de Compras")
+        sub.setAttribute(Qt.WA_DeleteOnClose)
+        self.mdi_area.addSubWindow(sub)
+        self.ajustar_subventana(sub)
         sub.show()
 
     def abrir_especialidad(self):
@@ -352,6 +379,27 @@ class MainWindow(QMainWindow):
         form = VentaForm(self.session, pacientes, profesionales, clinicas, productos, paquetes)
         if form.exec_() == QDialog.Accepted:
             QMessageBox.information(self, "Venta", "Venta registrada correctamente.")
+
+    def abrir_informe_stock(self):
+        # Si ya existe la ventana, traerla al frente
+        for subwin in self.mdi_area.subWindowList():
+            widget = subwin.widget()
+            if widget and isinstance(widget, InformeStockForm):
+                subwin.setFocus()
+                subwin.showNormal()
+                self.ajustar_subventana(subwin)
+                return
+
+        # Si no existe, crear una nueva subventana
+        from utils.db import SessionLocal
+        session = SessionLocal()
+        sub = QMdiSubWindow()
+        sub.setWidget(InformeStockForm(session, self))
+        sub.setWindowTitle("Informe de Stock de Insumos")
+        sub.setAttribute(Qt.WA_DeleteOnClose)
+        self.mdi_area.addSubWindow(sub)
+        self.ajustar_subventana(sub)
+        sub.show()
 
 if __name__ == "__main__":
     from login import LoginDialog
