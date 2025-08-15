@@ -92,7 +92,8 @@ def registrar_venta(
     idclinica: int = None,
     estadoventa: str = "Cerrada",  # o "Abierta"
     observaciones: str = None,
-    items: list = None
+    items: list = None,
+    nro_factura: str | None = None
 ) -> Venta:
     """
     items: lista de dicts
@@ -110,7 +111,8 @@ def registrar_venta(
         idclinica = idclinica,
         montototal = _money(0),
         estadoventa = estadoventa,
-        observaciones = observaciones
+        observaciones = observaciones,
+        nro_factura = (nro_factura or "").strip()
     )
     session.add(v)
     session.flush()  # asegura v.idventa

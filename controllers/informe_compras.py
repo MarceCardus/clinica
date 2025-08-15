@@ -3,13 +3,13 @@ from decimal import Decimal
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QComboBox, QDateEdit, QTableWidget, QTableWidgetItem, QHeaderView,
-    QMessageBox, QGroupBox, QApplication, QCompleter
+    QMessageBox, QGroupBox, QApplication, QCompleter, QCheckBox
 )
 from PyQt5.QtCore import Qt, QDate
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFont, QColor, QBrush
 
 from utils.db import SessionLocal
-from sqlalchemy import func, and_
+from sqlalchemy import func, and_, or_
 
 # ====== MODELOS ======
 from models.compra import Compra
@@ -47,11 +47,11 @@ class ComprasReportForm(QWidget):
         self.dt_desde = QDateEdit(calendarPopup=True)
         self.dt_hasta = QDateEdit(calendarPopup=True)
         hoy = QDate.currentDate()
-        self.dt_desde.setDate(hoy.addMonths(-1))
+        self.dt_desde.setDate(hoy)
         self.dt_hasta.setDate(hoy)
         self.dt_desde.setDisplayFormat("dd/MM/yyyy")
         self.dt_hasta.setDisplayFormat("dd/MM/yyyy")
-
+        
         self.txt_proveedor = QLineEdit()
         self.txt_proveedor.setPlaceholderText("Proveedor (escribí para buscar)")
         self.txt_proveedor.setClearButtonEnabled(True)
@@ -62,12 +62,14 @@ class ComprasReportForm(QWidget):
         self.btn_buscar = QPushButton("Buscar")
         self.btn_pdf = QPushButton("Exportar PDF")
         self.btn_excel = QPushButton("Exportar Excel")
-        
+        self.chk_mostrar_anuladas = QCheckBox("Mostrar anuladas")
+        self.chk_mostrar_anuladas.setChecked(False)  # por defecto NO muestra anuladas
 
         fl.addWidget(QLabel("Desde:")); fl.addWidget(self.dt_desde)
         fl.addWidget(QLabel("Hasta:")); fl.addWidget(self.dt_hasta)
         fl.addWidget(QLabel("Proveedor:")); fl.addWidget(self.txt_proveedor, 2)
         fl.addWidget(QLabel("Tipo de insumo:")); fl.addWidget(self.cbo_tipo, 1)
+        fl.addWidget(self.chk_mostrar_anuladas)
         fl.addWidget(self.btn_buscar)
         fl.addWidget(self.btn_pdf)
         fl.addWidget(self.btn_excel)
@@ -77,9 +79,9 @@ class ComprasReportForm(QWidget):
         splitter.setOrientation(Qt.Vertical)
 
         # Maestro (cabecera de compra)
-        self.table_master = QTableWidget(0, 6)
+        self.table_master = QTableWidget(0, 7)
         self.table_master.setHorizontalHeaderLabels([
-            "ID Compra", "Fecha","Proveedor", "Comprobante", "Monto Total", "IVA Total"
+            "ID Compra", "Fecha", "Proveedor", "Comprobante", "Monto Total", "IVA Total", "Estado"  # <-- nueva
         ])
         self.table_master.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table_master.verticalHeader().setVisible(False)
@@ -123,6 +125,9 @@ class ComprasReportForm(QWidget):
         # cuando cambio la selección de maestro, cargo detalle
         self.table_master.itemSelectionChanged.connect(self._on_master_changed)
         self.btn_excel.clicked.connect(self.exportar_excel)
+        self.chk_mostrar_anuladas.stateChanged.connect(lambda _ : self.buscar())
+        self.dt_desde.dateChanged.connect(lambda _ : self.buscar())
+        self.dt_hasta.dateChanged.connect(lambda _ : self.buscar())
 
     # ---------- Carga de filtros ----------
     def _load_filters(self):
@@ -147,14 +152,19 @@ class ComprasReportForm(QWidget):
         prov_txt = (self.txt_proveedor.text() or "").strip()
 
         # ⚠️ CAMBIAR si tu campo no es Compra.fecha
-        filtros = [func.date(Compra.fecha).between(desde, hasta)]
+        filtros = [Compra.fecha.between(desde, hasta)]
+
+        # Si NO está marcado el checkbox, excluimos anuladas
+        if not self.chk_mostrar_anuladas.isChecked():
+            filtros.append(or_(Compra.anulada.is_(False), Compra.anulada.is_(None)))
+
+        # Proveedor
         if prov_txt:
             filtros.append(Proveedor.nombre.ilike(f"%{prov_txt}%"))
+
+        # Tipo de insumo
         tipo = self.cbo_tipo.currentData()
-        # En maestro no filtramos por tipo (porque la compra puede tener varios tipos).
-        # Pero si querés que sólo aparezcan compras que TENGAN al menos 1 ítem del tipo, hacemos un exists:
         if tipo:
-            from sqlalchemy.sql import exists, select
             sub = (
                 self.session.query(CompraDetalle.idcompra)
                 .join(Insumo, CompraDetalle.idinsumo == Insumo.idinsumo)
@@ -171,6 +181,7 @@ class ComprasReportForm(QWidget):
                 Compra.nro_comprobante.label("nro_comprobante"),
                 Compra.montototal.label("montototal"),
                 (Compra.montototal / 11).label("iva_total"),
+                Compra.anulada.label("anulada"),
             )
             .join(Proveedor, Compra.idproveedor == Proveedor.idproveedor)
             .filter(and_(*filtros))
@@ -201,11 +212,13 @@ class ComprasReportForm(QWidget):
         tipo_val = self.cbo_tipo.currentData()
 
         # ⚠️ CAMBIAR si tu campo no es Compra.fecha
-        filtros = [func.date(Compra.fecha).between(desde, hasta)]
+        filtros = [Compra.fecha.between(desde, hasta)]
+        if not self.chk_mostrar_anuladas.isChecked():
+            filtros.append(or_(Compra.anulada.is_(False), Compra.anulada.is_(None)))
+
         if prov_txt:
             filtros.append(Proveedor.nombre.ilike(f"%{prov_txt}%"))
 
-        # Sólo mostrar compras que tengan al menos un ítem del tipo elegido (si hay tipo)
         if tipo_val:
             sub = (
                 self.session.query(CompraDetalle.idcompra)
@@ -223,6 +236,7 @@ class ComprasReportForm(QWidget):
                 Compra.nro_comprobante.label("Comprobante"),
                 Compra.montototal.label("Monto Total"),
                 (Compra.montototal / 11).label("IVA Total"),
+                Compra.anulada.label("anulada"),
             )
             .join(Proveedor, Compra.idproveedor == Proveedor.idproveedor)
             .filter(and_(*filtros))
@@ -256,8 +270,11 @@ class ComprasReportForm(QWidget):
         import pandas as pd
         df_master = pd.DataFrame(
             master_rows,
-            columns=["ID Compra", "Fecha", "Proveedor", "Comprobante", "Monto Total", "IVA Total"]
+            columns=["ID Compra", "Fecha", "Proveedor", "Comprobante", "Monto Total", "IVA Total", "anulada"]
         )
+        # transformar bool -> texto
+        df_master["Estado"] = df_master["anulada"].map(lambda v: "ANULADA" if bool(v) else "Generada")
+        df_master = df_master.drop(columns=["anulada"])
         df_det = pd.DataFrame(det_rows, columns=["ID Compra", "Cantidad", "Insumo", "Precio Unitario", "Total Fila"])
 
         # Exportar
@@ -287,6 +304,8 @@ class ComprasReportForm(QWidget):
         for r in rows:
             row = self.table_master.rowCount()
             self.table_master.insertRow(row)
+            anul = bool(getattr(r, "anulada", False))
+            estado_txt = "ANULADA" if anul else "Generado"
             items = [
                 QTableWidgetItem(str(r.idcompra)),
                 QTableWidgetItem(r.fecha.strftime("%d/%m/%Y") if r.fecha else ""),
@@ -294,10 +313,22 @@ class ComprasReportForm(QWidget):
                 QTableWidgetItem(r.nro_comprobante or ""),
                 QTableWidgetItem(fmt(r.montototal)),
                 QTableWidgetItem(fmt(r.iva_total)),
+                QTableWidgetItem(estado_txt),  # <-- nueva col
             ]
             for i, it in enumerate(items):
-                it.setTextAlignment(Qt.AlignCenter if i in (0, 1, 4, 5) else Qt.AlignVCenter | Qt.AlignLeft)
+                it.setTextAlignment(Qt.AlignCenter if i in (0,1,4,5,6) else Qt.AlignVCenter | Qt.AlignLeft)
                 self.table_master.setItem(row, i, it)
+
+            # Si está ANULADA, resaltar toda la fila
+            if anul:
+                red = QColor("#a40000")
+                bg  = QColor("#ffe6e6")
+                f = QFont(); f.setStrikeOut(True)  # tachado
+                for c in range(self.table_master.columnCount()):
+                    it = self.table_master.item(row, c)
+                    it.setBackground(QBrush(bg))
+                    it.setForeground(QBrush(red))
+                    it.setFont(f)
 
             # acumular totales (una vez por fila)
             try:
@@ -405,10 +436,11 @@ class ComprasReportForm(QWidget):
             comp = self.table_master.item(r, 3).text()
             monto = self.table_master.item(r, 4).text()
             iva = self.table_master.item(r, 5).text()
-
+            anulada = (self.table_master.item(r, 6).text().upper() == "ANULADA")
+            estado_html = " — <font color='red'><b>ESTADO: ANULADA</b></font>" if anulada else ""
             story.append(Paragraph(
                 f"<b>#{idc}</b> — {fecha_txt} — {proveedor}<br/>"
-                f"N° Factura: <b>{comp}</b> — Total: <b>{monto}</b> — IVA: <b>{iva}</b>",
+                f"N° Factura: <b>{comp}</b> — Total: <b>{monto}</b> — IVA: <b>{iva}</b>{estado_html}",
                 styles["Heading3"]
             ))
             story.append(Spacer(1, 8))

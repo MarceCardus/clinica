@@ -1,5 +1,7 @@
-from sqlalchemy.orm import relationship
+# models/__init__.py
 from .base import Base
+
+# Importa TODOS los modelos primero
 from .clinica import Clinica
 from .paciente import Paciente
 from .procedimiento import Procedimiento
@@ -28,42 +30,43 @@ from .auditoria import Auditoria
 from .antecPatologico import AntecedentePatologicoPersonal
 from .antecEnfActual import AntecedenteEnfermedadActual
 from .antecFliar import AntecedenteFamiliar
-from .barrio import Barrio
+
+# Importa también los que faltaban:
+from .pacienteEncargado import PacienteEncargado
+from .indicacion import Indicacion
+from .recordatorio_paciente import RecordatorioPaciente
+from .departamento import Departamento
 from .ciudad import Ciudad
+from .barrio import Barrio
+
+# Ahora sí, definí relaciones DIFERIDAS con CLASES (no strings)
+from sqlalchemy.orm import relationship
+
+# Ciudad <-> Departamento
+Ciudad.departamento = relationship(Departamento, back_populates="ciudades")
+Departamento.ciudades = relationship(Ciudad, back_populates="departamento",
+                                     cascade="all, delete-orphan")
+
+# Barrio <-> Ciudad
+Barrio.ciudad = relationship(Ciudad, back_populates="barrios")
+Ciudad.barrios = relationship(Barrio, back_populates="ciudad",
+                              cascade="all, delete-orphan")
+
+# (tu ejemplo existente)
 Paciente.procedimientos = relationship(
-    "Procedimiento",                 # Usa el string, ¡no la clase!
-    order_by=Procedimiento.id,       # ¡Acá sí podés usar Procedimiento, porque ya está importada!
+    "Procedimiento",
+    order_by=Procedimiento.id,
     back_populates="paciente",
     cascade="all, delete-orphan"
-) 
+)
+
 __all__ = [
-    "Base",
-    "Clinica",
-    "Paciente",
-    "Procedimiento",
-    "Profesional",
-    "Especialidad",
-    "ProfesionalEspecialidad",
-    "Usuario",
-    "Producto",
-    "Paquete",
-    "PaqueteProducto",
-    "Proveedor",
-    "Insumo",
-    "Compra",
-    "CompraDetalle",
-    "Venta",
-    "VentaDetalle",
-    "Cobro",
-    "CobroVenta",
-    "VentaCuota",
-    "Sesion",
-    "FotoAvance",
-    "Receta",
-    "ComisionProfesional",
-    "CajaMovimiento",
-    "Auditoria",
-    "AntecedentePatologicoPersonal",
-    "AntecedenteEnfermedadActual",
-    "AntecedenteFamiliar",
+    "Base","Clinica","Paciente","Procedimiento","Profesional","Especialidad",
+    "ProfesionalEspecialidad","Usuario","Producto","Paquete","PaqueteProducto",
+    "Proveedor","Insumo","Compra","CompraDetalle","Venta","VentaDetalle","Cobro",
+    "CobroVenta","VentaCuota","Sesion","FotoAvance","Receta","ComisionProfesional",
+    "CajaMovimiento","Auditoria","AntecedentePatologicoPersonal",
+    "AntecedenteEnfermedadActual","AntecedenteFamiliar",
+    "PacienteEncargado","Indicacion","RecordatorioPaciente",
+    "Departamento","Ciudad","Barrio",
 ]

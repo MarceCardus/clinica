@@ -59,6 +59,7 @@ from controllers.abm_insumos import ABMInsumos
 from controllers.abm_compras_form import ABMCompra
 from controllers.InformeStockForm import InformeStockForm
 from controllers.informe_compras import ComprasReportForm
+from controllers.informe_ventas_form import VentasReportForm
 from models.paciente import Paciente
 from models.profesional import Profesional
 from models.clinica import Clinica
@@ -194,6 +195,11 @@ class MainWindow(QMainWindow):
         self.action_informe_compras = QAction("Compras", self)
         self.action_informe_compras.triggered.connect(self.abrir_informe_compras)
         self.menu_informes.addAction(self.action_informe_compras)
+        # Informes → Ventas
+        self.action_informe_ventas = QAction("Ventas", self)
+        self.action_informe_ventas.triggered.connect(self.abrir_informe_ventas)
+        self.menu_informes.addAction(self.action_informe_ventas)
+
 
         # --- BLOQUEO DE MENÚ SEGÚN ROL ---
         if self.rol != "superusuario":
@@ -288,6 +294,25 @@ class MainWindow(QMainWindow):
         self.mdi_area.addSubWindow(sub)
         self.ajustar_subventana(sub)
         sub.show()
+
+    def abrir_informe_ventas(self):
+        # Si ya existe, traer al frente
+        for subwin in self.mdi_area.subWindowList():
+            widget = subwin.widget()
+            if widget and isinstance(widget, VentasReportForm):
+                subwin.setFocus()
+                subwin.showNormal()
+                self.ajustar_subventana(subwin)
+                return
+
+        # Si no existe, crear nueva subventana
+        sub = QMdiSubWindow()
+        sub.setWidget(VentasReportForm(self))   # el form crea su propia SessionLocal
+        sub.setWindowTitle("Informe de Ventas")
+        sub.setAttribute(Qt.WA_DeleteOnClose)
+        self.mdi_area.addSubWindow(sub)
+        self.ajustar_subventana(sub)
+        sub.show()    
 
     def abrir_especialidad(self):
         for subwin in self.mdi_area.subWindowList():

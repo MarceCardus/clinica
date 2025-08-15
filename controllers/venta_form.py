@@ -5,7 +5,9 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import QDate
 from decimal import Decimal
-from models import venta, venta_detalle, venta_cuota  # Ajusta la importación según tu estructura
+from models.venta import Venta
+from models.venta_detalle import VentaDetalle
+from models.venta_cuota import VentaCuota
 
 class VentaForm(QDialog):
     def __init__(self, session, pacientes, profesionales, clinicas, productos, paquetes, parent=None):
@@ -38,6 +40,9 @@ class VentaForm(QDialog):
         for c in clinicas:
             self.clinica_combo.addItem(c.nombre, c.idclinica)
         form_layout.addRow("Clínica:", self.clinica_combo)
+
+        self.txt_nro_factura = QLineEdit()
+        form_layout.addRow("N° Factura:", self.txt_nro_factura)
 
         self.monto_total_edit = QLineEdit("0.00")
         self.monto_total_edit.setReadOnly(True)
@@ -147,19 +152,21 @@ class VentaForm(QDialog):
         from sqlalchemy.exc import SQLAlchemyError
         try:
             self.session.begin()
-            venta = venta(
+
+            obj_venta = Venta(
                 fecha=self.fecha_edit.date().toPyDate(),
                 idpaciente=self.paciente_combo.currentData(),
                 idprofesional=self.prof_combo.currentData(),
                 idclinica=self.clinica_combo.currentData(),
                 montototal=Decimal(self.monto_total_edit.text()),
                 estadoventa="PENDIENTE",
+                nro_factura=(self.txt_nro_factura.text() or "").strip(),  # <-- acá guardás el nro
                 observaciones=self.obs_edit.toPlainText()
             )
-            self.session.add(venta)
-            self.session.flush()  # Para obtener venta.idventa
+            self.session.add(obj_venta)
+            self.session.flush()  # ahora tenemos obj_venta.idventa
 
-            # --- Guardar Detalles ---
+            # --- Detalles ---
             for row in range(self.detalle_table.rowCount()):
                 tipo = self.detalle_table.cellWidget(row, 0).currentText()
                 prod_combo = self.detalle_table.cellWidget(row, 1)
@@ -171,29 +178,30 @@ class VentaForm(QDialog):
                 idproducto = id_sel if tipo_sel == "Producto" else None
                 idpaquete = id_sel if tipo_sel == "Paquete" else None
 
-                detalle = venta_detalle(
-                    idventa=venta.idventa,
+                det = VentaDetalle(
+                    idventa=obj_venta.idventa,
                     idproducto=idproducto,
                     idpaquete=idpaquete,
                     cantidad=cantidad,
-                    preciounitario=Decimal(precio),
-                    descuento=Decimal(descuento)
+                    preciounitario=Decimal(str(precio)),
+                    descuento=Decimal(str(descuento))
                 )
-                self.session.add(detalle)
+                self.session.add(det)
 
-            # --- Guardar Cuotas ---
+            # --- Cuotas ---
             for row in range(self.cuotas_table.rowCount()):
                 numerocuota = int(self.cuotas_table.item(row, 0).text())
                 fechavencimiento = self.cuotas_table.cellWidget(row, 1).date().toPyDate()
                 montocuota = self.cuotas_table.cellWidget(row, 2).value()
                 estadocuota = self.cuotas_table.cellWidget(row, 3).currentText()
-                obs = self.cuotas_table.item(row, 4).text() if self.cuotas_table.item(row, 4) else ""
+                obs_item = self.cuotas_table.item(row, 4)
+                obs = obs_item.text() if obs_item else ""
 
-                cuota = venta_cuota(
-                    idventa=venta.idventa,
+                cuota = VentaCuota(
+                    idventa=obj_venta.idventa,
                     numerocuota=numerocuota,
                     fechavencimiento=fechavencimiento,
-                    montocuota=Decimal(montocuota),
+                    montocuota=Decimal(str(montocuota)),
                     estadocuota=estadocuota,
                     fechapago=None,
                     idcobro=None,

@@ -31,7 +31,7 @@ class Paciente(Base):
     fecha_alta = Column(Date)
     estado = Column(Boolean, default=True)
     observaciones = Column(String)
-    idbarrio = Column(Integer, ForeignKey('barrio.idbarrio'))
+    idbarrio = Column(Integer, ForeignKey('barrio.idbarrio'), nullable=False)
 
     barrio = relationship("Barrio", back_populates="pacientes")
     antecedentes_patologicos_personales = relationship(

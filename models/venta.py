@@ -10,4 +10,5 @@ class Venta(Base):
     idclinica = Column(Integer, ForeignKey('clinica.idclinica'))
     montototal = Column(Numeric(14,2), nullable=False)
     estadoventa = Column(String(20))
+    nro_factura = Column(String(15), nullable=True) 
     observaciones = Column(String)

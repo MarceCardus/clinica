@@ -21,6 +21,9 @@ from functools import partial
 from models.indicacion import Indicacion
 from models.insumo import Insumo
 from models.producto import Producto
+from models.barrio import Barrio
+from models.ciudad import Ciudad
+from models.departamento import Departamento
 from controllers.generador_recordatorios import (
     generar_recordatorios_medicamento,
     validar_indicacion_medicamento,
@@ -67,7 +70,9 @@ class FichaClinicaForm(QDialog):
         self.ui_tab_recetas()
         self.tab_recordatorios = QWidget()
         self.ui_tab_recordatorios()
-
+        
+        if hasattr(self, "cbo_departamento"):
+            self._cargar_departamentos()
         # SOLO agregamos los tabs acá, según el modo:
         if getattr(self, 'solo_control', False):
             self.tabs.addTab(self.tab_enfactual, "📈 Control de Estado")
@@ -116,7 +121,103 @@ class FichaClinicaForm(QDialog):
         self.txt_telefono = QLineEdit(); layout.addRow("Teléfono:", self.txt_telefono)
         self.txt_email = QLineEdit(); layout.addRow("Email:", self.txt_email)
         self.txt_direccion = QLineEdit(); layout.addRow("Dirección:", self.txt_direccion)
+                # --- Ubicación: Departamento / Ciudad / Barrio ---
+        fila_ubi = QHBoxLayout()
+        self.cbo_departamento = QComboBox(); self.cbo_departamento.setPlaceholderText("Departamento…")
+        self.cbo_ciudad = QComboBox();       self.cbo_ciudad.setPlaceholderText("Ciudad…")
+        self.cbo_barrio = QComboBox();       self.cbo_barrio.setPlaceholderText("Barrio…")
+
+        fila_ubi.addWidget(self.cbo_departamento, 2)
+        fila_ubi.addWidget(self.cbo_ciudad, 2)
+        fila_ubi.addWidget(self.cbo_barrio, 2)
+        layout.addRow(QLabel("Ubicación:"), QWidget())  # etiqueta alineada
+        layout.addRow(fila_ubi)
+
+        # Cascada
+        self.cbo_departamento.currentIndexChanged.connect(self._on_departamento_changed)
+        self.cbo_ciudad.currentIndexChanged.connect(self._on_ciudad_changed)
+
         self.txt_observaciones = QTextEdit(); layout.addRow("Observaciones:", self.txt_observaciones)
+
+    def _validar_ubicacion(self) -> bool:
+        """Barrio obligatorio."""
+        if not hasattr(self, "cbo_barrio"):
+            return True  # por si la pestaña no existe en este modo
+
+        idbarrio = self.cbo_barrio.currentData()
+        if not idbarrio:
+            self.tabs.setCurrentWidget(self.tab_basicos)
+            QMessageBox.warning(
+                self, "Falta barrio",
+                "Seleccioná Departamento, Ciudad y Barrio antes de guardar."
+            )
+            self.cbo_barrio.setFocus()
+            return False
+        return True
+
+
+    def _cargar_departamentos(self, preselect_id=None):
+        session = SessionLocal()
+        try:
+            self.cbo_departamento.blockSignals(True)
+            self.cbo_departamento.clear()
+            for d in session.query(Departamento).order_by(Departamento.nombre.asc()).all():
+                self.cbo_departamento.addItem(d.nombre or "", d.iddepartamento)
+            if preselect_id is not None:
+                idx = self.cbo_departamento.findData(preselect_id)
+                if idx >= 0: self.cbo_departamento.setCurrentIndex(idx)
+            else:
+                self.cbo_departamento.setCurrentIndex(-1)
+        finally:
+            self.cbo_departamento.blockSignals(False); session.close()
+
+    def _cargar_ciudades(self, iddepartamento, preselect_id=None):
+        session = SessionLocal()
+        try:
+            self.cbo_ciudad.blockSignals(True)
+            self.cbo_ciudad.clear()
+            if iddepartamento:
+                qs = (session.query(Ciudad)
+                      .filter(Ciudad.iddepartamento == iddepartamento)
+                      .order_by(Ciudad.nombre.asc()).all())
+                for c in qs:
+                    self.cbo_ciudad.addItem(c.nombre or "", c.idciudad)
+            if preselect_id is not None:
+                idx = self.cbo_ciudad.findData(preselect_id)
+                if idx >= 0: self.cbo_ciudad.setCurrentIndex(idx)
+            else:
+                self.cbo_ciudad.setCurrentIndex(-1)
+        finally:
+            self.cbo_ciudad.blockSignals(False); session.close()
+
+    def _cargar_barrios(self, idciudad, preselect_id=None):
+        session = SessionLocal()
+        try:
+            self.cbo_barrio.blockSignals(True)
+            self.cbo_barrio.clear()
+            if idciudad:
+                qs = (session.query(Barrio)
+                      .filter(Barrio.idciudad == idciudad)
+                      .order_by(Barrio.nombre.asc()).all())
+                for b in qs:
+                    self.cbo_barrio.addItem(b.nombre or "", b.idbarrio)
+            if preselect_id is not None:
+                idx = self.cbo_barrio.findData(preselect_id)
+                if idx >= 0: self.cbo_barrio.setCurrentIndex(idx)
+            else:
+                self.cbo_barrio.setCurrentIndex(-1)
+        finally:
+            self.cbo_barrio.blockSignals(False); session.close()
+
+    def _on_departamento_changed(self):
+        dep_id = self.cbo_departamento.currentData()
+        self._cargar_ciudades(dep_id)
+        self.cbo_barrio.clear()
+
+    def _on_ciudad_changed(self):
+        ciu_id = self.cbo_ciudad.currentData()
+        self._cargar_barrios(ciu_id)
+
 
     def ui_tab_encargados(self):
         layout = QVBoxLayout(self.tab_encargados)
@@ -268,6 +369,7 @@ class FichaClinicaForm(QDialog):
                 # opcional si existen relaciones:
                 joinedload(Paciente.indicaciones),
                 joinedload(Paciente.procedimientos),
+                joinedload(Paciente.barrio).joinedload(Barrio.ciudad).joinedload(Ciudad.departamento),
             )
             .filter_by(idpaciente=self.idpaciente).first()
         )
@@ -313,6 +415,20 @@ class FichaClinicaForm(QDialog):
             self.txt_email.setText(paciente.email or "")
             self.txt_direccion.setText(paciente.direccion or "")
             self.txt_observaciones.setText(paciente.observaciones or "")
+            if hasattr(self, "cbo_departamento"):
+                dep_id = ciu_id = bar_id = None
+                if paciente and paciente.barrio and paciente.barrio.ciudad:
+                    bar_id = paciente.barrio.idbarrio
+                    ciu_id = paciente.barrio.ciudad.idciudad
+                    if paciente.barrio.ciudad.departamento:
+                        dep_id = paciente.barrio.ciudad.departamento.iddepartamento
+                self._cargar_departamentos(preselect_id=dep_id)
+                if dep_id:
+                    self._cargar_ciudades(dep_id, preselect_id=ciu_id)
+                else:
+                    self.cbo_ciudad.clear(); self.cbo_barrio.clear()
+                if ciu_id:
+                    self._cargar_barrios(ciu_id, preselect_id=bar_id)
             self.table_encargados.setRowCount(0)
             for enc_rel in paciente.encargados:
                 encargado = enc_rel.encargado
@@ -529,7 +645,10 @@ class FichaClinicaForm(QDialog):
         self.table_recordatorios.setRowCount(0)
         recordatorios = (
             self.session.query(RecordatorioPaciente)
-            .filter_by(idpaciente=self.idpaciente)
+            .filter(
+                RecordatorioPaciente.idpaciente == self.idpaciente,
+                RecordatorioPaciente.estado == "pendiente"
+            )
             .order_by(RecordatorioPaciente.fecha_recordatorio.desc())
             .all()
         )
@@ -974,7 +1093,9 @@ class FichaClinicaForm(QDialog):
             if paciente_existente:
                 QMessageBox.warning(self, "Error", "Ya existe un paciente con ese número de CI/Pasaporte.")
                 return
-
+        # Barrio obligatorio
+        if not self._validar_ubicacion():
+            return
         # ALTA O EDICIÓN
         if self.paciente_db is None:
             # ALTA
@@ -985,6 +1106,11 @@ class FichaClinicaForm(QDialog):
         else:
             # EDICIÓN
             p = self.paciente_db
+
+        # Ubicación: guardamos sólo el barrio (de ahí se deducen ciudad y departamento)
+        if hasattr(self, "cbo_barrio"):
+            idbarrio_sel = self.cbo_barrio.currentData()
+            p.idbarrio = idbarrio_sel
 
         # Cargar los datos
         p.nombre = self.txt_nombre.text().strip()
