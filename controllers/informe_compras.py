@@ -3,7 +3,7 @@ from decimal import Decimal
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QComboBox, QDateEdit, QTableWidget, QTableWidgetItem, QHeaderView,
-    QMessageBox, QGroupBox, QApplication, QCompleter, QCheckBox
+    QMessageBox, QGroupBox, QApplication, QCompleter, QCheckBox, QSplitter
 )
 from PyQt5.QtCore import Qt, QDate
 from PyQt5.QtGui import QFont, QColor, QBrush
@@ -17,8 +17,6 @@ from models.compra_detalle import CompraDetalle
 from models.proveedor import Proveedor
 from models.insumo import Insumo
 
-
-# Reemplazá la clase ComprasReportForm por esta versión
 
 class ComprasReportForm(QWidget):
     def __init__(self, parent=None):
@@ -34,7 +32,6 @@ class ComprasReportForm(QWidget):
 
     # ---------- UI ----------
     def _build_ui(self):
-        from PyQt5.QtWidgets import QSplitter
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(8)
@@ -51,7 +48,7 @@ class ComprasReportForm(QWidget):
         self.dt_hasta.setDate(hoy)
         self.dt_desde.setDisplayFormat("dd/MM/yyyy")
         self.dt_hasta.setDisplayFormat("dd/MM/yyyy")
-        
+
         self.txt_proveedor = QLineEdit()
         self.txt_proveedor.setPlaceholderText("Proveedor (escribí para buscar)")
         self.txt_proveedor.setClearButtonEnabled(True)
@@ -63,7 +60,7 @@ class ComprasReportForm(QWidget):
         self.btn_pdf = QPushButton("Exportar PDF")
         self.btn_excel = QPushButton("Exportar Excel")
         self.chk_mostrar_anuladas = QCheckBox("Mostrar anuladas")
-        self.chk_mostrar_anuladas.setChecked(False)  # por defecto NO muestra anuladas
+        self.chk_mostrar_anuladas.setChecked(False)
 
         fl.addWidget(QLabel("Desde:")); fl.addWidget(self.dt_desde)
         fl.addWidget(QLabel("Hasta:")); fl.addWidget(self.dt_hasta)
@@ -74,14 +71,14 @@ class ComprasReportForm(QWidget):
         fl.addWidget(self.btn_pdf)
         fl.addWidget(self.btn_excel)
 
-        # ----- Splitter maestro/detalle -----
+        # ----- Splitter maestro/detalle/resumen -----
         splitter = QSplitter()
         splitter.setOrientation(Qt.Vertical)
 
-        # Maestro (cabecera de compra)
+        # Maestro
         self.table_master = QTableWidget(0, 7)
         self.table_master.setHorizontalHeaderLabels([
-            "ID Compra", "Fecha", "Proveedor", "Comprobante", "Monto Total", "IVA Total", "Estado"  # <-- nueva
+            "ID Compra", "Fecha", "Proveedor", "Comprobante", "Monto Total", "IVA Total", "Estado"
         ])
         self.table_master.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table_master.verticalHeader().setVisible(False)
@@ -90,7 +87,7 @@ class ComprasReportForm(QWidget):
         self.table_master.setSelectionBehavior(QTableWidget.SelectRows)
         self.table_master.setSelectionMode(QTableWidget.SingleSelection)
 
-        # Detalle (items de la compra seleccionada)
+        # Detalle
         self.table_detalle = QTableWidget(0, 4)
         self.table_detalle.setHorizontalHeaderLabels([
             "Cantidad", "Insumo", "Precio Unitario", "Total Fila"
@@ -101,9 +98,21 @@ class ComprasReportForm(QWidget):
         self.table_detalle.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table_detalle.setSelectionBehavior(QTableWidget.SelectRows)
 
+        # NUEVO: Resumen por ítem (rango completo)
+        self.table_resumen = QTableWidget(0, 4)
+        self.table_resumen.setHorizontalHeaderLabels([
+            "Insumo", "Cantidad total", "Monto total", "Líneas (veces)"
+        ])
+        self.table_resumen.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table_resumen.verticalHeader().setVisible(False)
+        self.table_resumen.setAlternatingRowColors(True)
+        self.table_resumen.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table_resumen.setSelectionBehavior(QTableWidget.SelectRows)
+
         splitter.addWidget(self.table_master)
         splitter.addWidget(self.table_detalle)
-        splitter.setSizes([420, 280])  # proporción inicial
+        splitter.addWidget(self.table_resumen)
+        splitter.setSizes([360, 220, 160])
 
         # Totales
         tot_layout = QHBoxLayout()
@@ -122,7 +131,6 @@ class ComprasReportForm(QWidget):
         self.btn_buscar.clicked.connect(self.buscar)
         self.btn_pdf.clicked.connect(self.exportar_pdf)
         self.txt_proveedor.textChanged.connect(self._auto_buscar_on_type)
-        # cuando cambio la selección de maestro, cargo detalle
         self.table_master.itemSelectionChanged.connect(self._on_master_changed)
         self.btn_excel.clicked.connect(self.exportar_excel)
         self.chk_mostrar_anuladas.stateChanged.connect(lambda _ : self.buscar())
@@ -146,37 +154,27 @@ class ComprasReportForm(QWidget):
     def _auto_buscar_on_type(self, _):
         self.buscar()
 
-    def buscar(self):
+    def _filtros_actuales(self):
         desde = self.dt_desde.date().toPyDate()
         hasta = self.dt_hasta.date().toPyDate()
         prov_txt = (self.txt_proveedor.text() or "").strip()
+        tipo_val = self.cbo_tipo.currentData()
 
-        # ⚠️ CAMBIAR si tu campo no es Compra.fecha
         filtros = [Compra.fecha.between(desde, hasta)]
-
-        # Si NO está marcado el checkbox, excluimos anuladas
         if not self.chk_mostrar_anuladas.isChecked():
             filtros.append(or_(Compra.anulada.is_(False), Compra.anulada.is_(None)))
-
-        # Proveedor
         if prov_txt:
             filtros.append(Proveedor.nombre.ilike(f"%{prov_txt}%"))
+        return filtros, tipo_val
 
-        # Tipo de insumo
-        tipo = self.cbo_tipo.currentData()
-        if tipo:
-            sub = (
-                self.session.query(CompraDetalle.idcompra)
-                .join(Insumo, CompraDetalle.idinsumo == Insumo.idinsumo)
-                .filter(CompraDetalle.idcompra == Compra.idcompra, Insumo.tipo == tipo)
-            ).exists()
-            filtros.append(sub)
+    def buscar(self):
+        filtros, tipo_val = self._filtros_actuales()
 
-        # Maestro: 1 fila por compra
+        # Maestro
         q_master = (
             self.session.query(
                 Compra.idcompra,
-                Compra.fecha.label("fecha"),  # <-- CAMBIÁ si tu campo se llama distinto
+                Compra.fecha.label("fecha"),
                 Proveedor.nombre.label("proveedor"),
                 Compra.nro_comprobante.label("nro_comprobante"),
                 Compra.montototal.label("montototal"),
@@ -185,53 +183,36 @@ class ComprasReportForm(QWidget):
             )
             .join(Proveedor, Compra.idproveedor == Proveedor.idproveedor)
             .filter(and_(*filtros))
-            .order_by(Compra.fecha.asc(), Compra.idcompra.asc())  # orden: fecha, luego id
+            .order_by(Compra.fecha.asc(), Compra.idcompra.asc())
             .distinct()
         )
         rows = q_master.all()
         self._llenar_maestro(rows)
 
-        # si hay al menos una compra, seleccionar la primera para cargar su detalle
         if rows:
             self.table_master.selectRow(0)
             self._cargar_detalle(rows[0].idcompra)
         else:
             self.table_detalle.setRowCount(0)
 
+        # NUEVO: resumen del rango
+        self._cargar_resumen()
+
     def exportar_excel(self):
+        # Intentar usar pandas; si no está, hacer fallback a CSV
         try:
             import pandas as pd
         except ImportError:
-            QMessageBox.warning(self, "Excel", "Necesitás instalar pandas y openpyxl:\n\npip install pandas openpyxl")
+            self._exportar_csv_simple()
             return
 
-        # Filtros actuales
-        desde = self.dt_desde.date().toPyDate()
-        hasta = self.dt_hasta.date().toPyDate()
-        prov_txt = (self.txt_proveedor.text() or "").strip()
-        tipo_val = self.cbo_tipo.currentData()
-
-        # ⚠️ CAMBIAR si tu campo no es Compra.fecha
-        filtros = [Compra.fecha.between(desde, hasta)]
-        if not self.chk_mostrar_anuladas.isChecked():
-            filtros.append(or_(Compra.anulada.is_(False), Compra.anulada.is_(None)))
-
-        if prov_txt:
-            filtros.append(Proveedor.nombre.ilike(f"%{prov_txt}%"))
-
-        if tipo_val:
-            sub = (
-                self.session.query(CompraDetalle.idcompra)
-                .join(Insumo, CompraDetalle.idinsumo == Insumo.idinsumo)
-                .filter(CompraDetalle.idcompra == Compra.idcompra, Insumo.tipo == tipo_val)
-            ).exists()
-            filtros.append(sub)
+        filtros, tipo_val = self._filtros_actuales()
 
         # Maestro
         q_master = (
             self.session.query(
-                Compra.idcompra,
-                Compra.fecha.label("Fecha"),  # <-- CAMBIÁ si se llama distinto
+                Compra.idcompra.label("ID Compra"),
+                Compra.fecha.label("Fecha"),
                 Proveedor.nombre.label("Proveedor"),
                 Compra.nro_comprobante.label("Comprobante"),
                 Compra.montototal.label("Monto Total"),
@@ -245,8 +226,7 @@ class ComprasReportForm(QWidget):
         )
         master_rows = q_master.all()
 
-
-        # Detalle (con filtro opcional por tipo)
+        # Detalle
         q_det = (
             self.session.query(
                 CompraDetalle.idcompra.label("ID Compra"),
@@ -263,35 +243,210 @@ class ComprasReportForm(QWidget):
         )
         if tipo_val:
             q_det = q_det.filter(Insumo.tipo == tipo_val)
-
         det_rows = q_det.all()
 
-        # DataFrames
+        # Resumen
+        q_res = (
+            self.session.query(
+                Insumo.nombre.label("Insumo"),
+                func.sum(CompraDetalle.cantidad).label("Cantidad total"),
+                func.sum(CompraDetalle.cantidad * CompraDetalle.preciounitario).label("Monto total"),
+                func.count().label("Líneas (veces)")
+            )
+            .join(Compra, Compra.idcompra == CompraDetalle.idcompra)
+            .join(Proveedor, Compra.idproveedor == Proveedor.idproveedor)
+            .join(Insumo, CompraDetalle.idinsumo == Insumo.idinsumo)
+            .filter(and_(*filtros))
+            .group_by(Insumo.nombre)
+            .order_by(Insumo.nombre.asc())
+        )
+        if tipo_val:
+            q_res = q_res.filter(Insumo.tipo == tipo_val)
+        res_rows = q_res.all()
+
         import pandas as pd
         df_master = pd.DataFrame(
             master_rows,
             columns=["ID Compra", "Fecha", "Proveedor", "Comprobante", "Monto Total", "IVA Total", "anulada"]
         )
-        # transformar bool -> texto
         df_master["Estado"] = df_master["anulada"].map(lambda v: "ANULADA" if bool(v) else "Generada")
         df_master = df_master.drop(columns=["anulada"])
-        df_det = pd.DataFrame(det_rows, columns=["ID Compra", "Cantidad", "Insumo", "Precio Unitario", "Total Fila"])
+        if not df_master.empty:
+            df_master["Fecha"] = pd.to_datetime(df_master["Fecha"]).dt.strftime("%d/%m/%Y")
 
-        # Exportar
-        fname = f"informe_compras_{QDate.currentDate().toString('yyyyMMdd')}.xlsx"
+        df_det = pd.DataFrame(det_rows, columns=["ID Compra", "Cantidad", "Insumo", "Precio Unitario", "Total Fila"])
+        df_resumen = pd.DataFrame(res_rows, columns=["Insumo", "Cantidad total", "Monto total", "Líneas (veces)"])
+
+        # Tipos numéricos
+        for col in ["Monto Total", "IVA Total"]:
+            if col in df_master.columns:
+                df_master[col] = pd.to_numeric(df_master[col], errors="coerce")
+        for col in ["Precio Unitario", "Total Fila"]:
+            if col in df_det.columns:
+                df_det[col] = pd.to_numeric(df_det[col], errors="coerce")
+        if "Monto total" in df_resumen.columns:
+            df_resumen["Monto total"] = pd.to_numeric(df_resumen["Monto total"], errors="coerce")
+
+        fname = f"informe_compras_{self._stamp()}.xlsx"
+
+        # Asegurar engine (con auto-instalación silenciosa)
+        engine = self._ensure_excel_engine()
+
+        if engine:
+            try:
+                with pd.ExcelWriter(fname, engine=engine) as writer:
+                    # Escribir
+                    df_master.to_excel(writer, index=False, sheet_name="Compras")
+                    df_det.to_excel(writer, index=False, sheet_name="Detalle")
+                    df_resumen.to_excel(writer, index=False, sheet_name="Resumen")
+
+                    # Formato miles con 0 decimales
+                    if engine == "xlsxwriter":
+                        wb  = writer.book
+                        fmt0 = wb.add_format({'num_format': '#,##0'})
+                        ws_c = writer.sheets["Compras"]
+                        ws_d = writer.sheets["Detalle"]
+                        ws_r = writer.sheets["Resumen"]
+                        ws_c.set_column(4, 5, 14, fmt0)   # Monto Total, IVA Total
+                        ws_d.set_column(3, 4, 14, fmt0)   # Precio Unitario, Total Fila
+                        ws_r.set_column(2, 2, 14, fmt0)   # Monto total
+                    else:  # openpyxl
+                        ws_c = writer.sheets["Compras"]
+                        ws_d = writer.sheets["Detalle"]
+                        ws_r = writer.sheets["Resumen"]
+                        def apply_fmt(ws, cols):
+                            for col_idx in cols:
+                                for cell in ws.iter_cols(min_col=col_idx+1, max_col=col_idx+1,
+                                                        min_row=2, max_row=ws.max_row):
+                                    for c in cell:
+                                        c.number_format = '#,##0'
+                        apply_fmt(ws_c, [4,5])
+                        apply_fmt(ws_d, [3,4])
+                        apply_fmt(ws_r, [2])
+
+                QMessageBox.information(self, "Excel", f"Archivo Excel generado: {fname}\nEngine: {engine}")
+                return
+            except Exception:
+                pass  # si algo falla, cae a CSV
+
+        # Fallback CSV
+        self._exportar_csv_simple()
+
+    def _stamp(self):
+        # Ej.: 20250817_06_12
+        from PyQt5.QtCore import QDate, QTime
+        return f"{QDate.currentDate().toString('yyyyMMdd')}_{QTime.currentTime().toString('HH_mm')}"
+
+    def _exportar_csv_simple(self, extra_msg: str = ""):
+        """
+        Exporta 3 CSV (Compras, Detalle, Resumen) cuando faltan dependencias
+        para Excel. No requiere pandas/openpyxl/xlsxwriter.
+        """
+        import csv, os
+        filtros, tipo_val = self._filtros_actuales()
+
+        # Maestro
+        q_master = (
+            self.session.query(
+                Compra.idcompra,
+                Compra.fecha,
+                Proveedor.nombre,
+                Compra.nro_comprobante,
+                Compra.montototal,
+                (Compra.montototal / 11).label("iva_total"),
+                Compra.anulada,
+            )
+            .join(Proveedor, Compra.idproveedor == Proveedor.idproveedor)
+            .filter(and_(*filtros))
+            .order_by(Compra.fecha.asc(), Compra.idcompra.asc())
+            .distinct()
+        )
+        master_rows = q_master.all()
+
+        # Detalle
+        q_det = (
+            self.session.query(
+                CompraDetalle.idcompra,
+                CompraDetalle.cantidad,
+                Insumo.nombre,
+                CompraDetalle.preciounitario,
+                (CompraDetalle.cantidad * CompraDetalle.preciounitario).label("total_fila"),
+            )
+            .join(Compra, Compra.idcompra == CompraDetalle.idcompra)
+            .join(Proveedor, Compra.idproveedor == Proveedor.idproveedor)
+            .join(Insumo, CompraDetalle.idinsumo == Insumo.idinsumo)
+            .filter(and_(*filtros))
+            .order_by(CompraDetalle.idcompra.desc(), Insumo.nombre.asc())
+        )
+        if tipo_val:
+            q_det = q_det.filter(Insumo.tipo == tipo_val)
+        det_rows = q_det.all()
+
+        # Resumen
+        q_res = (
+            self.session.query(
+                Insumo.nombre.label("insumo"),
+                func.sum(CompraDetalle.cantidad).label("cant_total"),
+                func.sum(CompraDetalle.cantidad * CompraDetalle.preciounitario).label("monto_total"),
+                func.count().label("veces")
+            )
+            .join(Compra, Compra.idcompra == CompraDetalle.idcompra)
+            .join(Proveedor, Compra.idproveedor == Proveedor.idproveedor)
+            .join(Insumo, CompraDetalle.idinsumo == Insumo.idinsumo)
+            .filter(and_(*filtros))
+            .group_by(Insumo.nombre)
+            .order_by(Insumo.nombre.asc())
+        )
+        if tipo_val:
+            q_res = q_res.filter(Insumo.tipo == tipo_val)
+        res_rows = q_res.all()
+
+        base = self._stamp()
+        f1 = f"informe_compras_{base}_compras.csv"
+        f2 = f"informe_compras_{base}_detalle.csv"
+        f3 = f"informe_compras_{base}_resumen.csv"
+
         try:
-            with pd.ExcelWriter(fname, engine="openpyxl") as writer:
-                df_master["Fecha"] = pd.to_datetime(df_master["Fecha"]).dt.strftime("%d/%m/%Y")
-                df_master.to_excel(writer, index=False, sheet_name="Compras")
-                df_det.to_excel(writer, index=False, sheet_name="Detalle")
-            QMessageBox.information(self, "Excel", f"Archivo Excel generado: {fname}")
+            with open(f1, "w", newline="", encoding="utf-8-sig") as fp:
+                w = csv.writer(fp, delimiter=';')
+                w.writerow(["ID Compra","Fecha","Proveedor","Comprobante","Monto Total","IVA Total","Estado"])
+                for r in master_rows:
+                    estado = "ANULADA" if bool(r.anulada) else "Generada"
+                    fecha_txt = r.fecha.strftime("%d/%m/%Y") if r.fecha else ""
+                    w.writerow([r.idcompra, fecha_txt, r[2] or "", r.nro_comprobante or "", self._fmt_csv_monto(r.montototal or 0), self._fmt_csv_monto(r.iva_total or 0), estado])
+
+            with open(f2, "w", newline="", encoding="utf-8-sig") as fp:
+                w = csv.writer(fp, delimiter=';')
+                w.writerow(["ID Compra","Cantidad","Insumo","Precio Unitario","Total Fila"])
+                for r in det_rows:
+                    w.writerow([r.idcompra, r.cantidad or 0, r.nombre or "", self._fmt_csv_monto(r.preciounitario or 0), self._fmt_csv_monto(r.total_fila or 0)])
+
+            with open(f3, "w", newline="", encoding="utf-8-sig") as fp:
+                w = csv.writer(fp, delimiter=';')
+                w.writerow(["Insumo","Cantidad total","Monto total","Líneas (veces)"])
+                for r in res_rows:
+                    w.writerow([r.insumo or "", r.cant_total or 0, self._fmt_csv_monto(r.monto_total or 0), int(r.veces or 0)])
+
+            QMessageBox.information(
+                self, "Exportación",
+                "No se encontraron librerías para Excel (openpyxl/xlsxwriter). "
+                "Se exportaron 3 archivos CSV (separados por ';'):\n\n"
+                f"• {os.path.abspath(f1)}\n• {os.path.abspath(f2)}\n• {os.path.abspath(f3)}\n"
+                "Tip: Podés abrirlos en Excel sin problemas." + (extra_msg or "")
+            )
         except Exception as e:
-            QMessageBox.critical(self, "Excel", f"No se pudo generar el Excel.\n{e}")
+            QMessageBox.critical(self, "Exportación", f"No se pudo exportar.\n{e}" + (extra_msg or ""))
+
+    def _fmt_csv_monto(self, v):
+        try:
+            # redondeo 0 decimales y separador de miles con '.'
+            return f"{float(v):,.0f}".replace(",", ".")
+        except Exception:
+            return str(v)
 
 
     def _llenar_maestro(self, rows):
         self.table_master.setRowCount(0)
-        from decimal import Decimal
         total_monto = Decimal("0")
         total_iva = Decimal("0")
 
@@ -313,24 +468,20 @@ class ComprasReportForm(QWidget):
                 QTableWidgetItem(r.nro_comprobante or ""),
                 QTableWidgetItem(fmt(r.montototal)),
                 QTableWidgetItem(fmt(r.iva_total)),
-                QTableWidgetItem(estado_txt),  # <-- nueva col
+                QTableWidgetItem(estado_txt),
             ]
             for i, it in enumerate(items):
                 it.setTextAlignment(Qt.AlignCenter if i in (0,1,4,5,6) else Qt.AlignVCenter | Qt.AlignLeft)
                 self.table_master.setItem(row, i, it)
 
-            # Si está ANULADA, resaltar toda la fila
             if anul:
                 red = QColor("#a40000")
                 bg  = QColor("#ffe6e6")
-                f = QFont(); f.setStrikeOut(True)  # tachado
+                f = QFont(); f.setStrikeOut(True)
                 for c in range(self.table_master.columnCount()):
                     it = self.table_master.item(row, c)
-                    it.setBackground(QBrush(bg))
-                    it.setForeground(QBrush(red))
-                    it.setFont(f)
+                    it.setBackground(QBrush(bg)); it.setForeground(QBrush(red)); it.setFont(f)
 
-            # acumular totales (una vez por fila)
             try:
                 total_monto += Decimal(str(r.montototal or 0))
                 total_iva   += Decimal(str(r.iva_total or 0))
@@ -348,9 +499,7 @@ class ComprasReportForm(QWidget):
         self._cargar_detalle(idcompra)
 
     def _cargar_detalle(self, idcompra: int):
-        # aplicamos además el filtro de tipo si el usuario eligió uno
         tipo = self.cbo_tipo.currentData()
-
         q_det = (
             self.session.query(
                 CompraDetalle.cantidad.label("cantidad"),
@@ -387,12 +536,93 @@ class ComprasReportForm(QWidget):
                 it.setTextAlignment(Qt.AlignCenter if i in (0,2,3) else Qt.AlignVCenter | Qt.AlignLeft)
                 self.table_detalle.setItem(row, i, it)
 
+    def _cargar_resumen(self):
+        desde = self.dt_desde.date().toPyDate()
+        hasta = self.dt_hasta.date().toPyDate()
+        prov_txt = (self.txt_proveedor.text() or "").strip()
+        tipo_val = self.cbo_tipo.currentData()
+
+        filtros = [Compra.fecha.between(desde, hasta)]
+        if not self.chk_mostrar_anuladas.isChecked():
+            filtros.append(or_(Compra.anulada.is_(False), Compra.anulada.is_(None)))
+        if prov_txt:
+            filtros.append(Proveedor.nombre.ilike(f"%{prov_txt}%"))
+
+        q = (
+            self.session.query(
+                Insumo.nombre.label("insumo"),
+                func.sum(CompraDetalle.cantidad).label("cant_total"),
+                func.sum(CompraDetalle.cantidad * CompraDetalle.preciounitario).label("monto_total"),
+                func.count().label("veces")
+            )
+            .join(Compra, Compra.idcompra == CompraDetalle.idcompra)
+            .join(Proveedor, Compra.idproveedor == Proveedor.idproveedor)
+            .join(Insumo, CompraDetalle.idinsumo == Insumo.idinsumo)
+            .filter(and_(*filtros))
+            .group_by(Insumo.nombre)
+            .order_by(Insumo.nombre.asc())
+        )
+        if tipo_val:
+            q = q.filter(Insumo.tipo == tipo_val)
+
+        rows = q.all()
+
+        def fmt_m(n):
+            try:
+                return f"{float(n):,.0f}".replace(",", ".")
+            except Exception:
+                return str(n)
+
+        self.table_resumen.setRowCount(0)
+        for r in rows:
+            row = self.table_resumen.rowCount()
+            self.table_resumen.insertRow(row)
+            items = [
+                QTableWidgetItem(r.insumo or ""),
+                QTableWidgetItem(fmt_m(r.cant_total or 0)),
+                QTableWidgetItem(fmt_m(r.monto_total or 0)),
+                QTableWidgetItem(str(int(r.veces or 0))),
+            ]
+            for i, it in enumerate(items):
+                it.setTextAlignment(Qt.AlignCenter if i in (1,2,3) else Qt.AlignVCenter | Qt.AlignLeft)
+                self.table_resumen.setItem(row, i, it)
+
+    def _ensure_excel_engine(self):
+        """
+        Devuelve 'openpyxl' o 'xlsxwriter' si están disponibles.
+        Si no, intenta instalarlos automáticamente con pip y devuelve el que logró instalar.
+        Si nada funciona, devuelve None.
+        """
+        try:
+            import openpyxl  # noqa: F401
+            return "openpyxl"
+        except Exception:
+            pass
+        try:
+            import xlsxwriter  # noqa: F401
+            return "xlsxwriter"
+        except Exception:
+            pass
+
+        # Intento de instalación automática
+        import subprocess, sys
+        candidates = [("openpyxl", "openpyxl"), ("XlsxWriter", "xlsxwriter")]
+        for pkg, eng in candidates:
+            try:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", pkg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return eng
+            except Exception:
+                continue
+        return None
+
     def exportar_pdf(self):
         try:
             from reportlab.lib.pagesizes import A4, landscape
             from reportlab.lib import colors
-            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+            from reportlab.lib.styles import getSampleStyleSheet
+            from reportlab.platypus import (
+                SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, PageBreak
+            )
         except ImportError:
             QMessageBox.warning(self, "PDF", "Necesitás instalar reportlab:  pip install reportlab")
             return
@@ -402,7 +632,7 @@ class ComprasReportForm(QWidget):
         prov = self.txt_proveedor.text().strip() or "Todos"
         tipo = self.cbo_tipo.currentText()
 
-        filename = f"informe_compras_{QDate.currentDate().toString('yyyyMMdd')}.pdf"
+        filename = f"informe_compras_{self._stamp()}.pdf"
         doc = SimpleDocTemplate(
             filename, pagesize=landscape(A4),
             leftMargin=20, rightMargin=20, topMargin=20, bottomMargin=20
@@ -411,24 +641,22 @@ class ComprasReportForm(QWidget):
 
         story = []
 
-        # --- LOGO (opcional) ---
+        # LOGO (opcional)
         import os
-        logo_path = os.path.join("imagenes", "logo_grande.jpg")  # ajustá si es .jpg/.ico
+        logo_path = os.path.join("imagenes", "logo_grande.jpg")
         if os.path.exists(logo_path):
             try:
-                img = Image(logo_path, width=300, height=200)  # escalado simple
-                story.append(img)
-                story.append(Spacer(1, 6))
+                img = Image(logo_path, width=300, height=200)
+                story.append(img); story.append(Spacer(1, 6))
             except Exception:
-                pass  # si falla, seguimos sin logo
+                pass
 
         # Título + filtros
-        title = Paragraph("<b>Informe de Compras</b>", styles["Title"])
-        story.append(title)
+        story.append(Paragraph("<b>Informe de Compras</b>", styles["Title"]))
         story.append(Paragraph(f"Rango: {desde} a {hasta} | Proveedor: {prov} | Tipo: {tipo}", styles["Normal"]))
         story.append(Spacer(1, 8))
 
-        # ---- Recorremos cada compra visible en la tabla maestro ----
+        # Recorremos compras visibles del maestro
         for r in range(self.table_master.rowCount()):
             idc = self.table_master.item(r, 0).text()
             fecha_txt = self.table_master.item(r, 1).text()
@@ -445,7 +673,7 @@ class ComprasReportForm(QWidget):
             ))
             story.append(Spacer(1, 8))
 
-            # detalle desde DB (para no depender de selección)
+            # Detalle desde DB (respeta filtro de tipo)
             tipo_val = self.cbo_tipo.currentData()
             q = (
                 self.session.query(
@@ -463,10 +691,10 @@ class ComprasReportForm(QWidget):
             det = q.all()
 
             data = [["Cantidad", "Insumo", "Precio Unitario", "Total Fila"]]
+            def fmt(v):
+                try: return f"{float(v):,.0f}".replace(",", ".")
+                except: return str(v)
             for d in det:
-                def fmt(v):
-                    try: return f"{float(v):,.0f}".replace(",", ".")
-                    except: return str(v)
                 data.append([fmt(d.cantidad), d.nombre or "", fmt(d.preciounitario), fmt(d.total_fila)])
 
             t = Table(data, repeatRows=1)
@@ -476,11 +704,50 @@ class ComprasReportForm(QWidget):
                 ("ALIGN", (0,1), (0,-1), "CENTER"),
                 ("ALIGN", (2,1), (3,-1), "CENTER"),
             ]))
-            story.append(t)
-            story.append(Spacer(1, 6))
+            story.append(t); story.append(Spacer(1, 6))
 
         story.append(Paragraph(self.lbl_total_monto.text(), styles["Heading3"]))
         story.append(Paragraph(self.lbl_total_iva.text(), styles["Heading3"]))
+        story.append(PageBreak())   
+        # ====== Resumen al final ======
+        filtros, tipo_val = self._filtros_actuales()
+        q_res = (
+            self.session.query(
+                Insumo.nombre.label("insumo"),
+                func.sum(CompraDetalle.cantidad).label("cant_total"),
+                func.sum(CompraDetalle.cantidad * CompraDetalle.preciounitario).label("monto_total"),
+                func.count().label("veces")
+            )
+            .join(Compra, Compra.idcompra == CompraDetalle.idcompra)
+            .join(Proveedor, Compra.idproveedor == Proveedor.idproveedor)
+            .join(Insumo, CompraDetalle.idinsumo == Insumo.idinsumo)
+            .filter(and_(*filtros))
+            .group_by(Insumo.nombre)
+            .order_by(Insumo.nombre.asc())
+        )
+        if tipo_val:
+            q_res = q_res.filter(Insumo.tipo == tipo_val)
+        res = q_res.all()
+
+        from reportlab.lib import colors
+        from reportlab.platypus import Table, TableStyle
+        story.append(Spacer(1, 10))
+        story.append(Paragraph("<b>Resumen por ítem (rango)</b>", styles["Heading2"]))
+
+        data_res = [["Insumo", "Cantidad total", "Monto total", "Líneas (veces)"]]
+        def fmt_m(v):
+            try: return f"{float(v):,.0f}".replace(",", ".")
+            except: return str(v)
+        for r in res:
+            data_res.append([r.insumo or "", fmt_m(r.cant_total or 0), fmt_m(r.monto_total or 0), str(int(r.veces or 0))])
+
+        t_res = Table(data_res, repeatRows=1)
+        t_res.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#eeeeee")),
+            ("GRID", (0,0), (-1,-1), 0.25, colors.grey),
+            ("ALIGN", (1,1), (-1,-1), "CENTER"),
+        ]))
+        story.append(t_res)
 
         try:
             doc.build(story)
@@ -494,7 +761,7 @@ class ComprasReportForm(QWidget):
         except Exception: pass
         super().closeEvent(e)
 
-# ---- Ejecutar suelto para pruebas ----
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     w = ComprasReportForm()

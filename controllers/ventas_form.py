@@ -81,6 +81,30 @@ class ABMVenta(QWidget):
         self.cbo_paciente.setFocus()
         self.cargar_ventas()
     
+    def _mask_vacia(self, txt: str) -> bool:
+        # Considera vacío si viene None, cadena vacía o solo guiones/underscores
+        return ((txt or "").replace("_", "").replace("-", "").strip() == "")
+
+    def _pintar_estado(self, v: Venta):
+        est = (getattr(v, "estadoventa", "") or "").strip().lower()
+        anulada = getattr(v, "anulada", False)
+
+        if est == "anulada" or anulada:
+            self.lbl_estado.setText("Anulada")
+            self.lbl_estado.setStyleSheet("font-weight:bold; color:#dc3545; margin-bottom:6px;")
+            self.btn_anular.setEnabled(False)
+            self.set_campos_enabled(False)
+
+        elif est in ("cerrada", "cerrado"):
+            self.lbl_estado.setText("Generada")
+            self.lbl_estado.setStyleSheet("font-weight:bold; color:#0d6efd; margin-bottom:6px;")
+            self.btn_anular.setEnabled(True)   # si permitís anular una cerrada, dejá True
+            self.set_campos_enabled(False)
+
+        else:
+            self.lbl_estado.setText("Cobrada")
+            self.lbl_estado.setStyleSheet("font-weight:bold; color: green; margin-bottom:6px;")
+            self.btn_anular.setEnabled(True)
     
     def _enable_search_on_combobox(self, combo: QComboBox):
         combo.setEditable(True)
@@ -384,7 +408,8 @@ class ABMVenta(QWidget):
         if v.idprofesional: self.cbo_profesional.setCurrentIndex(self.cbo_profesional.findData(v.idprofesional))
         if v.idclinica: self.cbo_clinica.setCurrentIndex(self.cbo_clinica.findData(v.idclinica))
         self.observaciones.setPlainText(v.observaciones or "")
-        self.txt_nro_factura.setText(getattr(v, "nro_factura", "") or "")
+        nf = getattr(v, "nro_factura", None)
+        self.txt_nro_factura.setText(nf if nf else "")
 
         # Detalle
         self.grilla.blockSignals(True)
@@ -431,6 +456,7 @@ class ABMVenta(QWidget):
         )
         self.grilla.blockSignals(False)
         self.actualizar_total_pie()
+        self._pintar_estado(v)
 
     def ir_primero(self):
         if self.ventas: self.mostrar_venta(0)
@@ -609,9 +635,12 @@ class ABMVenta(QWidget):
             return
         
         nro = (self.txt_nro_factura.text() or "").strip()
-        if nro and not self.txt_nro_factura.hasAcceptableInput():
-            QMessageBox.warning(self, "N° Factura", "Formato inválido. Usá 001-001-0000001.")
-            return
+        if self._mask_vacia(nro):
+            nro = None
+        else:
+            if not self.txt_nro_factura.hasAcceptableInput():
+                QMessageBox.warning(self, "N° Factura", "Formato inválido. Usá 001-001-0000001.")
+                return
 
         ctrl = VentasController(self.session, usuario_id=self.usuario_id)
         datos = {
