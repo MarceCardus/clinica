@@ -60,6 +60,7 @@ from controllers.abm_compras_form import ABMCompra
 from controllers.InformeStockForm import InformeStockForm
 from controllers.informe_compras import ComprasReportForm
 from controllers.informe_ventas_form import VentasReportForm
+from controllers.abm_items import ABMItems
 from models.paciente import Paciente
 from models.profesional import Profesional
 from models.clinica import Clinica
@@ -163,6 +164,10 @@ class MainWindow(QMainWindow):
         action_abm_insumo = QAction("Insumos", self)
         action_abm_insumo.triggered.connect(self.abrir_insumos)
         self.menu_mantenimiento.addAction(action_abm_insumo)
+
+        action_abm_item = QAction("Items", self)
+        action_abm_item.triggered.connect(self.abrir_items)
+        self.menu_mantenimiento.addAction(action_abm_item)
 
           # Menú Agendar
         self.menu_agendar = menubar.addMenu("Agendar")
@@ -411,6 +416,18 @@ class MainWindow(QMainWindow):
                 sub.setFocus(); return
         sub = QMdiSubWindow()
         sub.setWidget(ABMInsumos())
+        sub.setWindowTitle("ABM de Insumos")
+        sub.setAttribute(Qt.WA_DeleteOnClose)
+        self.mdi_area.addSubWindow(sub)
+        self.ajustar_subventana(sub)
+        sub.show()
+
+    def abrir_items(self):
+        for sub in self.mdi_area.subWindowList():
+            if isinstance(sub.widget(), ABMItems):
+                sub.setFocus(); return
+        sub = QMdiSubWindow()
+        sub.setWidget(ABMItems())
         sub.setWindowTitle("ABM de Insumos")
         sub.setAttribute(Qt.WA_DeleteOnClose)
         self.mdi_area.addSubWindow(sub)

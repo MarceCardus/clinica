@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, Date, ForeignKey, Numeric, String, Enum,Boolean
 from .base import Base
-
+from sqlalchemy.orm import relationship
 class Compra(Base):
     __tablename__ = 'compra'
     idcompra = Column(Integer, primary_key=True, autoincrement=True)
@@ -13,3 +13,4 @@ class Compra(Base):
     montototal = Column(Numeric(14,2))
     observaciones = Column(String)
     anulada = Column(Boolean, default=False)
+    detalles = relationship("CompraDetalle", back_populates="compra", cascade="all, delete-orphan")

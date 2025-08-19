@@ -1,7 +1,12 @@
 # models/__init__.py
+# models/__init__.py
 from .base import Base
 
-# Importa TODOS los modelos primero
+# 1) Primero los "fundacionales"
+from .item import Item, ItemTipo, ProductoMap, InsumoMap
+from .tipoproducto import TipoProducto
+from .indicacion import Indicacion
+# 2) Luego el resto
 from .clinica import Clinica
 from .paciente import Paciente
 from .procedimiento import Procedimiento
@@ -32,7 +37,7 @@ from .antecEnfActual import AntecedenteEnfermedadActual
 from .antecFliar import AntecedenteFamiliar
 # Importa también los que faltaban:
 from .pacienteEncargado import PacienteEncargado
-from .indicacion import Indicacion
+
 from .recordatorio_paciente import RecordatorioPaciente
 from .departamento import Departamento
 from .ciudad import Ciudad
@@ -60,12 +65,12 @@ Paciente.procedimientos = relationship(
 )
 
 __all__ = [
-    "Base","Clinica","Paciente","Procedimiento","Profesional","Especialidad",
+    "Base","Clinica","Paciente","Procedimiento","Profesional","Especialidad", "TipoProducto",
     "ProfesionalEspecialidad","Usuario","Producto","Paquete","PaqueteProducto",
     "Proveedor","Insumo","Compra","CompraDetalle","Venta","VentaDetalle","Cobro",
     "CobroVenta","VentaCuota","Sesion","FotoAvance","Receta","ComisionProfesional",
     "CajaMovimiento","Auditoria","AntecedentePatologicoPersonal",
     "AntecedenteEnfermedadActual","AntecedenteFamiliar",
     "PacienteEncargado","Indicacion","RecordatorioPaciente",
-    "Departamento","Ciudad","Barrio",
+    "Departamento","Ciudad","Barrio","Item","ItemTipo","ProductoMap","InsumoMap"
 ]

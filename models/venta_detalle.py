@@ -12,3 +12,5 @@ class VentaDetalle(Base):
     cantidad = Column(Numeric(14,2), nullable=False)
     preciounitario = Column(Numeric(14,2), nullable=False)
     descuento = Column(Numeric(14,2), default=0)
+    iditem = Column(Integer, ForeignKey("item.iditem", ondelete="RESTRICT"), nullable=False)
+    item = relationship("Item", back_populates="venta_detalles")

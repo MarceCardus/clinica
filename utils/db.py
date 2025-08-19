@@ -1,9 +1,8 @@
 # utils/db.py
-
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.ext.declarative import declarative_base
 from config import DATABASE_URI
+from models.base import Base  # <-- usamos el MISMO Base de models/base.py
 
 # Motor de conexión
 engine = create_engine(DATABASE_URI, echo=True)
@@ -14,6 +13,3 @@ SessionLocal = sessionmaker(
     autoflush=False,
     bind=engine
 )
-
-# Declarative base: todos los modelos deben heredar de aquí
-Base = declarative_base()

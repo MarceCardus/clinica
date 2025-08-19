@@ -1,5 +1,6 @@
 from sqlalchemy import Column, Integer, String, Boolean
 from .base import Base
+from sqlalchemy.orm import relationship
 
 class Proveedor(Base):
     __tablename__ = 'proveedor'
@@ -11,3 +12,4 @@ class Proveedor(Base):
     email = Column(String(80))
     observaciones = Column(String)
     estado = Column(Boolean, default=True)   # <-- Esto es clave
+    items = relationship("Item", back_populates="proveedor")

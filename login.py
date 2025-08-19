@@ -1,4 +1,13 @@
+import models 
 import models.usuario_actual
+from models.tipoproducto import TipoProducto
+from models.producto import Producto
+from models.item import Item
+from sqlalchemy.orm import configure_mappers,class_mapper
+configure_mappers()            # dispara el mapeo
+class_mapper(TipoProducto)
+class_mapper(Producto)
+class_mapper(Item)
 
 from PyQt5.QtWidgets import QDialog, QLabel, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout, QMessageBox
 from PyQt5.QtGui import QFont, QIcon

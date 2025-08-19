@@ -1,0 +1,436 @@
+# controllers/abm_items.py
+import sys, os, pathlib
+from PyQt5.QtWidgets import (
+    QApplication, QDialog, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
+    QPushButton, QWidget, QLabel, QLineEdit, QComboBox, QMessageBox, QTextEdit,
+    QCheckBox, QTabWidget, QDateEdit, QSpinBox, QDoubleSpinBox
+)
+from PyQt5.QtGui import QIcon
+from PyQt5.QtCore import Qt, QSize, QDate, QLocale
+
+from utils.db import SessionLocal
+from sqlalchemy import exists, or_
+from sqlalchemy.exc import IntegrityError
+
+# MODELOS
+from models.item import Item, ItemTipo,ProductoMap,InsumoMap
+from models.tipoproducto import TipoProducto
+from models.especialidad import Especialidad
+from models.proveedor import Proveedor
+from models.compra_detalle import CompraDetalle
+from models.venta_detalle  import VentaDetalle
+
+
+
+# --- util rutas de icono (con fallback) ---
+def resource_path(*parts):
+    candidates = []
+    here = pathlib.Path(__file__).resolve().parent
+    candidates.append(here / "imagenes" / pathlib.Path(*parts))
+    candidates.append(pathlib.Path(os.getcwd()) / "imagenes" / pathlib.Path(*parts))
+    candidates.append(here.parent / "imagenes" / pathlib.Path(*parts))
+    if hasattr(sys, "_MEIPASS"):
+        candidates.append(pathlib.Path(sys._MEIPASS) / "imagenes" / pathlib.Path(*parts))
+    for p in candidates:
+        if p.exists():
+            return str(p)
+    return ""
+
+
+class ABMItems(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("ABM de Ítems")
+        self.setMinimumWidth(950)
+        self.session = SessionLocal()
+        self.init_ui()
+        self.load_tipos()
+        self.load_data()
+
+    # ---------- UI ----------
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+
+        # Filtros
+        filtros = QWidget(); f = QHBoxLayout(filtros)
+        self.filtro_nombre = QLineEdit()
+        self.filtro_nombre.setPlaceholderText("🔍 Buscar por nombre o descripción…")
+        self.filtro_nombre.textChanged.connect(self.load_data)
+
+        self.filtro_tipo = QComboBox()
+        self.filtro_tipo.addItem("")  # Todos
+        self.filtro_tipo.currentIndexChanged.connect(self.load_data)
+
+        self.chk_inactivos = QCheckBox("Ver inactivos")
+        self.chk_inactivos.stateChanged.connect(self.load_data)
+
+        f.addWidget(QLabel("Filtro:"))
+        f.addWidget(self.filtro_nombre, stretch=2)
+        f.addWidget(QLabel("Tipo:"))
+        f.addWidget(self.filtro_tipo, stretch=1)
+        f.addStretch()
+        f.addWidget(self.chk_inactivos)
+        layout.addWidget(filtros)
+
+        # Grilla
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["ID", "Nombre", "Tipo", "Activo", "Acciones"])
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        layout.addWidget(self.table)
+
+        # Botón agregar
+        self.btn_agregar = QPushButton(" Agregar ítem")
+        ico_add = resource_path("agregar.png")
+        if ico_add: self.btn_agregar.setIcon(QIcon(ico_add))
+        self.btn_agregar.setIconSize(QSize(50, 50))
+        self.btn_agregar.clicked.connect(self.abrir_dialogo_agregar)
+
+        h = QHBoxLayout(); h.addStretch(); h.addWidget(self.btn_agregar)
+        layout.addLayout(h)
+        self.setLayout(layout)
+
+    # ---------- Data ----------
+    def load_tipos(self):
+        self._tipos = self.session.query(ItemTipo).order_by(ItemTipo.nombre).all()
+        cur = self.filtro_tipo.currentText()
+        self.filtro_tipo.blockSignals(True)
+        self.filtro_tipo.clear(); self.filtro_tipo.addItem("")
+        for t in self._tipos: self.filtro_tipo.addItem(t.nombre)
+        ix = self.filtro_tipo.findText(cur)
+        self.filtro_tipo.setCurrentIndex(ix if ix != -1 else 0)
+        self.filtro_tipo.blockSignals(False)
+
+    def load_data(self):
+        self.table.setRowCount(0)
+        texto = (self.filtro_nombre.text() or "").strip().lower()
+        nombre_tipo = (self.filtro_tipo.currentText() or "").strip()
+        ver_inactivos = self.chk_inactivos.isChecked()
+
+        q = self.session.query(Item).join(ItemTipo, Item.iditemtipo == ItemTipo.iditemtipo)
+        if texto:
+            q = q.filter(or_(Item.nombre.ilike(f"%{texto}%"), Item.descripcion.ilike(f"%{texto}%")))
+        if nombre_tipo:
+            q = q.filter(ItemTipo.nombre == nombre_tipo)
+        if not ver_inactivos:
+            q = q.filter(Item.activo == True)
+        items = q.order_by(Item.nombre.asc()).all()
+
+        for it in items:
+            r = self.table.rowCount()
+            self.table.insertRow(r)
+            self.table.setItem(r, 0, QTableWidgetItem(str(it.iditem)))
+            self.table.setItem(r, 1, QTableWidgetItem(it.nombre or ""))
+            self.table.setItem(r, 2, QTableWidgetItem(it.tipo.nombre if it.tipo else ""))
+            self.table.setItem(r, 3, QTableWidgetItem("Sí" if it.activo else "No"))
+
+            # acciones
+            cell = QWidget(); h = QHBoxLayout(cell); h.setContentsMargins(0,0,0,0)
+            btn_editar = QPushButton(); ico = resource_path("editar.png")
+            if ico: btn_editar.setIcon(QIcon(ico))
+            else:   btn_editar.setText("✏")
+            btn_editar.setFixedSize(QSize(30,26)); btn_editar.setIconSize(QSize(18,18))
+            btn_editar.setToolTip("Editar")
+            btn_editar.clicked.connect(lambda _, row=r: self.abrir_dialogo_editar(row))
+
+            btn_del = QPushButton(); ico = resource_path("eliminar.png")
+            if ico: btn_del.setIcon(QIcon(ico))
+            else:   btn_del.setText("🗑")
+            btn_del.setFixedSize(QSize(30,26)); btn_del.setIconSize(QSize(18,18))
+            btn_del.setToolTip("Eliminar")
+            btn_del.clicked.connect(lambda _, row=r: self.eliminar_item(row))
+
+            h.addWidget(btn_editar); h.addWidget(btn_del)
+            cell.setLayout(h)
+            self.table.setCellWidget(r, 4, cell)
+
+    def _row_id(self, row) -> int:
+        return int(self.table.item(row, 0).text())
+
+    # ---------- CRUD ----------
+    def abrir_dialogo_agregar(self):
+        dlg = FormularioItem(self.session, parent=self)
+        if dlg.exec_() == QDialog.Accepted:
+            self.load_tipos(); self.load_data()
+
+    def abrir_dialogo_editar(self, row):
+        it = self.session.query(Item).get(self._row_id(row))
+        if not it: return
+        dlg = FormularioItem(self.session, parent=self, item=it)
+        if dlg.exec_() == QDialog.Accepted:
+            self.load_tipos(); self.load_data()
+
+    def _esta_referenciado(self, iditem:int) -> bool:
+        s = self.session
+        usado_en_compra = s.query(exists().where(CompraDetalle.iditem == iditem)).scalar()
+        usado_en_venta  = s.query(exists().where(VentaDetalle.iditem == iditem)).scalar()
+        map_prod        = s.query(exists().where(ProductoMap.iditem == iditem)).scalar()
+        map_ins         = s.query(exists().where(InsumoMap.iditem == iditem)).scalar()
+        return bool(usado_en_compra or usado_en_venta or map_prod or map_ins)
+
+    def eliminar_item(self, row):
+        iditem = self._row_id(row)
+        if QMessageBox.question(self, "Eliminar", "¿Seguro que desea eliminar este ítem?",
+                                QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
+            return
+        it = self.session.query(Item).get(iditem)
+        if not it: return
+
+        if self._esta_referenciado(iditem):
+            QMessageBox.warning(self, "No se puede eliminar",
+                                "Este ítem ya fue utilizado o está mapeado.\n"
+                                "Sugerencia: marcá el ítem como INACTIVO para bloquear su uso.")
+            return
+        try:
+            self.session.delete(it); self.session.commit(); self.load_data()
+        except IntegrityError:
+            self.session.rollback()
+            QMessageBox.warning(self, "No se puede eliminar",
+                                "El ítem está referenciado por otros registros.")
+
+
+# ------------ FORM MODAL ------------
+class FormularioItem(QDialog):
+    TIPOS_INSUMO = ["MEDICAMENTO", "DESCARTABLE", "REACTIVO", "ANTIBIOTICO", "VARIOS"]
+
+    def __init__(self, session, parent=None, item: Item=None):
+        super().__init__(parent)
+        self.session = session
+        self.item = item
+        self.setWindowTitle("Editar Ítem" if item else "Agregar Ítem")
+        self.setMinimumWidth(600)
+        self._locale = QLocale(QLocale.Spanish, QLocale.Paraguay)  # miles '.' coma ','
+        self.init_ui()
+        self.load_combos()
+        if self.item: self.cargar_datos()
+
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+
+        self.txt_nombre = QLineEdit()
+        self.cbo_tipo_general = QComboBox()  # ItemTipo (PRODUCTO/INSUMO/AMBOS)
+        self.txt_descripcion = QTextEdit()
+        self.chk_activo = QCheckBox("Activo"); self.chk_activo.setChecked(True)
+
+        # Tabs
+        self.tabs = QTabWidget()
+
+        # === Tab Producto ===
+        tab_prod = QWidget(); lp = QVBoxLayout(tab_prod)
+        # PRECIO ENTERO con separador de miles
+        self.sp_precio = QSpinBox()
+        self.sp_precio.setLocale(self._locale)
+        self.sp_precio.setGroupSeparatorShown(True)
+        self.sp_precio.setRange(0, 1_000_000_000)
+        self.sp_precio.setSingleStep(1)
+
+        self.cbo_tipoproducto = QComboBox()
+        self.cbo_especialidad = QComboBox()
+        self.chk_requiere = QCheckBox("Requiere recordatorio")
+        self.sp_dias = QSpinBox(); self.sp_dias.setRange(0, 365)
+        self.txt_msg = QLineEdit()
+
+        lp.addWidget(QLabel("Precio de venta")); lp.addWidget(self.sp_precio)
+        lp.addWidget(QLabel("Tipo de producto")); lp.addWidget(self.cbo_tipoproducto)
+        lp.addWidget(QLabel("Especialidad")); lp.addWidget(self.cbo_especialidad)
+        lp.addWidget(self.chk_requiere)
+        lp.addWidget(QLabel("Días recordatorio")); lp.addWidget(self.sp_dias)
+        lp.addWidget(QLabel("Mensaje recordatorio")); lp.addWidget(self.txt_msg)
+        tab_prod.setLayout(lp)
+
+        # === Tab Insumo ===
+        tab_ins = QWidget(); li = QVBoxLayout(tab_ins)
+        self.txt_unidad = QLineEdit()
+        # (Se quitó el combo de Categoría)
+        self.cbo_tipo_insumo = QComboBox(); self.cbo_tipo_insumo.addItems(self.TIPOS_INSUMO)
+        self.sp_stock_min = QDoubleSpinBox(); self.sp_stock_min.setLocale(self._locale)
+        self.sp_stock_min.setDecimals(2); self.sp_stock_min.setMaximum(1e9)
+        self.dt_venc = QDateEdit(); self.dt_venc.setCalendarPopup(True); self.dt_venc.setDate(QDate.currentDate())
+        self.cbo_proveedor = QComboBox()
+        self.chk_uso_interno = QCheckBox("Uso interno")
+        self.chk_uso_proc = QCheckBox("Uso procedimiento")
+
+        li.addWidget(QLabel("Unidad")); li.addWidget(self.txt_unidad)
+        li.addWidget(QLabel("Tipo de insumo")); li.addWidget(self.cbo_tipo_insumo)
+        li.addWidget(QLabel("Stock mínimo")); li.addWidget(self.sp_stock_min)
+        li.addWidget(QLabel("Fecha vencimiento")); li.addWidget(self.dt_venc)
+        li.addWidget(QLabel("Proveedor")); li.addWidget(self.cbo_proveedor)
+        li.addWidget(self.chk_uso_interno); li.addWidget(self.chk_uso_proc)
+        tab_ins.setLayout(li)
+
+        self.tabs.addTab(tab_prod, "Producto")
+        self.tabs.addTab(tab_ins, "Insumo")
+
+        # Header comunes
+        head = QVBoxLayout()
+        head.addWidget(QLabel("Nombre")); head.addWidget(self.txt_nombre)
+        head.addWidget(QLabel("Tipo (GENERAL)")); head.addWidget(self.cbo_tipo_general)
+        head.addWidget(QLabel("Descripción")); head.addWidget(self.txt_descripcion)
+        head.addWidget(self.chk_activo)
+
+        cont = QWidget(); cont.setLayout(head)
+        layout.addWidget(cont)
+        layout.addWidget(self.tabs)
+
+        # Botones
+        btns = QHBoxLayout()
+        self.btn_guardar = QPushButton("Guardar")
+        self.btn_guardar.clicked.connect(self.guardar)
+        self.btn_cancelar = QPushButton("Cancelar")
+        self.btn_cancelar.clicked.connect(self.reject)
+        btns.addStretch(); btns.addWidget(self.btn_guardar); btns.addWidget(self.btn_cancelar)
+        layout.addLayout(btns)
+
+        # lógica de UI
+        self.cbo_tipo_general.currentIndexChanged.connect(self._toggle_tabs_by_tipo)
+
+    # Combos
+    def load_combos(self):
+        # ItemTipo
+        self.cbo_tipo_general.clear()
+        for t in self.session.query(ItemTipo).order_by(ItemTipo.nombre).all():
+            self.cbo_tipo_general.addItem(t.nombre, t.iditemtipo)
+
+        # TipoProducto
+        self.cbo_tipoproducto.clear()
+        for tp in self.session.query(TipoProducto).order_by(TipoProducto.nombre).all():
+            self.cbo_tipoproducto.addItem(tp.nombre, tp.idtipoproducto)
+
+        # Especialidad
+        self.cbo_especialidad.clear()
+        for e in self.session.query(Especialidad).order_by(Especialidad.nombre).all():
+            self.cbo_especialidad.addItem(e.nombre, e.idespecialidad)
+
+        # Proveedor
+        self.cbo_proveedor.clear()
+        for p in self.session.query(Proveedor).order_by(Proveedor.nombre).all():
+            self.cbo_proveedor.addItem(p.nombre, p.idproveedor)
+
+        self._toggle_tabs_by_tipo()
+
+    def _toggle_tabs_by_tipo(self):
+        txt = (self.cbo_tipo_general.currentText() or "").upper()
+        self.tabs.setTabEnabled(0, txt in ("PRODUCTO", "AMBOS"))
+        self.tabs.setTabEnabled(1, txt in ("INSUMO", "AMBOS"))
+        # por defecto para PRODUCTO: uso procedimiento en True
+        if txt == "PRODUCTO" and not (self.chk_uso_interno.isChecked() or self.chk_uso_proc.isChecked()):
+            self.chk_uso_proc.setChecked(True)
+
+    def cargar_datos(self):
+        it = self.item
+        self.txt_nombre.setText(it.nombre or "")
+        self.txt_descripcion.setPlainText(it.descripcion or "")
+        self.chk_activo.setChecked(bool(it.activo))
+
+        if it.tipo:
+            ix = self.cbo_tipo_general.findText(it.tipo.nombre, Qt.MatchFixedString)
+            self.cbo_tipo_general.setCurrentIndex(ix if ix != -1 else 0)
+
+        # Producto
+        if it.precio_venta is not None: self.sp_precio.setValue(int(it.precio_venta))
+        if it.idtipoproducto:
+            ix = self.cbo_tipoproducto.findData(it.idtipoproducto); 
+            if ix != -1: self.cbo_tipoproducto.setCurrentIndex(ix)
+        if it.idespecialidad:
+            ix = self.cbo_especialidad.findData(it.idespecialidad);
+            if ix != -1: self.cbo_especialidad.setCurrentIndex(ix)
+        self.chk_requiere.setChecked(bool(it.requiere_recordatorio))
+        self.sp_dias.setValue(int(it.dias_recordatorio or 0))
+        self.txt_msg.setText(it.mensaje_recordatorio or "")
+
+        # Insumo
+        self.txt_unidad.setText(it.unidad or "")
+        if it.tipo_insumo:
+            ix = self.cbo_tipo_insumo.findText(it.tipo_insumo, Qt.MatchFixedString)
+            if ix != -1: self.cbo_tipo_insumo.setCurrentIndex(ix)
+        if it.stock_minimo is not None: self.sp_stock_min.setValue(float(it.stock_minimo))
+        if it.fechavencimiento:
+            self.dt_venc.setDate(QDate(it.fechavencimiento.year, it.fechavencimiento.month, it.fechavencimiento.day))
+        if it.idproveedor:
+            ix = self.cbo_proveedor.findData(it.idproveedor)
+            if ix != -1: self.cbo_proveedor.setCurrentIndex(ix)
+        self.chk_uso_interno.setChecked(bool(it.uso_interno))
+        self.chk_uso_proc.setChecked(bool(it.uso_procedimiento))
+        self._toggle_tabs_by_tipo()
+
+    def guardar(self):
+        nombre = (self.txt_nombre.text() or "").strip()
+        if not nombre:
+            QMessageBox.warning(self, "Validación", "Debe ingresar el nombre.")
+            return
+        iditemtipo = self.cbo_tipo_general.currentData()
+        if not iditemtipo:
+            QMessageBox.warning(self, "Validación", "Debe seleccionar el tipo general.")
+            return
+
+        # Producto (precio entero)
+        precio = int(self.sp_precio.value())
+        idtp = self.cbo_tipoproducto.currentData()
+        idesp = self.cbo_especialidad.currentData()
+        req = self.chk_requiere.isChecked()
+        dias = int(self.sp_dias.value())
+        msg  = (self.txt_msg.text() or "").strip() or None
+
+        # Insumo
+        unidad = (self.txt_unidad.text() or "").strip() or None
+        tin = self.cbo_tipo_insumo.currentText()
+        stock_min = self.sp_stock_min.value()
+        fven = self.dt_venc.date().toPyDate() if self.dt_venc.date() else None
+        idprov = self.cbo_proveedor.currentData()
+        uso_int = self.chk_uso_interno.isChecked()
+        uso_proc = self.chk_uso_proc.isChecked()
+
+        # Derivar categoría desde flags (opcional persistir como texto)
+        categoria = None
+        if uso_int and uso_proc: categoria = "AMBOS"
+        elif uso_int:            categoria = "CONSUMO_INTERNO"
+        elif uso_proc:           categoria = "USO_PROCEDIMIENTO"
+
+        tipo_general = (self.cbo_tipo_general.currentText() or "").upper()
+        if tipo_general == "PRODUCTO":
+            unidad = tin = None; stock_min = None; fven = None; idprov = None
+            # si el usuario no marcó nada, fuerzo uso_proc
+            if not (uso_int or uso_proc): uso_proc = True
+        elif tipo_general == "INSUMO":
+            precio = 0; idtp = None; idesp = None; req = False; dias = 0; msg = None
+
+        data = dict(
+            nombre=nombre,
+            descripcion=(self.txt_descripcion.toPlainText() or None),
+            activo=self.chk_activo.isChecked(),
+            iditemtipo=iditemtipo,
+
+            # producto
+            precio_venta=precio,
+            idtipoproducto=idtp,
+            idespecialidad=idesp,
+            requiere_recordatorio=req,
+            dias_recordatorio=dias,
+            mensaje_recordatorio=msg,
+
+            # insumo
+            unidad=unidad,
+            categoria=categoria,
+            tipo_insumo=tin,
+            stock_minimo=stock_min,
+            fechavencimiento=fven,
+            idproveedor=idprov,
+            uso_interno=uso_int,
+            uso_procedimiento=uso_proc,
+        )
+
+        if self.item is None:
+            self.session.add(Item(**data))
+        else:
+            for k, v in data.items():
+                setattr(self.item, k, v)
+
+        self.session.commit()
+        self.accept()
+
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    w = ABMItems()
+    w.show()
+    sys.exit(app.exec_())
