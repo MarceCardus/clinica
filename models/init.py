@@ -30,7 +30,6 @@ from .auditoria import Auditoria
 from .antecPatologico import AntecedentePatologicoPersonal
 from .antecEnfActual import AntecedenteEnfermedadActual
 from .antecFliar import AntecedenteFamiliar
-
 # Importa también los que faltaban:
 from .pacienteEncargado import PacienteEncargado
 from .indicacion import Indicacion
