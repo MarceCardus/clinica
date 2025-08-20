@@ -34,7 +34,7 @@ class CompraController:
 
                 compra_det = CompraDetalle(
                     idcompra=compra.idcompra,
-                    idinsumo=det["idinsumo"],
+                    iditem=det["iditem"],  # SOLO iditem
                     cantidad=det["cantidad"],
                     preciounitario=det["preciounitario"],
                     iva=det.get("iva", 0),
@@ -44,9 +44,10 @@ class CompraController:
                 )
                 self.session.add(compra_det)
 
+                # Ingreso a stock
                 stock_mov = StockMovimiento(
                     fecha=compra_data["fecha"],
-                    idinsumo=det["idinsumo"],
+                    iditem=det["iditem"],
                     cantidad=det["cantidad"],
                     tipo="INGRESO",
                     motivo="Compra",

@@ -16,6 +16,7 @@ from models.compra import Compra
 from models.compra_detalle import CompraDetalle
 from models.proveedor import Proveedor
 from models.insumo import Insumo
+from models.item import Item
 
 
 class ComprasReportForm(QWidget):
@@ -499,22 +500,21 @@ class ComprasReportForm(QWidget):
         self._cargar_detalle(idcompra)
 
     def _cargar_detalle(self, idcompra: int):
-        tipo = self.cbo_tipo.currentData()
-        q_det = (
+        q = (
             self.session.query(
-                CompraDetalle.cantidad.label("cantidad"),
-                Insumo.nombre.label("insumo"),
-                CompraDetalle.preciounitario.label("preciounitario"),
-                (CompraDetalle.cantidad * CompraDetalle.preciounitario).label("total_fila"),
+                CompraDetalle.cantidad,
+                Item.nombre,
+                CompraDetalle.preciounitario,
+                CompraDetalle.iva,
+                CompraDetalle.lote,
+                CompraDetalle.fechavencimiento,
+                CompraDetalle.observaciones,
             )
-            .join(Insumo, CompraDetalle.idinsumo == Insumo.idinsumo)
+            .join(Item, CompraDetalle.iditem == Item.iditem)
             .filter(CompraDetalle.idcompra == idcompra)
-            .order_by(Insumo.nombre.asc())
+            .order_by(Item.nombre.asc())
         )
-        if tipo:
-            q_det = q_det.filter(Insumo.tipo == tipo)
-
-        rows = q_det.all()
+        rows = q.all()
         self.table_detalle.setRowCount(0)
 
         def fmt(v):

@@ -12,6 +12,7 @@ from models.compra_detalle import CompraDetalle
 from models.compra import Compra
 from controllers.abm_compras import CompraController
 from models.usuario_actual import usuario_id
+from models.item import Item, ItemTipo
 
 class InsumoSelectDialog(QDialog):
     def __init__(self, insumos, parent=None):
@@ -267,7 +268,7 @@ class ABMCompra(QWidget):
             precio = float(self.grilla.item(row, 3).text().replace(".", ""))
             iva = float(self.grilla.item(row, 4).text().replace(".", ""))
             detalles.append({
-                "idinsumo": int(self.grilla.item(row, 0).text()),
+                "iditem": int(self.grilla.item(row, 0).text()),
                 "cantidad": cantidad,
                 "preciounitario": precio,
                 "iva": iva,
@@ -451,12 +452,14 @@ class ABMCompra(QWidget):
 
     def buscar_insumos(self, texto):
         session = SessionLocal()
-        query = session.query(Insumo).filter(
-            Insumo.nombre.ilike(f"%{texto}%")
-        ).order_by(Insumo.nombre)
-        resultados = query.all()
+        # Filtra por tipo insumo o ambos
+        items = session.query(Item).join(ItemTipo).filter(
+            Item.activo == True,
+            Item.nombre.ilike(f"%{texto}%"),
+            ItemTipo.nombre.in_(["INSUMO", "AMBOS"])
+        ).all()
         session.close()
-        return resultados
+        return items
 
     def buscar_y_agregar_insumo(self):
         texto = self.busca_insumo.text().strip()

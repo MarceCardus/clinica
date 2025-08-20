@@ -19,6 +19,7 @@ from models.venta_detalle import VentaDetalle
 from models.paciente import Paciente
 from models.producto import Producto
 from models.paquete import Paquete
+from models.item import Item
 
 
 def col(model, *names):
@@ -97,9 +98,9 @@ class VentasReportForm(QWidget):
         self.table_detalle.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table_detalle.setSelectionBehavior(QTableWidget.SelectRows)
 
-        # NUEVO: Resumen por ítem (rango completo)
-        self.table_resumen = QTableWidget(0, 4)
-        self.table_resumen.setHorizontalHeaderLabels(["Ítem", "Cantidad total", "Monto total", "Líneas (veces)"])
+        # Resumen por ítem (rango completo) - SIN "Líneas (veces)"
+        self.table_resumen = QTableWidget(0, 3)
+        self.table_resumen.setHorizontalHeaderLabels(["Ítem", "Cantidad total", "Monto total"])
         self.table_resumen.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table_resumen.verticalHeader().setVisible(False)
         self.table_resumen.setAlternatingRowColors(True)
@@ -108,7 +109,7 @@ class VentasReportForm(QWidget):
 
         splitter.addWidget(self.table_master)
         splitter.addWidget(self.table_detalle)
-        splitter.addWidget(self.table_resumen)
+        #splitter.addWidget(self.table_resumen)
         splitter.setSizes([360, 220, 160])
 
         # Totales
@@ -196,7 +197,7 @@ class VentasReportForm(QWidget):
             self.session.query(
                 Venta.idventa,
                 Venta.fecha.label("fecha"),
-                Paciente.nombre.label("cliente"),
+                (func.concat(Paciente.nombre, " ", Paciente.apellido)).label("cliente"),
                 comp_col.label("nro_comprobante"),
                 monto_col.label("montototal"),
                 (monto_col / 11).label("iva_total"),
@@ -239,7 +240,7 @@ class VentasReportForm(QWidget):
             self.session.query(
                 Venta.idventa.label("ID Venta"),
                 Venta.fecha.label("Fecha"),
-                Paciente.nombre.label("Cliente"),
+                (func.concat(Paciente.nombre, " ", Paciente.apellido)).label("cliente"),
                 comp_col.label("Factura"),
                 monto_col.label("Monto Total"),
                 (monto_col / 11).label("IVA Total"),
@@ -253,7 +254,7 @@ class VentasReportForm(QWidget):
         master_rows = q_master.all()
 
         # Detalle
-        item_nombre = func.coalesce(Producto.nombre, Paquete.nombre).label("Ítem")
+        item_nombre = Item.nombre.label("Ítem")
         q_det = (
             self.session.query(
                 VentaDetalle.idventa.label("ID Venta"),
@@ -264,25 +265,22 @@ class VentasReportForm(QWidget):
             )
             .join(Venta, Venta.idventa == VentaDetalle.idventa)
             .join(Paciente, Venta.idpaciente == Paciente.idpaciente)
-            .outerjoin(Producto, VentaDetalle.idproducto == Producto.idproducto)
-            .outerjoin(Paquete, VentaDetalle.idpaquete == Paquete.idpaquete)
+            .join(Item, VentaDetalle.iditem == Item.iditem)
             .filter(and_(*filtros))
             .order_by(VentaDetalle.idventa.desc(), item_nombre.asc())
         )
         det_rows = q_det.all()
 
-        # Resumen (por Ítem)
+        # Resumen (por Ítem) - SIN "Líneas (veces)"
         q_res = (
             self.session.query(
                 item_nombre,
                 func.sum(VentaDetalle.cantidad).label("Cantidad total"),
                 func.sum(VentaDetalle.cantidad * VentaDetalle.preciounitario).label("Monto total"),
-                func.count().label("Líneas (veces)")
             )
             .join(Venta, Venta.idventa == VentaDetalle.idventa)
             .join(Paciente, Venta.idpaciente == Paciente.idpaciente)
-            .outerjoin(Producto, VentaDetalle.idproducto == Producto.idproducto)
-            .outerjoin(Paquete, VentaDetalle.idpaquete == Paquete.idpaquete)
+            .join(Item, VentaDetalle.iditem == Item.iditem)
             .filter(and_(*filtros))
             .group_by(item_nombre)
             .order_by(item_nombre.asc())
@@ -294,7 +292,7 @@ class VentasReportForm(QWidget):
         if not df_master.empty:
             df_master["Fecha"] = pd.to_datetime(df_master["Fecha"]).dt.strftime("%d/%m/%Y")
         df_det = pd.DataFrame(det_rows, columns=["ID Venta","Cantidad","Ítem","Precio Unitario","Total Fila"])
-        df_resumen = pd.DataFrame(res_rows, columns=["Ítem","Cantidad total","Monto total","Líneas (veces)"])
+        df_resumen = pd.DataFrame(res_rows, columns=["Ítem","Cantidad total","Monto total"])
 
         # tipos numéricos
         for col in ["Monto Total","IVA Total"]:
@@ -375,7 +373,7 @@ class VentasReportForm(QWidget):
         filtros = self._filtros()
         monto_col = self._monto_col()
         comp_col = self._comp_col()
-        item_nombre = func.coalesce(Producto.nombre, Paquete.nombre).label("Ítem")
+        item_nombre = Item.nombre.label("Ítem")
 
         # Maestro
         master_rows = (
@@ -393,21 +391,18 @@ class VentasReportForm(QWidget):
                 VentaDetalle.idventa, VentaDetalle.cantidad, item_nombre,
                 VentaDetalle.preciounitario, (VentaDetalle.cantidad*VentaDetalle.preciounitario).label("total_fila")
             ).join(Venta, Venta.idventa == VentaDetalle.idventa)
-             .outerjoin(Producto, VentaDetalle.idproducto == Producto.idproducto)
-             .outerjoin(Paquete, VentaDetalle.idpaquete == Paquete.idpaquete)
+             .join(Item, VentaDetalle.iditem == Item.iditem)
              .filter(and_(*filtros)).order_by(VentaDetalle.idventa.desc(), item_nombre.asc())
         ).all()
 
-        # Resumen
+        # Resumen - SIN "Líneas (veces)"
         res_rows = (
             self.session.query(
                 item_nombre,
                 func.sum(VentaDetalle.cantidad),
                 func.sum(VentaDetalle.cantidad*VentaDetalle.preciounitario),
-                func.count()
             ).join(Venta, Venta.idventa == VentaDetalle.idventa)
-             .outerjoin(Producto, VentaDetalle.idproducto == Producto.idproducto)
-             .outerjoin(Paquete, VentaDetalle.idpaquete == Paquete.idpaquete)
+             .join(Item, VentaDetalle.iditem == Item.iditem)
              .filter(and_(*filtros)).group_by(item_nombre).order_by(item_nombre.asc())
         ).all()
 
@@ -434,9 +429,9 @@ class VentasReportForm(QWidget):
 
             with open(f3, "w", newline="", encoding="utf-8-sig") as fp:
                 w = csv.writer(fp, delimiter=';')
-                w.writerow(["Ítem","Cantidad total","Monto total","Líneas (veces)"])
+                w.writerow(["Ítem","Cantidad total","Monto total"])
                 for r in res_rows:
-                    w.writerow([r[0] or "", r[1] or 0, self._fmt_csv_monto(r[2] or 0), int(r[3] or 0)])
+                    w.writerow([r[0] or "", r[1] or 0, self._fmt_csv_monto(r[2] or 0)])
 
             QMessageBox.information(self, "Exportación",
                 f"No se encontraron librerías para Excel. Se exportaron 3 CSV:\n{os.path.abspath(f1)}\n{os.path.abspath(f2)}\n{os.path.abspath(f3)}")
@@ -496,7 +491,7 @@ class VentasReportForm(QWidget):
         self._cargar_detalle(idventa)
 
     def _cargar_detalle(self, idventa:int):
-        item_nombre = func.coalesce(Producto.nombre, Paquete.nombre).label("item_nombre")
+        item_nombre = Item.nombre.label("item_nombre")
         q_det = (
             self.session.query(
                 VentaDetalle.cantidad.label("cantidad"),
@@ -504,8 +499,7 @@ class VentasReportForm(QWidget):
                 VentaDetalle.preciounitario.label("preciounitario"),
                 (VentaDetalle.cantidad * VentaDetalle.preciounitario).label("total_fila"),
             )
-            .outerjoin(Producto, VentaDetalle.idproducto == Producto.idproducto)
-            .outerjoin(Paquete, VentaDetalle.idpaquete == Paquete.idpaquete)
+            .join(Item, VentaDetalle.iditem == Item.iditem)
             .filter(VentaDetalle.idventa == idventa)
             .order_by(item_nombre.asc())
         )
@@ -531,49 +525,14 @@ class VentasReportForm(QWidget):
 
     # ---------- Resumen en UI ----------
     def _cargar_resumen(self):
-        filtros = self._filtros()
-        item_nombre = func.coalesce(Producto.nombre, Paquete.nombre).label("item_nombre")
-
-        q = (
-            self.session.query(
-                item_nombre,
-                func.sum(VentaDetalle.cantidad).label("cant_total"),
-                func.sum(VentaDetalle.cantidad * VentaDetalle.preciounitario).label("monto_total"),
-                func.count().label("veces")
-            )
-            .join(Venta, Venta.idventa == VentaDetalle.idventa)
-            .outerjoin(Producto, VentaDetalle.idproducto == Producto.idproducto)
-            .outerjoin(Paquete, VentaDetalle.idpaquete == Paquete.idpaquete)
-            .filter(and_(*filtros))
-            .group_by(item_nombre)
-            .order_by(item_nombre.asc())
-        )
-        rows = q.all()
-
-        def fmt_m(n):
-            try: return f"{float(n):,.0f}".replace(",", ".")
-            except Exception: return str(n)
-
-        self.table_resumen.setRowCount(0)
-        for r in rows:
-            row = self.table_resumen.rowCount()
-            self.table_resumen.insertRow(row)
-            items = [
-                QTableWidgetItem(r.item_nombre or ""),
-                QTableWidgetItem(fmt_m(r.cant_total or 0)),
-                QTableWidgetItem(fmt_m(r.monto_total or 0)),
-                QTableWidgetItem(str(int(r.veces or 0))),
-            ]
-            for i, it in enumerate(items):
-                it.setTextAlignment(Qt.AlignCenter if i in (1,2,3) else Qt.AlignVCenter | Qt.AlignLeft)
-                self.table_resumen.setItem(row, i, it)
+        pass
 
     # ---------- PDF ----------
     def exportar_pdf(self):
         try:
             from reportlab.lib.pagesizes import A4, landscape
             from reportlab.lib import colors
-            from reportlab.lib.styles import getSampleStyleSheet
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
             from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, PageBreak
         except ImportError:
             QMessageBox.warning(self, "PDF", "Necesitás instalar reportlab:  pip install reportlab")
@@ -611,14 +570,14 @@ class VentasReportForm(QWidget):
             estado_txt = (self.table_master.item(r, 6).text() or "").upper()
             estado_html = " — <font color='red'><b>ESTADO: ANULADA</b></font>" if estado_txt == "ANULADA" else ""
 
-            story.append(Paragraph(
-                f"<b>#{idv}</b> — {fecha_txt} — {cliente}<br/>"
-                f"Factura N°: <b>{comp}</b> — Total: <b>{monto}</b> — IVA: <b>{iva}</b>{estado_html}",
-                styles["Heading3"]
-            ))
-            story.append(Spacer(1, 8))
-
-            item_nombre = func.coalesce(Producto.nombre, Paquete.nombre).label("item_nombre")
+            # Encabezado de la venta (más legible y separado)
+            story.append(Paragraph(f"<b>N° Venta:</b> {idv}", styles["Heading3"]))
+            story.append(Paragraph(f"<b>Fecha:</b> {fecha_txt}    <b>Cliente:</b> {cliente}", styles["Normal"]))
+            story.append(Paragraph(f"<b>N° Factura:</b> {comp}", styles["Normal"]))
+            if estado_txt == "ANULADA":
+                story.append(Paragraph("<font color='red'><b>ESTADO: ANULADA</b></font>", styles["Normal"]))
+            story.append(Spacer(1, 4))
+            item_nombre = Item.nombre.label("item_nombre")
             det = (
                 self.session.query(
                     VentaDetalle.cantidad,
@@ -626,55 +585,88 @@ class VentasReportForm(QWidget):
                     VentaDetalle.preciounitario,
                     (VentaDetalle.cantidad * VentaDetalle.preciounitario).label("total_fila"),
                 )
-                .outerjoin(Producto, VentaDetalle.idproducto == Producto.idproducto)
-                .outerjoin(Paquete, VentaDetalle.idpaquete == Paquete.idpaquete)
+                .join(Item, VentaDetalle.iditem == Item.iditem)
                 .filter(VentaDetalle.idventa == int(idv))
                 .order_by(item_nombre.asc())
             ).all()
-
+            # Tabla de detalle
             data = [["Cantidad", "Ítem", "Precio Unitario", "Total Fila"]]
             def fmt(v):
                 try: return f"{float(v):,.0f}".replace(",", ".")
                 except: return str(v)
+
+            total_venta = 0
             for d in det:
                 data.append([fmt(d.cantidad), d.item_nombre or "", fmt(d.preciounitario), fmt(d.total_fila)])
+                try:
+                    total_venta += float(d.total_fila or 0)
+                except Exception:
+                    pass
 
-            t = Table(data, repeatRows=1)
+            iva_venta = round(total_venta / 11)
+
+            # Estilos para Paragraph
+            ps_bold = ParagraphStyle("bold", parent=styles["Normal"], fontName="Helvetica-Bold")
+            ps_iva = ParagraphStyle("iva", parent=styles["Normal"], textColor=colors.HexColor("#555555"))
+
+            # Fila de total (en negrita, alineada a la derecha)
+            data.append([
+                "", "",
+                Paragraph("Total", ps_bold),
+                Paragraph(fmt(total_venta), ps_bold)
+            ])
+            # Fila de IVA (en gris, debajo de Total)
+            data.append([
+                "", "",
+                Paragraph("IVA", ps_iva),
+                Paragraph(fmt(iva_venta), ps_iva)
+            ])
+
+            t = Table(data, repeatRows=1, hAlign="LEFT", colWidths=[50, 220, 100, 100])
             t.setStyle(TableStyle([
                 ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#eeeeee")),
                 ("GRID", (0,0), (-1,-1), 0.25, colors.grey),
-                ("ALIGN", (0,1), (0,-1), "CENTER"),
-                ("ALIGN", (2,1), (3,-1), "CENTER"),
+                ("ALIGN", (0,0), (-1,-1), "LEFT"),  # TODO alineado a la izquierda
+                ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+                ("FONTSIZE", (0,0), (-1,-1), 9),
+                ("BOTTOMPADDING", (0,0), (-1,0), 6),
+                ("TOPPADDING", (0,0), (-1,0), 6),
+                ("TOPPADDING", (0,1), (-1,-1), 2),
+                ("BOTTOMPADDING", (0,1), (-1,-1), 2),
             ]))
-            story.append(t); story.append(Spacer(1, 6))
+            story.append(t)
+
+            # Línea divisoria entre ventas
+            from reportlab.platypus import HRFlowable
+            story.append(Spacer(1, 6))
+            story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#bbbbbb")))
+            story.append(Spacer(1, 8))
 
         story.append(Paragraph(self.lbl_total_monto.text(), styles["Heading3"]))
         story.append(Paragraph(self.lbl_total_iva.text(), styles["Heading3"]))
 
-        # Resumen al final
+        # Resumen al final - SIN "Líneas (veces)"
         story.append(PageBreak())
         story.append(Paragraph("<b>Resumen por ítem (rango)</b>", styles["Heading2"]))
         filtros = self._filtros()
-        item_nombre = func.coalesce(Producto.nombre, Paquete.nombre).label("item_nombre")
+        item_nombre = Item.nombre.label("item_nombre")
         res = (
             self.session.query(
                 item_nombre,
                 func.sum(VentaDetalle.cantidad).label("cant_total"),
                 func.sum(VentaDetalle.cantidad * VentaDetalle.preciounitario).label("monto_total"),
-                func.count().label("veces")
             )
             .join(Venta, Venta.idventa == VentaDetalle.idventa)
-            .outerjoin(Producto, VentaDetalle.idproducto == Producto.idproducto)
-            .outerjoin(Paquete, VentaDetalle.idpaquete == Paquete.idpaquete)
+            .join(Item, VentaDetalle.iditem == Item.iditem)
             .filter(and_(*filtros)).group_by(item_nombre).order_by(item_nombre.asc())
         ).all()
 
         def fmt_m(v):
             try: return f"{float(v):,.0f}".replace(",", ".")
             except: return str(v)
-        data_res = [["Ítem", "Cantidad total", "Monto total", "Líneas (veces)"]]
+        data_res = [["Ítem", "Cantidad total", "Monto total"]]
         for r in res:
-            data_res.append([r[0] or "", fmt_m(r[1] or 0), fmt_m(r[2] or 0), str(int(r[3] or 0))])
+            data_res.append([r[0] or "", fmt_m(r[1] or 0), fmt_m(r[2] or 0)])
 
         t_res = Table(data_res, repeatRows=1)
         t_res.setStyle(TableStyle([

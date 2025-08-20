@@ -1,16 +1,19 @@
 # models/venta_detalle.py
-from sqlalchemy import Column, Integer, ForeignKey, Numeric
+from sqlalchemy import Column, Integer, Numeric, ForeignKey
 from sqlalchemy.orm import relationship
-from .base import Base
+from utils.db import Base  # importa tu Base declarativa
 
 class VentaDetalle(Base):
-    __tablename__ = 'venta_detalle'
-    idventadet = Column(Integer, primary_key=True, autoincrement=True)  # <- NUEVO
-    idventa = Column(Integer, ForeignKey('venta.idventa'), nullable=False)
-    idproducto = Column(Integer, ForeignKey('producto.idproducto'), nullable=False)
-    idpaquete = Column(Integer, ForeignKey('paquete.idpaquete'))  # nullable OK
-    cantidad = Column(Numeric(14,2), nullable=False)
-    preciounitario = Column(Numeric(14,2), nullable=False)
-    descuento = Column(Numeric(14,2), default=0)
-    iditem = Column(Integer, ForeignKey("item.iditem", ondelete="RESTRICT"), nullable=False)
-    item = relationship("Item", back_populates="venta_detalles")
+    __tablename__ = "venta_detalle"
+
+    idventadet     = Column(Integer, primary_key=True, autoincrement=True)
+    idventa        = Column(Integer, ForeignKey("venta.idventa"), nullable=False)
+    iditem         = Column(Integer, ForeignKey("item.iditem"), nullable=False)
+
+    cantidad       = Column(Numeric(12, 2), nullable=False, default=0)
+    preciounitario = Column(Numeric(12, 2), nullable=False, default=0)
+    descuento      = Column(Numeric(12, 2), nullable=True)
+
+    # Relaciones opcionales (ajustá nombres si ya existen en Venta/Item)
+    venta = relationship("Venta", back_populates="detalles", lazy="joined")
+    item  = relationship("Item", lazy="joined")
