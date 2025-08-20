@@ -9,6 +9,7 @@ from models.venta import Venta
 from models.venta_detalle import VentaDetalle
 from models.venta_cuota import VentaCuota
 
+
 class VentaForm(QDialog):
     def __init__(self, session, pacientes, profesionales, clinicas, productos, paquetes, parent=None):
         super().__init__(parent)
@@ -150,6 +151,10 @@ class VentaForm(QDialog):
 
     def guardar_venta(self):
         from sqlalchemy.exc import SQLAlchemyError
+        from sqlalchemy import select
+        from decimal import Decimal
+        from models.item import Item  # <-- usamos Item unificado
+
         try:
             self.session.begin()
 
@@ -158,31 +163,58 @@ class VentaForm(QDialog):
                 idpaciente=self.paciente_combo.currentData(),
                 idprofesional=self.prof_combo.currentData(),
                 idclinica=self.clinica_combo.currentData(),
-                montototal=Decimal(self.monto_total_edit.text()),
+                montototal=Decimal(self.monto_total_edit.text() or "0"),
                 estadoventa="PENDIENTE",
-                nro_factura=(self.txt_nro_factura.text() or "").strip(),  # <-- acá guardás el nro
+                nro_factura=(self.txt_nro_factura.text() or "").strip(),
                 observaciones=self.obs_edit.toPlainText()
             )
             self.session.add(obj_venta)
-            self.session.flush()  # ahora tenemos obj_venta.idventa
+            self.session.flush()  # ya tenemos obj_venta.idventa
 
-            # --- Detalles ---
+            # --- Detalles (SIEMPRE con iditem) ---
             for row in range(self.detalle_table.rowCount()):
-                tipo = self.detalle_table.cellWidget(row, 0).currentText()
+                tipo_combo_txt = self.detalle_table.cellWidget(row, 0).currentText()  # "Producto" | "Paquete"
                 prod_combo = self.detalle_table.cellWidget(row, 1)
-                tipo_sel, id_sel = prod_combo.currentData()
-                cantidad = self.detalle_table.cellWidget(row, 2).value()
-                precio = self.detalle_table.cellWidget(row, 3).value()
+                tipo_sel, id_sel = prod_combo.currentData()  # ("Producto"|"Paquete", id)
+                cantidad  = self.detalle_table.cellWidget(row, 2).value()
+                precio    = self.detalle_table.cellWidget(row, 3).value()
                 descuento = self.detalle_table.cellWidget(row, 4).value()
 
-                idproducto = id_sel if tipo_sel == "Producto" else None
-                idpaquete = id_sel if tipo_sel == "Paquete" else None
+                iditem = None
+
+                if tipo_sel == "Producto":
+                    # Aceptamos sólo Items cuyo tipo sea 'producto' o 'ambos'
+                    iditem = int(id_sel)
+                    it_tipo = (self.session.execute(
+                        select(Item.tipo).where(Item.iditem == iditem)
+                    ).scalar_one_or_none() or "").lower()
+                    if it_tipo not in ("producto", "ambos"):
+                        raise ValueError("El ítem seleccionado no es de tipo 'producto' ni 'ambos'.")
+
+                else:  # "Paquete"
+                    # Opción simple: guardar una línea por paquete (Item tipo 'paquete').
+                    # Ajustá el criterio si tu Item de paquete se identifica distinto.
+                    iditem = self.session.execute(
+                        select(Item.iditem).where(
+                            Item.iditem == int(id_sel),            # fallback: mismo id
+                            Item.tipo.in_(["paquete", "ambos"])
+                        )
+                    ).scalar_one_or_none()
+                    if iditem is None:
+                        # alternativa: por referencia "PAQ:<id>"
+                        iditem = self.session.execute(
+                            select(Item.iditem).where(
+                                Item.tipo.in_(["paquete", "ambos"]),
+                                getattr(Item, "referencia", None) == f"PAQ:{int(id_sel)}"  # ignora si no existe el campo
+                            )
+                        ).scalar_one_or_none()
+                    if iditem is None:
+                        raise ValueError("No existe un Item de tipo 'paquete' que represente este paquete.")
 
                 det = VentaDetalle(
                     idventa=obj_venta.idventa,
-                    idproducto=idproducto,
-                    idpaquete=idpaquete,
-                    cantidad=cantidad,
+                    iditem=int(iditem),
+                    cantidad=Decimal(str(cantidad)),
                     preciounitario=Decimal(str(precio)),
                     descuento=Decimal(str(descuento))
                 )
@@ -212,6 +244,7 @@ class VentaForm(QDialog):
             self.session.commit()
             QMessageBox.information(self, "Venta", "Venta guardada correctamente.")
             self.accept()
+
         except SQLAlchemyError as e:
             self.session.rollback()
             QMessageBox.critical(self, "Error", f"Ocurrió un error: {e}")

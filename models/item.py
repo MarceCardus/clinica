@@ -50,9 +50,7 @@ class Item(Base):
     categoria = Column(String(50))        # 'CONSUMO_INTERNO' / 'USO_PROCEDIMIENTO'
     tipo_insumo = Column(String(50))      # 'MEDICAMENTO', 'DESCARTABLE', etc.
     stock_minimo = Column(Numeric(14, 2))
-    fechavencimiento = Column(Date)
-    idproveedor = Column(Integer, ForeignKey("proveedor.idproveedor", ondelete="RESTRICT"))
-
+    
     # Flags de uso (según tu captura: uso_interno / uso_procedimiento)
     uso_interno = Column(Boolean, nullable=False, default=False)
     uso_procedimiento = Column(Boolean, nullable=False, default=False)
@@ -60,11 +58,10 @@ class Item(Base):
     # Relaciones de negocio
     tipoproducto = relationship("TipoProducto", back_populates="items", foreign_keys=[idtipoproducto])
     especialidad  = relationship("Especialidad", back_populates="items", foreign_keys=[idespecialidad])
-    proveedor     = relationship("Proveedor", back_populates="items", foreign_keys=[idproveedor])
-
+    
     # Detalles
-    compra_detalles = relationship("CompraDetalle", back_populates="item")
-    venta_detalles  = relationship("VentaDetalle",  back_populates="item")
+    compra_detalles = relationship("CompraDetalle", back_populates="item", passive_deletes=True)
+    venta_detalles  = relationship("VentaDetalle",  back_populates="item", passive_deletes=True)
 
 # --- Shims de compatibilidad mientras migras usos antiguos ---
 class ProductoMap(Base):

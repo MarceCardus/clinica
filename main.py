@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtGui import QPalette, QColor, QIcon
 from PyQt5.QtCore import Qt
-
+from controllers.ui_theme  import apply_theme
 from models.base import Base
 from models.clinica import Clinica
 from models.paciente import Paciente
@@ -281,6 +281,7 @@ class MainWindow(QMainWindow):
         self.mdi_area.addSubWindow(sub)
         sub.show()
 
+
     def abrir_informe_compras(self):
         # Si ya existe, traer al frente
         for subwin in self.mdi_area.subWindowList():
@@ -477,6 +478,7 @@ class MainWindow(QMainWindow):
 if __name__ == "__main__":
     from login import LoginDialog
     app = QApplication(sys.argv)
+    apply_theme(app)
     app.setWindowIcon(QIcon("imagenes/logo2.ico")) 
     login = LoginDialog()
     session = SessionLocal()

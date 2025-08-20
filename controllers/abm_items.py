@@ -77,8 +77,19 @@ class ABMItems(QDialog):
         self.table.setHorizontalHeaderLabels(["ID", "Nombre", "Tipo", "Activo", "Acciones"])
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
-        layout.addWidget(self.table)
 
+        # ── Autoajuste de columnas (sin stretch) ──
+        from PyQt5.QtWidgets import QHeaderView
+        hdr = self.table.horizontalHeader()
+        hdr.setSectionResizeMode(QHeaderView.ResizeToContents)  # todas según contenido
+        hdr.setStretchLastSection(False)                        # ninguna se estira
+        hdr.setMinimumSectionSize(60)
+        self.table.setWordWrap(False)                           # una sola línea
+
+        # Altura de filas acorde a la fuente
+        fm = self.table.fontMetrics()
+        self.table.verticalHeader().setDefaultSectionSize(int(fm.height() * 1.9))
+        layout.addWidget(self.table)
         # Botón agregar
         self.btn_agregar = QPushButton(" Agregar ítem")
         ico_add = resource_path("agregar.png")
@@ -89,6 +100,30 @@ class ABMItems(QDialog):
         h = QHBoxLayout(); h.addStretch(); h.addWidget(self.btn_agregar)
         layout.addLayout(h)
         self.setLayout(layout)
+
+    def _auto_fit_columns(self):
+        """Auto-ajusta todas, y a 'Nombre' (col 1) la limita a un rango razonable
+        para que NO tome toda la pantalla."""
+        self.table.resizeColumnsToContents()
+
+        fm = self.table.fontMetrics()
+        adv = getattr(fm, "horizontalAdvance", fm.width)  # PyQt5 compat
+
+        # calcular el ancho máximo del texto de la col 'Nombre'
+        maxw = adv(self.table.horizontalHeaderItem(1).text())
+        for r in range(self.table.rowCount()):
+            it = self.table.item(r, 1)
+            if it:
+                w = adv(it.text())
+                if w > maxw:
+                    maxw = w
+
+        padding = 40
+        ancho = max(220, min(maxw + padding, 480))  # <- rango [220..480] px
+        self.table.setColumnWidth(1, ancho)
+
+        # asegurar un mínimo para 'Acciones' (col 4)
+        self.table.setColumnWidth(4, max(90, self.table.columnWidth(4)))
 
     # ---------- Data ----------
     def load_tipos(self):
@@ -106,7 +141,6 @@ class ABMItems(QDialog):
         texto = (self.filtro_nombre.text() or "").strip().lower()
         nombre_tipo = (self.filtro_tipo.currentText() or "").strip()
         ver_inactivos = self.chk_inactivos.isChecked()
-
         q = self.session.query(Item).join(ItemTipo, Item.iditemtipo == ItemTipo.iditemtipo)
         if texto:
             q = q.filter(or_(Item.nombre.ilike(f"%{texto}%"), Item.descripcion.ilike(f"%{texto}%")))
@@ -143,6 +177,8 @@ class ABMItems(QDialog):
             h.addWidget(btn_editar); h.addWidget(btn_del)
             cell.setLayout(h)
             self.table.setCellWidget(r, 4, cell)
+            self.table.resizeRowsToContents()
+            self._auto_fit_columns()
 
     def _row_id(self, row) -> int:
         return int(self.table.item(row, 0).text())
@@ -245,16 +281,14 @@ class FormularioItem(QDialog):
         self.cbo_tipo_insumo = QComboBox(); self.cbo_tipo_insumo.addItems(self.TIPOS_INSUMO)
         self.sp_stock_min = QDoubleSpinBox(); self.sp_stock_min.setLocale(self._locale)
         self.sp_stock_min.setDecimals(2); self.sp_stock_min.setMaximum(1e9)
-        self.dt_venc = QDateEdit(); self.dt_venc.setCalendarPopup(True); self.dt_venc.setDate(QDate.currentDate())
-        self.cbo_proveedor = QComboBox()
+        
         self.chk_uso_interno = QCheckBox("Uso interno")
         self.chk_uso_proc = QCheckBox("Uso procedimiento")
 
         li.addWidget(QLabel("Unidad")); li.addWidget(self.txt_unidad)
         li.addWidget(QLabel("Tipo de insumo")); li.addWidget(self.cbo_tipo_insumo)
         li.addWidget(QLabel("Stock mínimo")); li.addWidget(self.sp_stock_min)
-        li.addWidget(QLabel("Fecha vencimiento")); li.addWidget(self.dt_venc)
-        li.addWidget(QLabel("Proveedor")); li.addWidget(self.cbo_proveedor)
+        
         li.addWidget(self.chk_uso_interno); li.addWidget(self.chk_uso_proc)
         tab_ins.setLayout(li)
 
@@ -301,11 +335,7 @@ class FormularioItem(QDialog):
         for e in self.session.query(Especialidad).order_by(Especialidad.nombre).all():
             self.cbo_especialidad.addItem(e.nombre, e.idespecialidad)
 
-        # Proveedor
-        self.cbo_proveedor.clear()
-        for p in self.session.query(Proveedor).order_by(Proveedor.nombre).all():
-            self.cbo_proveedor.addItem(p.nombre, p.idproveedor)
-
+        
         self._toggle_tabs_by_tipo()
 
     def _toggle_tabs_by_tipo(self):
@@ -344,11 +374,7 @@ class FormularioItem(QDialog):
             ix = self.cbo_tipo_insumo.findText(it.tipo_insumo, Qt.MatchFixedString)
             if ix != -1: self.cbo_tipo_insumo.setCurrentIndex(ix)
         if it.stock_minimo is not None: self.sp_stock_min.setValue(float(it.stock_minimo))
-        if it.fechavencimiento:
-            self.dt_venc.setDate(QDate(it.fechavencimiento.year, it.fechavencimiento.month, it.fechavencimiento.day))
-        if it.idproveedor:
-            ix = self.cbo_proveedor.findData(it.idproveedor)
-            if ix != -1: self.cbo_proveedor.setCurrentIndex(ix)
+        
         self.chk_uso_interno.setChecked(bool(it.uso_interno))
         self.chk_uso_proc.setChecked(bool(it.uso_procedimiento))
         self._toggle_tabs_by_tipo()
@@ -375,8 +401,7 @@ class FormularioItem(QDialog):
         unidad = (self.txt_unidad.text() or "").strip() or None
         tin = self.cbo_tipo_insumo.currentText()
         stock_min = self.sp_stock_min.value()
-        fven = self.dt_venc.date().toPyDate() if self.dt_venc.date() else None
-        idprov = self.cbo_proveedor.currentData()
+        
         uso_int = self.chk_uso_interno.isChecked()
         uso_proc = self.chk_uso_proc.isChecked()
 
@@ -413,8 +438,6 @@ class FormularioItem(QDialog):
             categoria=categoria,
             tipo_insumo=tin,
             stock_minimo=stock_min,
-            fechavencimiento=fven,
-            idproveedor=idprov,
             uso_interno=uso_int,
             uso_procedimiento=uso_proc,
         )

@@ -12,4 +12,4 @@ class Proveedor(Base):
     email = Column(String(80))
     observaciones = Column(String)
     estado = Column(Boolean, default=True)   # <-- Esto es clave
-    items = relationship("Item", back_populates="proveedor")
+    compras = relationship("Compra", back_populates="proveedor", cascade="all, delete-orphan")

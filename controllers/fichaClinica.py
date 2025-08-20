@@ -506,7 +506,7 @@ class FichaClinicaForm(QDialog):
 
         self.table_procedimientos = QTableWidget(0, 5)
         self.table_procedimientos.setHorizontalHeaderLabels(
-            ["Fecha", "Procedimiento", "Comentario", "", ""]
+            ["Fecha", "Item", "Comentario", "", ""]
         )
         layout.addWidget(self.table_procedimientos)
 
@@ -530,7 +530,7 @@ class FichaClinicaForm(QDialog):
 
         self.proc_comentario = QLineEdit()
         form.addRow("Fecha:", self.proc_fecha)
-        form.addRow("Procedimiento:", self.proc_combo)
+        form.addRow("Item:", self.proc_combo)
         form.addRow("Comentario:", self.proc_comentario)
         layout.addLayout(form)
 
