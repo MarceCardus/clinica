@@ -22,7 +22,7 @@ class InsumoSelectDialog(QDialog):
         layout = QVBoxLayout(self)
         self.listWidget = QListWidget()
         for insumo in insumos:
-            self.listWidget.addItem(f"{insumo.idinsumo} - {insumo.nombre}")
+            self.listWidget.addItem(f"{insumo.iditem} - {insumo.nombre}")
         layout.addWidget(self.listWidget)
         self.listWidget.setCurrentRow(0)
         
@@ -131,6 +131,7 @@ class ABMCompra(QWidget):
         self.grilla.setHorizontalHeaderLabels([
             "Código", "Nombre", "Cantidad", "Precio", "IVA 10%", "Total"
         ])
+        self.grilla.cellChanged.connect(self._on_grilla_cell_changed)
         right_layout.addWidget(self.grilla)
 
         # Botones detalle (Agregar/Eliminar insumo)
@@ -369,8 +370,9 @@ class ABMCompra(QWidget):
             for det in detalles:
                 row = self.grilla.rowCount()
                 self.grilla.insertRow(row)
-                self.grilla.setItem(row, 0, QTableWidgetItem(str(det.idinsumo)))
-                nombre_insumo = session.query(Insumo).get(det.idinsumo).nombre
+                self.grilla.setItem(row, 0, QTableWidgetItem(str(det.iditem)))
+                item = session.query(Item).get(det.iditem)
+                nombre_insumo = item.nombre if item else ""
                 self.grilla.setItem(row, 1, QTableWidgetItem(nombre_insumo))
                 self.grilla.setItem(row, 2, QTableWidgetItem(f"{det.cantidad:,.0f}".replace(",", ".")))
                 self.grilla.setItem(row, 3, QTableWidgetItem(f"{det.preciounitario:,.0f}".replace(",", ".")))
@@ -479,7 +481,7 @@ class ABMCompra(QWidget):
     def agregar_insumo_a_grilla(self, insumo):
         # Evitar duplicados: buscá si ya está el código
         for row in range(self.grilla.rowCount()):
-            if self.grilla.item(row, 0) and self.grilla.item(row, 0).text() == str(insumo.idinsumo):
+            if self.grilla.item(row, 0) and self.grilla.item(row, 0).text() == str(insumo.iditem):
                 # Si ya existe, sumar cantidad
                 cant_item = self.grilla.item(row, 2)
                 cant_actual = float(cant_item.text()) if cant_item and cant_item.text() else 0
@@ -489,7 +491,7 @@ class ABMCompra(QWidget):
             
         row = self.grilla.rowCount()
         self.grilla.insertRow(row)
-        self.grilla.setItem(row, 0, QTableWidgetItem(str(insumo.idinsumo)))
+        self.grilla.setItem(row, 0, QTableWidgetItem(str(insumo.iditem)))
         self.grilla.setItem(row, 1, QTableWidgetItem(insumo.nombre))
         self.grilla.setItem(row, 2, QTableWidgetItem("1"))  # cantidad default
         self.grilla.setItem(row, 3, QTableWidgetItem("0"))  # precio
@@ -547,17 +549,22 @@ class ABMCompra(QWidget):
 
     def calcular_iva_total_row(self, row):
         try:
-            cantidad = float(self.grilla.item(row, 2).text())
-            precio = float(self.grilla.item(row, 3).text())
-            iva = round(precio / 11)
+            self.grilla.blockSignals(True)  # Bloquea señales para evitar recursividad
+            cantidad_item = self.grilla.item(row, 2)
+            precio_item = self.grilla.item(row, 3)
+            cantidad = float(cantidad_item.text()) if cantidad_item and cantidad_item.text() else 0
+            precio = float(precio_item.text()) if precio_item and precio_item.text() else 0
             total = round(precio * cantidad)
+            iva = round(total / 11) if total else 0
             self.grilla.setItem(row, 4, QTableWidgetItem(f"{iva:,.0f}".replace(",", ".")))
             self.grilla.setItem(row, 5, QTableWidgetItem(f"{total:,.0f}".replace(",", ".")))
             self.grilla.setItem(row, 3, QTableWidgetItem(f"{precio:,.0f}".replace(",", ".")))
-        except Exception:
-            # Si algo falla, poné 0
+        except Exception as e:
+            print(f"Error en calcular_iva_total_row: {e}")
             self.grilla.setItem(row, 4, QTableWidgetItem("0"))
             self.grilla.setItem(row, 5, QTableWidgetItem("0"))
+        finally:
+            self.grilla.blockSignals(False)  # Desbloquea señales
 
     def actualizar_totales(self):
         subtotal = 0
@@ -573,4 +580,9 @@ class ABMCompra(QWidget):
             iva_total += iva
         self.lbl_subtotal.setText(f"Total: {subtotal:,.0f}".replace(",", "."))
         self.lbl_iva.setText(f"IVA: {iva_total:,.0f}".replace(",", "."))
+
+    def _on_grilla_cell_changed(self, row, column):
+        if column in (2, 3):  # Cantidad o Precio
+            self.calcular_iva_total_row(row)
+            self.actualizar_totales()
 

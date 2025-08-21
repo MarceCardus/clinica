@@ -79,7 +79,7 @@ class CompraController:
             for det in detalles:
                 stock_mov = StockMovimiento(
                     fecha=datetime.now(),
-                    idinsumo=det.idinsumo,
+                    iditem=det.iditem,
                     cantidad=det.cantidad,
                     tipo="EGRESO",
                     motivo="Anulación de compra",

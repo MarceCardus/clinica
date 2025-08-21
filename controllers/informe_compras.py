@@ -15,7 +15,6 @@ from sqlalchemy import func, and_, or_
 from models.compra import Compra
 from models.compra_detalle import CompraDetalle
 from models.proveedor import Proveedor
-from models.insumo import Insumo
 from models.item import Item
 
 
@@ -66,7 +65,7 @@ class ComprasReportForm(QWidget):
         fl.addWidget(QLabel("Desde:")); fl.addWidget(self.dt_desde)
         fl.addWidget(QLabel("Hasta:")); fl.addWidget(self.dt_hasta)
         fl.addWidget(QLabel("Proveedor:")); fl.addWidget(self.txt_proveedor, 2)
-        fl.addWidget(QLabel("Tipo de insumo:")); fl.addWidget(self.cbo_tipo, 1)
+        fl.addWidget(QLabel("Tipo de ítem:")); fl.addWidget(self.cbo_tipo, 1)
         fl.addWidget(self.chk_mostrar_anuladas)
         fl.addWidget(self.btn_buscar)
         fl.addWidget(self.btn_pdf)
@@ -91,7 +90,7 @@ class ComprasReportForm(QWidget):
         # Detalle
         self.table_detalle = QTableWidget(0, 4)
         self.table_detalle.setHorizontalHeaderLabels([
-            "Cantidad", "Insumo", "Precio Unitario", "Total Fila"
+            "Cantidad", "Ítem", "Precio Unitario", "Total Fila"
         ])
         self.table_detalle.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table_detalle.verticalHeader().setVisible(False)
@@ -99,21 +98,10 @@ class ComprasReportForm(QWidget):
         self.table_detalle.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table_detalle.setSelectionBehavior(QTableWidget.SelectRows)
 
-        # NUEVO: Resumen por ítem (rango completo)
-        self.table_resumen = QTableWidget(0, 4)
-        self.table_resumen.setHorizontalHeaderLabels([
-            "Insumo", "Cantidad total", "Monto total", "Líneas (veces)"
-        ])
-        self.table_resumen.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.table_resumen.verticalHeader().setVisible(False)
-        self.table_resumen.setAlternatingRowColors(True)
-        self.table_resumen.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.table_resumen.setSelectionBehavior(QTableWidget.SelectRows)
-
+        
         splitter.addWidget(self.table_master)
         splitter.addWidget(self.table_detalle)
-        splitter.addWidget(self.table_resumen)
-        splitter.setSizes([360, 220, 160])
+        splitter.setSizes([360, 220])
 
         # Totales
         tot_layout = QHBoxLayout()
@@ -196,9 +184,7 @@ class ComprasReportForm(QWidget):
         else:
             self.table_detalle.setRowCount(0)
 
-        # NUEVO: resumen del rango
-        self._cargar_resumen()
-
+        
     def exportar_excel(self):
         # Intentar usar pandas; si no está, hacer fallback a CSV
         try:
@@ -232,37 +218,36 @@ class ComprasReportForm(QWidget):
             self.session.query(
                 CompraDetalle.idcompra.label("ID Compra"),
                 CompraDetalle.cantidad.label("Cantidad"),
-                Insumo.nombre.label("Insumo"),
+                Item.nombre.label("Ítem"),
                 CompraDetalle.preciounitario.label("Precio Unitario"),
                 (CompraDetalle.cantidad * CompraDetalle.preciounitario).label("Total Fila"),
             )
             .join(Compra, Compra.idcompra == CompraDetalle.idcompra)
             .join(Proveedor, Compra.idproveedor == Proveedor.idproveedor)
-            .join(Insumo, CompraDetalle.idinsumo == Insumo.idinsumo)
+            .join(Item, CompraDetalle.iditem == Item.iditem)
             .filter(and_(*filtros))
-            .order_by(CompraDetalle.idcompra.desc(), Insumo.nombre.asc())
+            .order_by(CompraDetalle.idcompra.desc(), Item.nombre.asc())
         )
         if tipo_val:
-            q_det = q_det.filter(Insumo.tipo == tipo_val)
+            q_det = q_det.filter(Item.tipo == tipo_val)
         det_rows = q_det.all()
 
         # Resumen
         q_res = (
             self.session.query(
-                Insumo.nombre.label("Insumo"),
+                Item.nombre.label("Ítem"),
                 func.sum(CompraDetalle.cantidad).label("Cantidad total"),
-                func.sum(CompraDetalle.cantidad * CompraDetalle.preciounitario).label("Monto total"),
-                func.count().label("Líneas (veces)")
+                func.sum(CompraDetalle.cantidad * CompraDetalle.preciounitario).label("Monto total")
             )
             .join(Compra, Compra.idcompra == CompraDetalle.idcompra)
             .join(Proveedor, Compra.idproveedor == Proveedor.idproveedor)
-            .join(Insumo, CompraDetalle.idinsumo == Insumo.idinsumo)
+            .join(Item, CompraDetalle.iditem == Item.iditem)
             .filter(and_(*filtros))
-            .group_by(Insumo.nombre)
-            .order_by(Insumo.nombre.asc())
+            .group_by(Item.nombre)
+            .order_by(Item.nombre.asc())
         )
         if tipo_val:
-            q_res = q_res.filter(Insumo.tipo == tipo_val)
+            q_res = q_res.filter(Item.tipo == tipo_val)
         res_rows = q_res.all()
 
         import pandas as pd
@@ -275,8 +260,8 @@ class ComprasReportForm(QWidget):
         if not df_master.empty:
             df_master["Fecha"] = pd.to_datetime(df_master["Fecha"]).dt.strftime("%d/%m/%Y")
 
-        df_det = pd.DataFrame(det_rows, columns=["ID Compra", "Cantidad", "Insumo", "Precio Unitario", "Total Fila"])
-        df_resumen = pd.DataFrame(res_rows, columns=["Insumo", "Cantidad total", "Monto total", "Líneas (veces)"])
+        df_det = pd.DataFrame(det_rows, columns=["ID Compra", "Cantidad", "Ítem", "Precio Unitario", "Total Fila"])
+        df_resumen = pd.DataFrame(res_rows, columns=["Ítem", "Cantidad total", "Monto total"])
 
         # Tipos numéricos
         for col in ["Monto Total", "IVA Total"]:
@@ -369,37 +354,36 @@ class ComprasReportForm(QWidget):
             self.session.query(
                 CompraDetalle.idcompra,
                 CompraDetalle.cantidad,
-                Insumo.nombre,
+                Item.nombre,
                 CompraDetalle.preciounitario,
                 (CompraDetalle.cantidad * CompraDetalle.preciounitario).label("total_fila"),
             )
             .join(Compra, Compra.idcompra == CompraDetalle.idcompra)
             .join(Proveedor, Compra.idproveedor == Proveedor.idproveedor)
-            .join(Insumo, CompraDetalle.idinsumo == Insumo.idinsumo)
+            .join(Item, CompraDetalle.iditem == Item.iditem)
             .filter(and_(*filtros))
-            .order_by(CompraDetalle.idcompra.desc(), Insumo.nombre.asc())
+            .order_by(CompraDetalle.idcompra.desc(), Item.nombre.asc())
         )
         if tipo_val:
-            q_det = q_det.filter(Insumo.tipo == tipo_val)
+            q_det = q_det.filter(Item.tipo == tipo_val)
         det_rows = q_det.all()
 
         # Resumen
         q_res = (
             self.session.query(
-                Insumo.nombre.label("insumo"),
+                Item.nombre.label("item"),
                 func.sum(CompraDetalle.cantidad).label("cant_total"),
-                func.sum(CompraDetalle.cantidad * CompraDetalle.preciounitario).label("monto_total"),
-                func.count().label("veces")
+                func.sum(CompraDetalle.cantidad * CompraDetalle.preciounitario).label("monto_total")
             )
             .join(Compra, Compra.idcompra == CompraDetalle.idcompra)
             .join(Proveedor, Compra.idproveedor == Proveedor.idproveedor)
-            .join(Insumo, CompraDetalle.idinsumo == Insumo.idinsumo)
+            .join(Item, CompraDetalle.iditem == Item.iditem)
             .filter(and_(*filtros))
-            .group_by(Insumo.nombre)
-            .order_by(Insumo.nombre.asc())
+            .group_by(Item.nombre)
+            .order_by(Item.nombre.asc())
         )
         if tipo_val:
-            q_res = q_res.filter(Insumo.tipo == tipo_val)
+            q_res = q_res.filter(Item.tipo == tipo_val)
         res_rows = q_res.all()
 
         base = self._stamp()
@@ -418,16 +402,15 @@ class ComprasReportForm(QWidget):
 
             with open(f2, "w", newline="", encoding="utf-8-sig") as fp:
                 w = csv.writer(fp, delimiter=';')
-                w.writerow(["ID Compra","Cantidad","Insumo","Precio Unitario","Total Fila"])
+                w.writerow(["ID Compra","Cantidad","Ítem","Precio Unitario","Total Fila"])
                 for r in det_rows:
                     w.writerow([r.idcompra, r.cantidad or 0, r.nombre or "", self._fmt_csv_monto(r.preciounitario or 0), self._fmt_csv_monto(r.total_fila or 0)])
 
             with open(f3, "w", newline="", encoding="utf-8-sig") as fp:
                 w = csv.writer(fp, delimiter=';')
-                w.writerow(["Insumo","Cantidad total","Monto total","Líneas (veces)"])
+                w.writerow(["Ítem","Cantidad total","Monto total"])
                 for r in res_rows:
-                    w.writerow([r.insumo or "", r.cant_total or 0, self._fmt_csv_monto(r.monto_total or 0), int(r.veces or 0)])
-
+                    w.writerow([r.nombre or "", r.cant_total or 0, self._fmt_csv_monto(r.monto_total or 0)])
             QMessageBox.information(
                 self, "Exportación",
                 "No se encontraron librerías para Excel (openpyxl/xlsxwriter). "
@@ -509,6 +492,7 @@ class ComprasReportForm(QWidget):
                 CompraDetalle.lote,
                 CompraDetalle.fechavencimiento,
                 CompraDetalle.observaciones,
+                (CompraDetalle.cantidad * CompraDetalle.preciounitario).label("total_fila"),
             )
             .join(Item, CompraDetalle.iditem == Item.iditem)
             .filter(CompraDetalle.idcompra == idcompra)
@@ -528,7 +512,7 @@ class ComprasReportForm(QWidget):
             self.table_detalle.insertRow(row)
             items = [
                 QTableWidgetItem(fmt(r.cantidad)),
-                QTableWidgetItem(r.insumo or ""),
+                QTableWidgetItem(r.nombre or ""),
                 QTableWidgetItem(fmt(r.preciounitario)),
                 QTableWidgetItem(fmt(r.total_fila)),
             ]
@@ -550,20 +534,19 @@ class ComprasReportForm(QWidget):
 
         q = (
             self.session.query(
-                Insumo.nombre.label("insumo"),
+                Item.nombre.label("item"),
                 func.sum(CompraDetalle.cantidad).label("cant_total"),
-                func.sum(CompraDetalle.cantidad * CompraDetalle.preciounitario).label("monto_total"),
-                func.count().label("veces")
+                func.sum(CompraDetalle.cantidad * CompraDetalle.preciounitario).label("monto_total")
             )
             .join(Compra, Compra.idcompra == CompraDetalle.idcompra)
             .join(Proveedor, Compra.idproveedor == Proveedor.idproveedor)
-            .join(Insumo, CompraDetalle.idinsumo == Insumo.idinsumo)
+            .join(Item, CompraDetalle.iditem == Item.iditem)
             .filter(and_(*filtros))
-            .group_by(Insumo.nombre)
-            .order_by(Insumo.nombre.asc())
+            .group_by(Item.nombre)
+            .order_by(Item.nombre.asc())
         )
         if tipo_val:
-            q = q.filter(Insumo.tipo == tipo_val)
+            q = q.filter(Item.tipo == tipo_val)
 
         rows = q.all()
 
@@ -574,17 +557,33 @@ class ComprasReportForm(QWidget):
                 return str(n)
 
         self.table_resumen.setRowCount(0)
+        total_cant = 0
+        total_monto = 0
         for r in rows:
             row = self.table_resumen.rowCount()
             self.table_resumen.insertRow(row)
             items = [
-                QTableWidgetItem(r.insumo or ""),
+                QTableWidgetItem(r.item or ""),
                 QTableWidgetItem(fmt_m(r.cant_total or 0)),
                 QTableWidgetItem(fmt_m(r.monto_total or 0)),
-                QTableWidgetItem(str(int(r.veces or 0))),
+            ]
+            total_cant += r.cant_total or 0
+            total_monto += r.monto_total or 0
+            for i, it in enumerate(items):
+                it.setTextAlignment(Qt.AlignCenter if i in (1,2) else Qt.AlignVCenter | Qt.AlignLeft)
+                self.table_resumen.setItem(row, i, it)
+        # Fila de totales
+        if rows:
+            row = self.table_resumen.rowCount()
+            self.table_resumen.insertRow(row)
+            items = [
+                QTableWidgetItem("TOTAL"),
+                QTableWidgetItem(fmt_m(total_cant)),
+                QTableWidgetItem(fmt_m(total_monto)),
             ]
             for i, it in enumerate(items):
-                it.setTextAlignment(Qt.AlignCenter if i in (1,2,3) else Qt.AlignVCenter | Qt.AlignLeft)
+                it.setFont(QFont("Arial", weight=QFont.Bold))
+                it.setTextAlignment(Qt.AlignCenter if i in (1,2) else Qt.AlignVCenter | Qt.AlignLeft)
                 self.table_resumen.setItem(row, i, it)
 
     def _ensure_excel_engine(self):
@@ -666,43 +665,77 @@ class ComprasReportForm(QWidget):
             iva = self.table_master.item(r, 5).text()
             anulada = (self.table_master.item(r, 6).text().upper() == "ANULADA")
             estado_html = " — <font color='red'><b>ESTADO: ANULADA</b></font>" if anulada else ""
-            story.append(Paragraph(
-                f"<b>#{idc}</b> — {fecha_txt} — {proveedor}<br/>"
-                f"N° Factura: <b>{comp}</b> — Total: <b>{monto}</b> — IVA: <b>{iva}</b>{estado_html}",
-                styles["Heading3"]
-            ))
-            story.append(Spacer(1, 8))
+            # Estética alineada y por línea como informe de ventas
+            story.append(Paragraph(f"<b>N° Compra:</b> {idc}", styles["Heading3"]))
+            story.append(Paragraph(f"<b>Fecha:</b> {fecha_txt}", styles["Normal"]))
+            story.append(Paragraph(f"<b>N° Factura:</b> {comp}", styles["Normal"]))
+            story.append(Paragraph(f"<b>Proveedor:</b> {proveedor}", styles["Normal"]))
+            if anulada:
+                story.append(Paragraph("<font color='red'><b>ESTADO: ANULADA</b></font>", styles["Normal"]))
+            story.append(Spacer(1, 4))
 
             # Detalle desde DB (respeta filtro de tipo)
             tipo_val = self.cbo_tipo.currentData()
             q = (
                 self.session.query(
                     CompraDetalle.cantidad,
-                    Insumo.nombre,
+                    Item.nombre,
                     CompraDetalle.preciounitario,
                     (CompraDetalle.cantidad * CompraDetalle.preciounitario).label("total_fila"),
                 )
-                .join(Insumo, CompraDetalle.idinsumo == Insumo.idinsumo)
+                .join(Item, CompraDetalle.iditem == Item.iditem)
                 .filter(CompraDetalle.idcompra == int(idc))
-                .order_by(Insumo.nombre.asc())
+                .order_by(Item.nombre.asc())
             )
             if tipo_val:
-                q = q.filter(Insumo.tipo == tipo_val)
+                q = q.filter(Item.tipo == tipo_val)
             det = q.all()
 
-            data = [["Cantidad", "Insumo", "Precio Unitario", "Total Fila"]]
+            data = [["Cantidad", "Ítem", "Precio Unitario", "Total Fila"]]
             def fmt(v):
                 try: return f"{float(v):,.0f}".replace(",", ".")
                 except: return str(v)
+            total_fila = 0
             for d in det:
-                data.append([fmt(d.cantidad), d.nombre or "", fmt(d.preciounitario), fmt(d.total_fila)])
+                row = [
+                    fmt(d.cantidad),
+                    d.nombre or "",
+                    fmt(d.preciounitario),
+                    fmt(d.total_fila),
+                ]
+                data.append(row)
+                total_fila += float(d.total_fila or 0)
 
-            t = Table(data, repeatRows=1)
+            # Fila Total
+            data.append([
+                "",
+                "",
+                Paragraph("<b>Total:</b>", styles["Normal"]),
+                Paragraph(f"<b>{fmt(total_fila)}</b>", styles["Normal"]),
+            ])
+            # Fila IVA
+            iva_val = total_fila / 11 if total_fila else 0
+            data.append([
+                "",
+                "",
+                Paragraph("<b>IVA:</b>", styles["Normal"]),
+                Paragraph(f"<b>{fmt(iva_val)}</b>", styles["Normal"]),
+            ])
+
+            t = Table(
+                data,
+                repeatRows=1,
+                colWidths=[50, 200, 80, 80],
+                hAlign="LEFT"
+            )
             t.setStyle(TableStyle([
                 ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#eeeeee")),
                 ("GRID", (0,0), (-1,-1), 0.25, colors.grey),
-                ("ALIGN", (0,1), (0,-1), "CENTER"),
-                ("ALIGN", (2,1), (3,-1), "CENTER"),
+                ("ALIGN", (0,0), (-1,-1), "CENTER"),
+                ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+                ("FONTNAME", (0,-2), (-1,-1), "Helvetica-Bold"),  # Total/IVA bold
+                ("BACKGROUND", (0,-2), (-1,-2), colors.whitesmoke),
+                ("BACKGROUND", (0,-1), (-1,-1), colors.whitesmoke),
             ]))
             story.append(t); story.append(Spacer(1, 6))
 
@@ -713,20 +746,19 @@ class ComprasReportForm(QWidget):
         filtros, tipo_val = self._filtros_actuales()
         q_res = (
             self.session.query(
-                Insumo.nombre.label("insumo"),
+                Item.nombre.label("item"),
                 func.sum(CompraDetalle.cantidad).label("cant_total"),
-                func.sum(CompraDetalle.cantidad * CompraDetalle.preciounitario).label("monto_total"),
-                func.count().label("veces")
+                func.sum(CompraDetalle.cantidad * CompraDetalle.preciounitario).label("monto_total")
             )
             .join(Compra, Compra.idcompra == CompraDetalle.idcompra)
             .join(Proveedor, Compra.idproveedor == Proveedor.idproveedor)
-            .join(Insumo, CompraDetalle.idinsumo == Insumo.idinsumo)
+            .join(Item, CompraDetalle.iditem == Item.iditem)
             .filter(and_(*filtros))
-            .group_by(Insumo.nombre)
-            .order_by(Insumo.nombre.asc())
+            .group_by(Item.nombre)
+            .order_by(Item.nombre.asc())
         )
         if tipo_val:
-            q_res = q_res.filter(Insumo.tipo == tipo_val)
+            q_res = q_res.filter(Item.tipo == tipo_val)
         res = q_res.all()
 
         from reportlab.lib import colors
@@ -734,14 +766,14 @@ class ComprasReportForm(QWidget):
         story.append(Spacer(1, 10))
         story.append(Paragraph("<b>Resumen por ítem (rango)</b>", styles["Heading2"]))
 
-        data_res = [["Insumo", "Cantidad total", "Monto total", "Líneas (veces)"]]
+        data_res = [["Ítem", "Cantidad total", "Monto total"]]
         def fmt_m(v):
             try: return f"{float(v):,.0f}".replace(",", ".")
             except: return str(v)
         for r in res:
-            data_res.append([r.insumo or "", fmt_m(r.cant_total or 0), fmt_m(r.monto_total or 0), str(int(r.veces or 0))])
+            data_res.append([r.item or "", fmt_m(r.cant_total or 0), fmt_m(r.monto_total or 0)])
 
-        t_res = Table(data_res, repeatRows=1)
+        t_res = Table(data_res, repeatRows=1, hAlign="LEFT")
         t_res.setStyle(TableStyle([
             ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#eeeeee")),
             ("GRID", (0,0), (-1,-1), 0.25, colors.grey),

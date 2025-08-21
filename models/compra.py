@@ -14,3 +14,4 @@ class Compra(Base):
     observaciones = Column(String)
     proveedor = relationship("Proveedor", back_populates="compras")
     detalles  = relationship("CompraDetalle", back_populates="compra", cascade="all, delete-orphan")
+    anulada = Column(Boolean, default=False)

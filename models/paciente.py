@@ -27,6 +27,7 @@ class Paciente(Base):
     direccion = Column(String(200))
     nacionalidad = Column(String(40))
     ruc = Column(String(20))
+    razon_social = Column(String(160))
     ruta_foto = Column(String(200))
     fecha_alta = Column(Date)
     estado = Column(Boolean, default=True)
