@@ -8,3 +8,6 @@ __pycache__/
 *.pyc.vscode/
 .env
 .env.*
+.vscode/
+.env
+.env.*
