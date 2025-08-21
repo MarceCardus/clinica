@@ -108,7 +108,7 @@ class CitaForm(QMainWindow):
         # Profesionales
         s = SessionLocal()
         self.profes = [(p.idprofesional, f"{p.nombre} {p.apellido}")
-                       for p in s.query(Profesional).order_by(Profesional.apellido)]
+                for p in s.query(Profesional).filter_by(estado=True).order_by(Profesional.apellido)]
         # Colores fijos
         self.color_por_profesional = {
             pid: COLORS[i % len(COLORS)] for i, (pid, _) in enumerate(self.profes)

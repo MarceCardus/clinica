@@ -46,12 +46,12 @@ class ABMProfesionales(QMainWindow):
 
         # --- Tabla: Nombre completo + Documento ---
         self.table = QTableWidget()
-        self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels(["Nombre Completo", "Documento", "Teléfono", "ID"])
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(["Nombre Completo", "Documento", "Teléfono", "Estado", "ID"])
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setAlternatingRowColors(True)
         self.table.cellClicked.connect(self.seleccionar_fila)
-        self.table.setColumnHidden(3, True)  # Oculta la columna de ID
+        self.table.setColumnHidden(4, True)  # Oculta la columna de ID
 
         from PyQt5.QtWidgets import QHeaderView
         # >>> Estas líneas son las nuevas para distribuir bien el espacio:
@@ -142,7 +142,7 @@ class ABMProfesionales(QMainWindow):
     def cargar_profesionales(self):
         self.table.setRowCount(0)
         session = SessionLocal()
-        profesionales = session.query(Profesional).filter_by(estado=True).all()  # Solo activos
+        profesionales = session.query(Profesional).all()  # Activos e inactivos
         session.close()
         for i, p in enumerate(profesionales):
             nombre_completo = f"{p.nombre} {p.apellido}".strip()
@@ -150,7 +150,9 @@ class ABMProfesionales(QMainWindow):
             self.table.setItem(i, 0, QTableWidgetItem(nombre_completo))
             self.table.setItem(i, 1, QTableWidgetItem(p.documento or ""))
             self.table.setItem(i, 2, QTableWidgetItem(p.telefono or ""))
-            self.table.setItem(i, 3, QTableWidgetItem(str(p.idprofesional)))  # ID en columna 3
+            estado_txt = "Activo" if p.estado else "Inactivo"
+            self.table.setItem(i, 3, QTableWidgetItem(estado_txt))
+            self.table.setItem(i, 4, QTableWidgetItem(str(p.idprofesional)))  # ID en columna 4
 
     def filtrar_tabla(self):
         filtro = self.input_buscar.text().lower()
@@ -180,7 +182,7 @@ class ABMProfesionales(QMainWindow):
         self.btn_limpiar.setEnabled(True)
 
     def seleccionar_fila(self, row, col):
-        profesional_id_item = self.table.item(row, 3)
+        profesional_id_item = self.table.item(row, 4)
         if profesional_id_item is None:
             return
         profesional_id = int(profesional_id_item.text())

@@ -153,17 +153,17 @@ class MainWindow(QMainWindow):
         action_profesional.triggered.connect(self.abrir_profesional)
         self.menu_mantenimiento.addAction(action_profesional)
 
-        action_abm_producto = QAction("Productos", self)
-        action_abm_producto.triggered.connect(self.abrir_producto)
-        self.menu_mantenimiento.addAction(action_abm_producto)
+        #action_abm_producto = QAction("Productos", self)
+        #action_abm_producto.triggered.connect(self.abrir_producto)
+        #self.menu_mantenimiento.addAction(action_abm_producto)
 
         action_abm_paquete = QAction("Paquetes", self)
         action_abm_paquete.triggered.connect(self.abrir_paquetes)
         self.menu_mantenimiento.addAction(action_abm_paquete)
 
-        action_abm_insumo = QAction("Insumos", self)
-        action_abm_insumo.triggered.connect(self.abrir_insumos)
-        self.menu_mantenimiento.addAction(action_abm_insumo)
+        #action_abm_insumo = QAction("Insumos", self)
+        #action_abm_insumo.triggered.connect(self.abrir_insumos)
+        #self.menu_mantenimiento.addAction(action_abm_insumo)
 
         action_abm_item = QAction("Items", self)
         action_abm_item.triggered.connect(self.abrir_items)

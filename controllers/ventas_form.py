@@ -336,9 +336,9 @@ class ABMVenta(QWidget):
             self.cbo_paciente.addItem(f"{p.apellido}, {p.nombre}", p.idpaciente)
         self._enable_search_on_combobox(self.cbo_paciente)   # <--- AQUI
 
-        # Profesionales
+        # Profesionales (solo activos)
         self.cbo_profesional.clear()
-        for pr in s.execute(select(Profesional).order_by(Profesional.apellido)).scalars():
+        for pr in s.execute(select(Profesional).where(Profesional.estado == True).order_by(Profesional.apellido)).scalars():
             self.cbo_profesional.addItem(f"{pr.apellido}, {pr.nombre}", pr.idprofesional)
 
         # Clínicas

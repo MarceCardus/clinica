@@ -1,7 +1,6 @@
 # controllers/informe_stock.py
-
 from sqlalchemy import func, case
-from models.insumo import Insumo
+from models.item import Item, ItemTipo
 from models.StockMovimiento import StockMovimiento
 
 class StockController:
@@ -9,28 +8,25 @@ class StockController:
         self.session = session
 
     def get_stock_insumos(self, tipo=None, categoria=None):
+        # Solo items cuyo tipo sea INSUMO o AMBOS
         query = self.session.query(
-            Insumo.idinsumo,
-            Insumo.nombre,
-            Insumo.tipo,
-            Insumo.categoria,
-            Insumo.unidad,
-            func.coalesce(
-                func.sum(
-                    case(
-                        (StockMovimiento.tipo == 'INGRESO', StockMovimiento.cantidad),
-                        (StockMovimiento.tipo == 'EGRESO', -StockMovimiento.cantidad),
-                        else_=0
-                    )
-                ), 0
-            ).label('stock_actual')
-        ).outerjoin(StockMovimiento, StockMovimiento.idinsumo == Insumo.idinsumo)
+            Item.iditem,
+            Item.nombre,
+            Item.tipo_insumo.label('tipo'),
+            Item.categoria,
+            Item.unidad,
+            func.coalesce(func.sum(StockMovimiento.cantidad), 0).label('stock_actual')
+        ).outerjoin(StockMovimiento, StockMovimiento.iditem == Item.iditem)
+
+        # Filtrar por tipo de item (solo insumos o ambos)
+        query = query.join(ItemTipo, Item.iditemtipo == ItemTipo.iditemtipo)
+        query = query.filter(ItemTipo.nombre.in_(["INSUMO", "AMBOS"]))
 
         if tipo and tipo != "TODOS":
-            query = query.filter(Insumo.tipo == tipo)
+            query = query.filter(Item.tipo_insumo == tipo)
         if categoria and categoria != "TODOS":
-            query = query.filter(Insumo.categoria == categoria)
+            query = query.filter(Item.categoria == categoria)
 
-        query = query.group_by(Insumo.idinsumo, Insumo.nombre, Insumo.tipo, Insumo.categoria, Insumo.unidad)
-        query = query.order_by(Insumo.nombre)
+        query = query.group_by(Item.iditem, Item.nombre, Item.tipo_insumo, Item.categoria, Item.unidad)
+        query = query.order_by(Item.nombre)
         return query.all()

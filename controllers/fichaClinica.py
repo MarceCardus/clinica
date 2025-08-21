@@ -128,28 +128,7 @@ class FichaClinicaForm(QDialog):
     # Sugerencias automáticas al perder foco
         self.txt_apellido.focusOutEvent = self._focus_out_apellido(self.txt_apellido.focusOutEvent)
         self.txt_ci.focusOutEvent = self._focus_out_ci(self.txt_ci.focusOutEvent)
-    def _focus_out_apellido(self, old_event):
-        def handler(event):
-            # Sugerir razón social si está vacía
-            if not self.txt_razon_social.text().strip():
-                nombre = self.txt_nombre.text().strip()
-                apellido = self.txt_apellido.text().strip()
-                if nombre and apellido:
-                    self.txt_razon_social.setText(f"{apellido.upper()} {nombre.upper()}")
-            old_event(event)
-        return handler
-
-    def _focus_out_ci(self, old_event):
-        def handler(event):
-            # Sugerir RUC si está vacío y el CI es numérico
-            if not self.txt_ruc.text().strip():
-                ci = self.txt_ci.text().strip()
-                if ci.isdigit():
-                    self.txt_ruc.setText(ci)
-            old_event(event)
-        return handler
-
-        # --- Ubicación: Departamento / Ciudad / Barrio ---
+            # --- Ubicación: Departamento / Ciudad / Barrio ---
         fila_ubi = QHBoxLayout()
         self.cbo_departamento = QComboBox(); self.cbo_departamento.setPlaceholderText("Departamento…")
         self.cbo_ciudad = QComboBox();       self.cbo_ciudad.setPlaceholderText("Ciudad…")
@@ -165,8 +144,31 @@ class FichaClinicaForm(QDialog):
         self.cbo_departamento.currentIndexChanged.connect(self._on_departamento_changed)
         self.cbo_ciudad.currentIndexChanged.connect(self._on_ciudad_changed)
 
-        self.txt_observaciones = QTextEdit(); layout.addRow("Observaciones:", self.txt_observaciones)
+        self.txt_observaciones = QTextEdit()
+        layout.addRow("Observaciones:", self.txt_observaciones)
+        if getattr(self, 'solo_control', False):
+            self.txt_observaciones.setReadOnly(True)
+            self.txt_observaciones.setVisible(False)  # o True si quieres mostrarlo
+    def _focus_out_apellido(self, old_event):
+        def handler(event):
+            # Sugerir razón social si está vacía
+            if not self.txt_razon_social.text().strip():
+                nombre = self.txt_nombre.text().strip()
+                apellido = self.txt_apellido.text().strip()
+                if nombre and apellido:
+                    self.txt_razon_social.setText(f"{nombre} {apellido}")
+            old_event(event)
+        return handler
 
+    def _focus_out_ci(self, old_event):
+        def handler(event):
+            # Sugerir RUC si está vacío y el CI es numérico
+            if not self.txt_ruc.text().strip():
+                ci = self.txt_ci.text().strip()
+                if ci.isdigit():
+                    self.txt_ruc.setText(f"{ci}-")
+            old_event(event)
+        return handler
     def _validar_ubicacion(self) -> bool:
         """Barrio obligatorio."""
         if not hasattr(self, "cbo_barrio"):
@@ -617,7 +619,7 @@ class FichaClinicaForm(QDialog):
         self.receta_profesional = QComboBox()
         self.receta_profesional.clear()
         self.receta_profesional.addItem("Seleccionar...", None)
-        profesionales = self.session.query(Profesional).order_by(Profesional.apellido, Profesional.nombre).all()
+        profesionales = self.session.query(Profesional).filter_by(estado=True).order_by(Profesional.apellido, Profesional.nombre).all()
         for prof in profesionales:
             nombre = f"{prof.apellido}, {prof.nombre}"
             self.receta_profesional.addItem(nombre, prof.idprofesional)
