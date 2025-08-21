@@ -5,4 +5,6 @@ venv/
 *.dll
 *.pkg
 __pycache__/
-*.pyc
+*.pyc.vscode/
+.env
+.env.*
