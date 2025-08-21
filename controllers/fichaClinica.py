@@ -121,7 +121,35 @@ class FichaClinicaForm(QDialog):
         self.txt_telefono = QLineEdit(); layout.addRow("Teléfono:", self.txt_telefono)
         self.txt_email = QLineEdit(); layout.addRow("Email:", self.txt_email)
         self.txt_direccion = QLineEdit(); layout.addRow("Dirección:", self.txt_direccion)
-                # --- Ubicación: Departamento / Ciudad / Barrio ---
+
+        # --- RUC y Razón Social ---
+        self.txt_ruc = QLineEdit(); layout.addRow("RUC (para facturación):", self.txt_ruc)
+        self.txt_razon_social = QLineEdit(); layout.addRow("Razón Social (para facturación):", self.txt_razon_social)
+    # Sugerencias automáticas al perder foco
+        self.txt_apellido.focusOutEvent = self._focus_out_apellido(self.txt_apellido.focusOutEvent)
+        self.txt_ci.focusOutEvent = self._focus_out_ci(self.txt_ci.focusOutEvent)
+    def _focus_out_apellido(self, old_event):
+        def handler(event):
+            # Sugerir razón social si está vacía
+            if not self.txt_razon_social.text().strip():
+                nombre = self.txt_nombre.text().strip()
+                apellido = self.txt_apellido.text().strip()
+                if nombre and apellido:
+                    self.txt_razon_social.setText(f"{apellido.upper()} {nombre.upper()}")
+            old_event(event)
+        return handler
+
+    def _focus_out_ci(self, old_event):
+        def handler(event):
+            # Sugerir RUC si está vacío y el CI es numérico
+            if not self.txt_ruc.text().strip():
+                ci = self.txt_ci.text().strip()
+                if ci.isdigit():
+                    self.txt_ruc.setText(ci)
+            old_event(event)
+        return handler
+
+        # --- Ubicación: Departamento / Ciudad / Barrio ---
         fila_ubi = QHBoxLayout()
         self.cbo_departamento = QComboBox(); self.cbo_departamento.setPlaceholderText("Departamento…")
         self.cbo_ciudad = QComboBox();       self.cbo_ciudad.setPlaceholderText("Ciudad…")
@@ -271,6 +299,20 @@ class FichaClinicaForm(QDialog):
         self.txt_patologia_hijos.setEnabled(enabled)
         self.txt_fliares_obs.setEnabled(enabled)
 
+    def sugerir_razon_social_por_ruc(self, ruc):
+        if not ruc:
+            return
+        # Buscar paciente con ese RUC
+        paciente = self.session.query(Paciente).filter(Paciente.ruc == ruc).first()
+        if paciente and paciente.razon_social:
+            self.txt_razon_social.setText(paciente.razon_social)
+
+    def sugerir_ruc_por_razon_social(self, razon_social):
+        if not razon_social:
+            return
+        paciente = self.session.query(Paciente).filter(Paciente.razon_social == razon_social).first()
+        if paciente and paciente.ruc:
+            self.txt_ruc.setText(paciente.ruc)
     def ui_tab_patologicos(self):
         layout = QVBoxLayout(self.tab_patologicos)
         grid = QGridLayout()
@@ -414,6 +456,8 @@ class FichaClinicaForm(QDialog):
             self.txt_telefono.setText(paciente.telefono or "")
             self.txt_email.setText(paciente.email or "")
             self.txt_direccion.setText(paciente.direccion or "")
+            self.txt_ruc.setText(paciente.ruc or "")
+            self.txt_razon_social.setText(paciente.razon_social or "")
             self.txt_observaciones.setText(paciente.observaciones or "")
             if hasattr(self, "cbo_departamento"):
                 dep_id = ciu_id = bar_id = None
@@ -1122,6 +1166,8 @@ class FichaClinicaForm(QDialog):
         p.telefono = self.txt_telefono.text().strip()
         p.email = self.txt_email.text().strip()
         p.direccion = self.txt_direccion.text().strip()
+        p.ruc = self.txt_ruc.text().strip()
+        p.razon_social = self.txt_razon_social.text().strip()
         p.observaciones = self.txt_observaciones.toPlainText().strip()
 
         # Familiares
