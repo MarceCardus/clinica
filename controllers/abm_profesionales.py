@@ -1,7 +1,7 @@
 import sys
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
-    QPushButton, QTableWidget, QTableWidgetItem, QLabel, QMessageBox, QTextEdit
+    QPushButton, QTableWidget, QTableWidgetItem, QLabel, QMessageBox, QTextEdit, QComboBox
 )
 from utils.db import SessionLocal
 from models.profesional import Profesional
@@ -89,12 +89,20 @@ class ABMProfesionales(QMainWindow):
         main_layout.addLayout(form1)
         main_layout.addLayout(form2)
 
-        # Observaciones (una línea aparte)
+        # Observaciones
         obs_layout = QHBoxLayout()
         obs_layout.addWidget(QLabel("Observaciones:"))
         self.input_observaciones = QLineEdit()
         obs_layout.addWidget(self.input_observaciones)
         main_layout.addLayout(obs_layout)
+
+        # Combo de estado
+        estado_layout = QHBoxLayout()
+        estado_layout.addWidget(QLabel("Estado:"))
+        self.cbo_estado = QComboBox()
+        self.cbo_estado.addItems(["Activo", "Inactivo"])
+        estado_layout.addWidget(self.cbo_estado)
+        main_layout.addLayout(estado_layout)
 
         # --- Botones ---
         btn_layout = QHBoxLayout()
@@ -134,7 +142,7 @@ class ABMProfesionales(QMainWindow):
     def cargar_profesionales(self):
         self.table.setRowCount(0)
         session = SessionLocal()
-        profesionales = session.query(Profesional).filter_by(estado=True).all()
+        profesionales = session.query(Profesional).filter_by(estado=True).all()  # Solo activos
         session.close()
         for i, p in enumerate(profesionales):
             nombre_completo = f"{p.nombre} {p.apellido}".strip()
@@ -142,7 +150,7 @@ class ABMProfesionales(QMainWindow):
             self.table.setItem(i, 0, QTableWidgetItem(nombre_completo))
             self.table.setItem(i, 1, QTableWidgetItem(p.documento or ""))
             self.table.setItem(i, 2, QTableWidgetItem(p.telefono or ""))
-            self.table.setItem(i, 3, QTableWidgetItem(str(p.idprofesional)))  # ID en columna oculta
+            self.table.setItem(i, 3, QTableWidgetItem(str(p.idprofesional)))  # ID en columna 3
 
     def filtrar_tabla(self):
         filtro = self.input_buscar.text().lower()
@@ -172,7 +180,10 @@ class ABMProfesionales(QMainWindow):
         self.btn_limpiar.setEnabled(True)
 
     def seleccionar_fila(self, row, col):
-        profesional_id = int(self.table.item(row, 3).text())
+        profesional_id_item = self.table.item(row, 3)
+        if profesional_id_item is None:
+            return
+        profesional_id = int(profesional_id_item.text())
         session = SessionLocal()
         profesional = session.query(Profesional).filter_by(idprofesional=profesional_id).first()
         session.close()
@@ -186,6 +197,7 @@ class ABMProfesionales(QMainWindow):
             self.input_email.setText(profesional.email or "")
             self.input_direccion.setText(profesional.direccion or "")
             self.input_observaciones.setText(profesional.observaciones or "")
+            self.cbo_estado.setCurrentIndex(0 if profesional.estado else 1)
             self.btn_agregar.setEnabled(False)
             self.btn_eliminar.setEnabled(True)
             self.btn_editar.setEnabled(True)
@@ -200,6 +212,7 @@ class ABMProfesionales(QMainWindow):
         email = self.input_email.text().strip()
         direccion = self.input_direccion.text().strip()
         observaciones = self.input_observaciones.text().strip()
+        estado = self.cbo_estado.currentText()  # Obtener el estado del combo
         if not nombre or not apellido:
             QMessageBox.warning(self, "Campos obligatorios", "Debe completar nombre y apellido.")
             return
@@ -213,7 +226,7 @@ class ABMProfesionales(QMainWindow):
             email=email,
             direccion=direccion,
             observaciones=observaciones,
-            estado=True
+            estado=estado
         )
         session.add(nuevo)
         session.commit()
@@ -234,6 +247,7 @@ class ABMProfesionales(QMainWindow):
         email = self.input_email.text().strip()
         direccion = self.input_direccion.text().strip()
         observaciones = self.input_observaciones.text().strip()
+        estado = self.cbo_estado.currentText()  # Obtener el estado del combo
         if not nombre or not apellido:
             QMessageBox.warning(self, "Campos obligatorios", "Debe completar nombre y apellido.")
             return
@@ -248,6 +262,7 @@ class ABMProfesionales(QMainWindow):
             profesional.email = email
             profesional.direccion = direccion
             profesional.observaciones = observaciones
+            profesional.estado = (estado == "Activo")  # Actualizar estado
             session.commit()
         session.close()
         self.limpiar_formulario()
@@ -260,21 +275,9 @@ class ABMProfesionales(QMainWindow):
             return
         session = SessionLocal()
         profesional = session.query(Profesional).filter_by(idprofesional=self.profesional_seleccionado).first()
-        if not profesional:
-            session.close()
-            QMessageBox.warning(self, "Error", "Profesional no encontrado.")
-            return
-
-        # Verificar si ya tiene citas
-        tiene_citas = session.query(Cita).filter_by(idprofesional=profesional.idprofesional).first() is not None
-
-        if tiene_citas:
-            session.close()
-            QMessageBox.warning(self, "No permitido", "No se puede eliminar el profesional porque ya tiene registros asociados.")
-            return
-
-        profesional.estado = False  # Baja lógica
-        session.commit()
+        if profesional:
+            profesional.estado = False
+            session.commit()
         session.close()
         self.limpiar_formulario()
         self.cargar_profesionales()
