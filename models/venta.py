@@ -15,6 +15,7 @@ class Venta(Base):
     estadoventa = Column(String(20))
     nro_factura = Column(String(15), nullable=True) 
     observaciones = Column(String)
+    paciente = relationship("Paciente")  
     detalles = relationship("VentaDetalle", back_populates="venta", cascade="all, delete-orphan")
     imputaciones_cobro = relationship("CobroVenta", back_populates="venta",
                                       cascade="all, delete-orphan")

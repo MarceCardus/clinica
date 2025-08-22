@@ -67,23 +67,18 @@ def actualizar_con_progreso():
 def main():
     version_local = leer_version(os.path.join(RUTA_LOCAL, 'version.txt'))
     version_remota = leer_version(os.path.join(RUTA_SERVIDOR, 'version.txt'))
-    print(f"Versión local: {version_local} | Versión servidor: {version_remota}")
-
     exe_path = os.path.join(RUTA_LOCAL, 'main.exe')
 
     if not version_remota:
-        print("No se pudo obtener la versión del servidor. Cancelando.")
         mensaje_error("No se pudo obtener la versión del servidor. Cancelando.")
         sys.exit(1)
 
     if not version_local or version_mayor(version_remota, version_local):
-        print("Hay una nueva versión disponible. Actualizando...")
         actualizar_con_progreso()
-        print("Reiniciando el sistema...")
         subprocess.Popen([exe_path])
         sys.exit(0)
     else:
-        print("La aplicación está actualizada.")
+        # Si está actualizado, entra directo sin mostrar mensaje
         subprocess.Popen([exe_path])
         sys.exit(0)
 

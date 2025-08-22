@@ -141,7 +141,6 @@ def _imputar_cobro_a_venta(session: Session, *, idcobro: int, idventa: int, mont
     return monto
 
 def _in_tx(session) -> bool:
-    # compatible 1.4/2.0
     try:
         return session.in_transaction()
     except AttributeError:
@@ -154,7 +153,7 @@ def _begin_tx(session):
         with session.begin_nested():
             yield
     else:
-        with _begin_tx(session):
+        with session.begin():      # ← abrir la TX del Session, no llamarse a sí mismo
             yield
 # ============== ANULACIONES / REVERSAS ==============
 
@@ -301,12 +300,38 @@ def _imputar_fifo_por_paciente(session: Session, *, idcobro: int, idpaciente: in
     return aplicado_total
 
 
-def _auditar(session, *, usuario: str | None, accion: str, entidad: str, iddoc: int, motivo: str | None = None, extra: dict | None = None):
+def _auditar(session, *, usuario: str | None, accion: str, entidad: str,
+             iddoc: int, motivo: str | None = None, extra: dict | None = None):
+    """
+    Guarda una línea en 'auditoria' según tu esquema:
+    idauditoria, fechahora, idusuario, modulo, accion, observaciones.
+    """
     from models.auditoria import Auditoria
+
+    # Armamos un texto amigable para 'observaciones'
+    partes = []
+    if motivo:
+        partes.append(f"Motivo: {motivo}")
+    if entidad:
+        partes.append(f"Entidad: {entidad} (id={iddoc})")
+    if extra:
+        partes.append(f"Extra: {extra}")
+    obs = " | ".join(partes) or None
+
     a = Auditoria(
-        fecha=datetime.now(), usuario=usuario, accion=accion,
-        entidad=entidad, iddoc=iddoc, motivo=motivo, detalle=(extra or {})
+        fechahora=datetime.now(),
+        modulo=entidad,
+        accion=accion,
+        observaciones=obs,
     )
+
+    # Si 'usuario' viene con un id numérico, lo seteamos en idusuario
+    try:
+        if usuario is not None and str(usuario).strip().isdigit():
+            a.idusuario = int(usuario)
+    except Exception:
+        pass
+
     session.add(a)
 
 def _es_fisico(session: Session, iditem: int) -> bool:

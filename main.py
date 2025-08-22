@@ -62,6 +62,7 @@ from controllers.informe_compras import ComprasReportForm
 from controllers.informe_ventas_form import VentasReportForm
 from controllers.abm_items import ABMItems
 from controllers.cobro_dialog import CobroDialog
+from controllers.informe_cobros_form import InformeCobrosForm
 from models.paciente import Paciente
 from models.profesional import Profesional
 from models.clinica import Clinica
@@ -197,7 +198,9 @@ class MainWindow(QMainWindow):
         self.action_nuevo_cobro = QAction("Nuevo Cobro", self)
         self.action_nuevo_cobro.triggered.connect(self.abrir_cobro)
         self.menu_cobros.addAction(self.action_nuevo_cobro)
- 
+        self.action_anular_cobro = QAction("Anular Cobro", self)
+        self.action_anular_cobro.triggered.connect(self.abrir_anular_cobro)
+        self.menu_cobros.addAction(self.action_anular_cobro)
 
         # Menú Informes
         self.menu_informes = menubar.addMenu("Informes")
@@ -213,6 +216,11 @@ class MainWindow(QMainWindow):
         self.action_informe_ventas.triggered.connect(self.abrir_informe_ventas)
         self.menu_informes.addAction(self.action_informe_ventas)
 
+        # Informes → Cobros
+        self.action_informe_cobros = QAction("Cobros", self)
+        self.action_informe_cobros.triggered.connect(self.abrir_informe_cobros)
+        self.menu_informes.addAction(self.action_informe_cobros)
+
 
         # --- BLOQUEO DE MENÚ SEGÚN ROL ---
         if self.rol != "superusuario":
@@ -227,12 +235,22 @@ class MainWindow(QMainWindow):
         lbl_usuario.setStyleSheet("font-weight: bold; color: #175ca4; margin-right:20px;")
         status_bar.addPermanentWidget(lbl_usuario)
 
+    def abrir_informe_cobros(self):
+        dlg = InformeCobrosForm(self.session, self)
+        dlg.exec_()
+
 
     def abrir_cobro(self):
         dlg = CobroDialog(parent=self, session=self.session, usuario_actual=getattr(self, "usuario_actual", None))
         dlg.exec_()
         # si querés refrescar listas/tableros después, hacelo acá
         # self.refrescar_dashboard()
+
+    def abrir_anular_cobro(self):
+        from controllers.anular_cobro_dialog import AnularCobroDialog
+        dlg = AnularCobroDialog(parent=self, session=self.session,
+                                usuario_actual=getattr(self, "usuario_actual", None))
+        dlg.exec_()
 
     def abrir_pacientes(self):
         for subwin in self.mdi_area.subWindowList():

@@ -1,88 +1,117 @@
 # controllers/cobro_dialog.py
-from decimal import Decimal, ROUND_HALF_UP
 from datetime import date
+from decimal import Decimal, ROUND_HALF_UP
+
+from PyQt5.QtCore import Qt, QDate, QTimer
+from PyQt5.QtGui import QKeySequence, QIcon
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QLineEdit, QComboBox,
     QTextEdit, QTableWidget, QTableWidgetItem, QHeaderView, QPushButton, QMessageBox,
-    QCheckBox, QShortcut, QDateEdit, QSplitter, QSizePolicy
+    QCheckBox, QShortcut, QDateEdit, QSplitter, QSizePolicy, QWidget, QCompleter
 )
-from PyQt5.QtCore import Qt, QDate, QTimer
-from PyQt5.QtGui import QKeySequence, QIcon
+
 from sqlalchemy import select, func, literal
 
-# ajusta este import a tu fábrica de sesiones
+# ajusta este import a tu fábrica de sesiones si hace falta
 from utils.db import SessionLocal
 
 from models.paciente import Paciente
 from models.venta import Venta
 from services.cobros_service import registrar_cobro
 
-# ---------- utils ----------
-def _money(x) -> Decimal:
-    return Decimal(str(x if x not in (None, "") else "0")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
-def parse_money(txt: str) -> Decimal:
-    if txt is None:
-        return Decimal("0.00")
-    s = txt.strip().replace(".", "").replace(",", ".")
-    if s == "":
-        s = "0"
-    return _money(s)
-
-def fmt_money(d: Decimal) -> str:
-    s = f"{_money(d):,.2f}"
-    return s.replace(",", "X").replace(".", ",").replace("X", ".")
-
-def fmt_money0(d: Decimal) -> str:
-    """Gs sin decimales, con miles."""
-    try:
-        n = int(_money(d).quantize(Decimal("1")))  # redondeo a entero
-    except Exception:
-        n = 0
-    s = f"{n:,}"
-    # 1,234,567 -> 1.234.567
-    return s.replace(",", ".")
-
-# ---------- dialog ----------
 class CobroDialog(QDialog):
     def __init__(self, parent=None, session=None, usuario_actual: str = None):
         super().__init__(parent)
         self.setWindowTitle("Registrar cobro")
-        self.resize(1280, 720)          # más ancho/alto de inicio
+        self.resize(1440, 720)          # más ancho/alto de inicio
         self.setMinimumSize(1150, 620)  # evita que quede demasiado chico
+
         self.session = session or SessionLocal()
         self.usuario_actual = usuario_actual or "sistema"
+
         self._updating = False
-        self._pacientes_cache = []   # [(id, ci, nombre, apellido, display)]
-        self._map_display_to_id = {} # display -> id
+        self._pacientes_cache = []      # [(id, doc, nombre, apellido, display)]
+        self._map_display_to_id = {}    # display -> id
         self._selected_paciente_id = None
-        self._ventas_del_dia = []    # [(idventa, idpaciente, paciente_disp, total, saldo, fecha)]
+        self._ventas_del_dia = []       # [(idventa, idpaciente, paciente_disp, total, saldo, fecha)]
 
         self._build_ui()
         self._wire_shortcuts()
         self._style()
         self._load_pacientes()
-        self._load_ventas_por_fecha()  # derecha (hoy)
+        self._load_ventas_por_fecha()   # derecha (hoy)
         self._focus_inicio()
 
-    # ---------- UI ----------
-    def _build_ui(self):
-        from PyQt5.QtCore import Qt, QDate, QTimer
-        from PyQt5.QtWidgets import (
-            QVBoxLayout, QHBoxLayout, QFormLayout, QSplitter, QDialog, QWidget,
-            QLabel, QLineEdit, QComboBox, QCheckBox, QTextEdit, QTableWidget,
-            QHeaderView, QPushButton, QDateEdit, QSizePolicy
-        )
+    # ===================== Helpers de dinero / formato ======================
 
+    def _money(self, x) -> Decimal:
+        return Decimal(str(x)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+    def _parse_money(self, s: str) -> Decimal:
+        """
+        Soporta: 400000 | 400.000 | 400,000 | 400.000,00 | 400,000.00
+        Limpia NBSP y caracteres no numéricos salvo . , -
+        """
+        if not s:
+            return Decimal("0.00")
+        s = str(s).replace("\u00a0", " ").strip()
+        s = "".join(ch for ch in s if ch.isdigit() or ch in ",.-")
+        if not s or s in {",", ".", "-", "-.", "-,"}:
+            return Decimal("0.00")
+
+        has_comma = "," in s
+        has_dot = "." in s
+
+        if has_comma and has_dot:
+            # europeo: . miles, , decimales
+            s = s.replace(".", "").replace(",", ".")
+        elif has_comma and not has_dot:
+            s = s.replace(",", ".")
+        elif has_dot and not has_comma:
+            # decidir si el punto es miles o decimal
+            parts = s.split(".")
+            if len(parts) > 1 and all(len(p) == 3 for p in parts[1:]) and 1 <= len(parts[0]) <= 3:
+                s = "".join(parts)  # puntos como miles
+            # si no, se deja como decimal
+        # else: solo dígitos -> entero
+
+        try:
+            return self._money(Decimal(s))
+        except Exception:
+            return Decimal("0.00")
+
+    def _leer_monto(self) -> Decimal:
+        return self._parse_money(self.txtMonto.text())
+    
+    def _normalize_monto(self):
+        """Normaliza el QLineEdit de monto al salir del control (sin disparar textChanged en cascada)."""
+        monto = self._leer_monto()  # lee lo que haya (400000, 400.000, 400.000,00, etc.)
+        self.txtMonto.blockSignals(True)
+        try:
+            # Mostramos sin decimales, con separador de miles (Gs)
+            self.txtMonto.setText(self._fmt0(monto))
+        finally:
+            self.txtMonto.blockSignals(False)
+        # Recalcular restante después de normalizar
+        self._recalc_restante()
+
+    def _fmt0(self, x: Decimal | int) -> str:
+        """Formato sin decimales con separador de miles '.' (Gs)."""
+        n = int(Decimal(x))
+        return f"{n:,}".replace(",", ".")
+
+    # ============================== UI =====================================
+
+    def _build_ui(self):
         root = QVBoxLayout(self)
 
-        # ===== Splitter principal =====
         splitter = QSplitter(Qt.Horizontal)
         root.addWidget(splitter)
 
-        # ============ IZQUIERDA: FORM ============
+        # -------- IZQUIERDA --------
         left = QVBoxLayout()
-        left_widget = QDialog(self)
+        left_widget = QWidget(self)
         left_widget.setLayout(left)
         splitter.addWidget(left_widget)
 
@@ -94,20 +123,34 @@ class CobroDialog(QDialog):
 
         # Monto / Forma / FIFO
         fila_top = QHBoxLayout()
-        self.txtMonto = QLineEdit(); self.txtMonto.setPlaceholderText("0,00")
-        self.cboForma = QComboBox(); self.cboForma.addItems(
-            ["Efectivo", "T. Crédito", "T. Débito", "Transferencia", "Cheque"]
-        )
-        self.chkFIFO = QCheckBox("Imputar automático")
-        fila_top.addWidget(QLabel("Monto:")); fila_top.addWidget(self.txtMonto, 2)
-        fila_top.addWidget(QLabel("Forma:")); fila_top.addWidget(self.cboForma, 2)
+        self.txtMonto = QLineEdit()
+        self.txtMonto.setPlaceholderText("0,00")
+        self.cboForma = QComboBox()
+        self.cboForma.addItems(["Efectivo", "T. Crédito", "T. Débito", "Transferencia", "Cheque"])
+        self.chkFIFO = QCheckBox("Imputar automático (FIFO)")
+        fila_top.addWidget(QLabel("Monto:"))
+        fila_top.addWidget(self.txtMonto, 2)
+        fila_top.addWidget(QLabel("Forma:"))
+        fila_top.addWidget(self.cboForma, 2)
         fila_top.addWidget(self.chkFIFO, 2)
 
         left.addLayout(header)
         left.addLayout(fila_top)
 
+        # Normalizar monto al salir del control
+        self.txtMonto.editingFinished.connect(self._normalize_monto)
+
+        def _normalize_monto(self):
+            self.txtMonto.blockSignals(True)
+            try:
+                self.txtMonto.setText(self._fmt0(self._leer_monto()))
+            finally:
+                self.txtMonto.blockSignals(False)
+            self._recalc_restante()
+
         # Observaciones
-        self.txtObs = QTextEdit(); self.txtObs.setPlaceholderText("Observaciones…")
+        self.txtObs = QTextEdit()
+        self.txtObs.setPlaceholderText("Observaciones…")
         self.txtObs.setFixedHeight(130)
         left.addWidget(self.txtObs)
 
@@ -119,8 +162,7 @@ class CobroDialog(QDialog):
         self.tbl.setSelectionBehavior(self.tbl.SelectRows)
         left.addWidget(self.tbl)
 
-        # Que SOLO la tabla crezca en el panel izquierdo
-        # índices: 0=header, 1=fila_top, 2=txtObs, 3=tabla
+        # Que SOLO la tabla crezca
         left.setStretch(0, 0)
         left.setStretch(1, 0)
         left.setStretch(2, 0)
@@ -138,23 +180,24 @@ class CobroDialog(QDialog):
         self.cboForma.activated.connect(lambda _i: self.btnGuardar.setFocus())
         self.cboForma.installEventFilter(self)  # Enter -> Guardar
 
-        # ============ DERECHA: LISTA VENTAS POR FECHA ============
+        # -------- DERECHA --------
         right = QVBoxLayout()
-        right_widget = QDialog(self)
+        right_widget = QWidget(self)
         right_widget.setLayout(right)
         splitter.addWidget(right_widget)
 
-        # Proporciones del splitter (izq cómodo, der grande)
+        # Proporciones del splitter
         left_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
-        left_widget.setMinimumWidth(600)          # ↑ un poco más ancho
+        left_widget.setMinimumWidth(740)
         left_widget.setMaximumWidth(820)
-        splitter.setStretchFactor(0, 2)           # izquierda
-        splitter.setStretchFactor(1, 5)           # derecha
+        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(1, 5)
         QTimer.singleShot(0, lambda: splitter.setSizes([720, 1100]))
 
         # Fecha + listar
         fila_fecha = QHBoxLayout()
-        self.dtpFecha = QDateEdit(QDate.currentDate()); self.dtpFecha.setCalendarPopup(True)
+        self.dtpFecha = QDateEdit(QDate.currentDate())
+        self.dtpFecha.setCalendarPopup(True)
         btnListar = QPushButton("Listar")
         fila_fecha.addWidget(QLabel("Fecha:"))
         fila_fecha.addWidget(self.dtpFecha)
@@ -162,7 +205,7 @@ class CobroDialog(QDialog):
         fila_fecha.addStretch()
         right.addLayout(fila_fecha)
 
-        # Grilla derecha (ID chico, Paciente grande, montos finos)
+        # Grilla derecha
         self.tblDia = QTableWidget(0, 4)
         self.tblDia.setHorizontalHeaderLabels(["ID", "Paciente", "Total", "Saldo"])
         hv = self.tblDia.horizontalHeader()
@@ -180,12 +223,12 @@ class CobroDialog(QDialog):
         self.tblDia.itemDoubleClicked.connect(self._usar_venta_de_la_derecha)
         self.tblDia.installEventFilter(self)
 
-        # ============ FOOTER GLOBAL (ocupa TODO el ancho) ============
+        # -------- FOOTER (ancho completo) --------
         footer = QHBoxLayout()
         self.lblRestante = QLabel("Restante: 0,00")
         self.lblRestante.setObjectName("lblRestante")
 
-        self.btnRepartir = QPushButton("Repartir (F7)")  # textos más cortos
+        self.btnRepartir = QPushButton("Repartir (F7)")
         self.btnAuto     = QPushButton("Automático (F8)")
         self.btnGuardar  = QPushButton("Guardar (F9)")
         self.btnCancelar = QPushButton("Cancelar (Esc)")
@@ -201,19 +244,18 @@ class CobroDialog(QDialog):
 
         footer_w = QWidget(); footer_w.setLayout(footer)
         footer_w.setFixedHeight(80)
-        root.addWidget(footer_w)  # 👈 debajo del splitter, ancho completo
+        root.addWidget(footer_w)
 
         # Conexiones footer
         self.btnRepartir.clicked.connect(self._repartir_monto)
-        self.btnAuto.clicked.connect(self._set_fifo_checked)   # o tu toggle
+        self.btnAuto.clicked.connect(self._set_fifo_checked)
         self.btnGuardar.clicked.connect(self._on_guardar)
         self.btnCancelar.clicked.connect(self.reject)
         self.btnGuardar.setDefault(True)
         self.btnGuardar.setAutoDefault(True)
 
+    # ============================== ESTILO/UX ===============================
 
-
-    # estilos
     def _style(self):
         self.setStyleSheet("""
             QDialog { background: #f6f8fb; }
@@ -226,9 +268,7 @@ class CobroDialog(QDialog):
             }
             QTableWidget { background: #ffffff; border: 1px solid #c6d4ea; border-radius: 6px; }
             QHeaderView::section { background: #e8f0fe; padding: 6px; border: none; color:#0d3a6a; }
-            QPushButton {
-                background: #2e7d32; color: white; padding: 6px 10px; border: none; border-radius: 6px;
-            }
+            QPushButton { background: #2e7d32; color: white; padding: 6px 10px; border: none; border-radius: 6px; }
             QPushButton:hover { background: #2a6e2d; }
             QPushButton#danger { background: #c62828; }
             QPushButton#secondary { background: #245b9e; }
@@ -248,23 +288,18 @@ class CobroDialog(QDialog):
         self.txtPaciente.setFocus()
         self.txtPaciente.selectAll()
 
-    # ---------- Pacientes (completer) ----------
+    # ======================= Pacientes (completer) ==========================
+
     def _load_pacientes(self):
-        """Carga cache de pacientes y configura el QCompleter (busca por CI/Nombre/Apellido)."""
-        # detectar la columna de documento: ci_pasaporte / ci_passaporte u otros alias
+        # detectar columna de documento
         doc_col = None
-        for name in [
-            "ci_pasaporte", "ci_passaporte",  # <- tus nombres
-            "ci", "cedula", "documento", "dni", "ruc", "num_doc", "nro_documento", "numero_documento"
-        ]:
+        for name in ["ci_pasaporte", "ci_passaporte", "ci", "cedula", "documento", "dni", "ruc", "num_doc", "nro_documento", "numero_documento"]:
             doc_col = getattr(Paciente, name, None)
             if doc_col is not None:
                 break
         if doc_col is None:
-            # si no existe ninguna, usamos cadena vacía como placeholder para no romper el SELECT
             doc_col = literal("").label("doc")
 
-        # traemos id, doc, nombre, apellido
         rows = self.session.execute(
             select(Paciente.idpaciente, doc_col, Paciente.nombre, Paciente.apellido)
             .order_by(Paciente.apellido.asc(), Paciente.nombre.asc())
@@ -277,35 +312,30 @@ class CobroDialog(QDialog):
             doc_txt = (str(doc) if doc is not None else "").strip()
             nom = (nom or "").strip()
             ape = (ape or "").strip()
-            # Muestra: "CI - Apellido, Nombre (ID)" si hay CI; si no, "Apellido, Nombre (ID)"
             disp = f"{doc_txt} - {ape}, {nom} ({pid})" if doc_txt else f"{ape}, {nom} ({pid})"
             self._pacientes_cache.append((pid, doc_txt, nom, ape, disp))
             self._map_display_to_id[disp] = pid
 
-        # Completer con filtro por "contiene"
-        from PyQt5.QtWidgets import QCompleter
         completer = QCompleter([x[4] for x in self._pacientes_cache], self)
         completer.setCaseSensitivity(Qt.CaseInsensitive)
         completer.setFilterMode(Qt.MatchContains)
         completer.activated[str].connect(self._on_paciente_elegido)
         self.txtPaciente.setCompleter(completer)
 
-
     def _on_paciente_elegido(self, text):
         self._selected_paciente_id = self._map_display_to_id.get(text)
         self._load_ventas_pendientes()
 
     def _guess_paciente_by_text(self):
-        """Si el usuario tipea y presiona Enter, intenta mapear por coincidencia única."""
         txt = self.txtPaciente.text().strip().lower()
         if not txt:
             self._selected_paciente_id = None
             return
-        matches = [pid for (pid, ci, nom, ape, disp) in self._pacientes_cache
-                   if txt in disp.lower()]
+        matches = [pid for (pid, _ci, _n, _a, disp) in self._pacientes_cache if txt in disp.lower()]
         self._selected_paciente_id = matches[0] if len(matches) == 1 else None
 
-    # ---------- Ventas panel derecho ----------
+    # =================== Ventas panel derecho (por fecha) ===================
+
     def _load_ventas_por_fecha(self):
         self.tblDia.setRowCount(0)
         f = self.dtpFecha.date().toPyDate()
@@ -313,58 +343,56 @@ class CobroDialog(QDialog):
             select(Venta.idventa, Venta.idpaciente, Venta.montototal, Venta.saldo, Venta.fecha,
                    Paciente.apellido, Paciente.nombre)
             .join(Paciente, Paciente.idpaciente == Venta.idpaciente)
-            .where(
-                Venta.fecha == f,
-                func.upper(func.coalesce(Venta.estadoventa, "")) != "ANULADA"
-            )
+            .where(Venta.fecha == f, func.upper(func.coalesce(Venta.estadoventa, "")) != "ANULADA")
             .order_by(Paciente.apellido.asc(), Paciente.nombre.asc(), Venta.idventa.asc())
         ).all()
+
         self._ventas_del_dia = []
         for (idv, pid, tot, sal, fch, ape, nom) in rows:
             disp_pac = f"{(ape or '').strip()}, {(nom or '').strip()} ({pid})"
             self._ventas_del_dia.append((idv, pid, disp_pac, tot, sal, fch))
-            r = self.tblDia.rowCount(); self.tblDia.insertRow(r)
-            datos = [idv, disp_pac, fmt_money0(tot), fmt_money0(sal)]  # 👈 sin decimales
+            r = self.tblDia.rowCount()
+            self.tblDia.insertRow(r)
+            datos = [idv, disp_pac, self._fmt0(tot), self._fmt0(sal)]
             for c, val in enumerate(datos):
                 it = QTableWidgetItem(str(val))
-                if c in (2, 3): it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                if c in (2, 3):
+                    it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self.tblDia.setItem(r, c, it)
 
     def _usar_venta_de_la_derecha(self, item):
-        """Rellena el form con paciente + saldo de la venta elegida y marca la imputación."""
         row = item.row()
-        idv, pid, disp_pac, tot, sal, _fch = self._ventas_del_dia[row]
+        idv, pid, disp_pac, _tot, sal, _fch = self._ventas_del_dia[row]
         # set paciente
-        self.txtPaciente.setText(disp_pac.replace(f" ({pid})", f" ({pid})"))
+        self.txtPaciente.setText(disp_pac)
         self._selected_paciente_id = pid
         # set monto = saldo de esa venta
-        self.txtMonto.setText(fmt_money(sal))
+        self.txtMonto.setText(self._fmt0(sal))
         self.chkFIFO.setChecked(False)
         # cargar ventas pendientes del paciente y marcar a_imputar para esa venta
         self._load_ventas_pendientes()
-        # Buscar fila en la izquierda y setear "A imputar" = min(saldo, monto restante)
-        monto = parse_money(self.txtMonto.text())
+        monto = self._leer_monto()
         restante = monto
         for r in range(self.tbl.rowCount()):
             idventa_izq = int(self.tbl.item(r, 0).text())
             if idventa_izq == idv:
-                saldo = parse_money(self.tbl.item(r, 3).text())
+                saldo = self._parse_money(self.tbl.item(r, 3).text())
                 aplicar = min(restante, saldo)
-                self.tbl.item(r, 4).setText(fmt_money(aplicar))
+                self.tbl.item(r, 4).setText(self._fmt0(aplicar))
                 break
         self._recalc_restante()
         self.btnGuardar.setFocus()
 
-    # ---------- Ventas pendientes del paciente (izquierda) ----------
+    # ================= Ventas pendientes (panel izquierdo) ==================
+
     def _load_ventas_pendientes(self):
         self._updating = True
         try:
             self.tbl.setRowCount(0)
             if not self._selected_paciente_id:
-                # intenta adivinar por texto libre si hay una coincidencia única
                 self._guess_paciente_by_text()
                 if not self._selected_paciente_id:
-                    self._recalc_restante(); 
+                    self._recalc_restante()
                     return
 
             pid = int(self._selected_paciente_id)
@@ -379,11 +407,12 @@ class CobroDialog(QDialog):
             ).all()
 
             for (idv, fch, tot, sal) in ventas:
-                r = self.tbl.rowCount(); self.tbl.insertRow(r)
+                r = self.tbl.rowCount()
+                self.tbl.insertRow(r)
                 it_id = QTableWidgetItem(str(idv)); it_id.setFlags(it_id.flags() & ~Qt.ItemIsEditable)
                 it_f = QTableWidgetItem(fch.strftime("%Y-%m-%d")); it_f.setFlags(it_f.flags() & ~Qt.ItemIsEditable)
-                it_t = QTableWidgetItem(fmt_money0(tot))   # 👈
-                it_s = QTableWidgetItem(fmt_money0(sal))   # 👈
+                it_t = QTableWidgetItem(self._fmt0(tot))
+                it_s = QTableWidgetItem(self._fmt0(sal))
                 it_a = QTableWidgetItem("0")
                 self.tbl.setItem(r, 0, it_id); self.tbl.setItem(r, 1, it_f)
                 self.tbl.setItem(r, 2, it_t);  self.tbl.setItem(r, 3, it_s)
@@ -394,90 +423,106 @@ class CobroDialog(QDialog):
         finally:
             self._updating = False
 
-    # ---------- Helpers izq ----------
+    # ============================ Helpers IZQ ===============================
+
     def _ventas_iter(self):
+        """Genera (row_index, idventa:int, saldo:Decimal, a_imputar:Decimal)."""
         for r in range(self.tbl.rowCount()):
-            idv = int(self.tbl.item(r, 0).text())
-            saldo = parse_money(self.tbl.item(r, 3).text())
-            a_imp = parse_money(self.tbl.item(r, 4).text())
-            yield r, idv, saldo, a_imp
+            it_id = self.tbl.item(r, 0)
+            idventa = int((it_id.text() if it_id else "0") or "0")
+            it_saldo = self.tbl.item(r, 3)
+            it_imp = self.tbl.item(r, 4)
+            saldo = self._parse_money(it_saldo.text() if it_saldo else "0")
+            a_imp = self._parse_money(it_imp.text() if it_imp else "0")
+            yield (r, idventa, saldo, a_imp)
 
     def _toggle_fifo_mode(self):
         fifo = self.chkFIFO.isChecked()
         for r in range(self.tbl.rowCount()):
             it = self.tbl.item(r, 4)
-            if not it: continue
+            if not it:
+                continue
             flags = it.flags()
             it.setFlags((flags & ~Qt.ItemIsEditable) if fifo else (flags | Qt.ItemIsEditable))
         if fifo:
             self._updating = True
             try:
                 for r in range(self.tbl.rowCount()):
-                    self.tbl.item(r, 4).setText("0,00")
+                    self.tbl.item(r, 4).setText("0")
             finally:
                 self._updating = False
                 self._recalc_restante()
 
     def _recalc_restante(self):
-        monto = parse_money(self.txtMonto.text())
+        monto = self._leer_monto()
         suma = Decimal("0.00")
         for _, _, _, a in self._ventas_iter():
             suma += a
-        restante = _money(monto - suma)
-        self.lblRestante.setText(f"Restante: {fmt_money0(restante)}")
-        self.lblRestante.setStyleSheet("#lblRestante { font-size:16px; font-weight:700; color:%s; }" %
-                                       ("#2e7d32" if restante == Decimal("0.00") else "#b26a00"))
+        restante = self._money(monto - suma)
+        self.lblRestante.setText(f"Restante: {self._fmt0(restante)}")
+        self.lblRestante.setStyleSheet(
+            "#lblRestante { font-size:16px; font-weight:700; color:%s; }"
+            % ("#2e7d32" if restante == Decimal("0.00") else "#b26a00")
+        )
 
     def _on_item_changed(self, item):
-        if self._updating or item.column() != 4: return
+        if self._updating or item.column() != 4:
+            return
         self._updating = True
         try:
             row = item.row()
-            saldo = parse_money(self.tbl.item(row, 3).text())
-            val = parse_money(item.text())
-            if val < Decimal("0"): val = Decimal("0")
-            if val > saldo: val = saldo
+            saldo = self._parse_money(self.tbl.item(row, 3).text())
+            val = self._parse_money(item.text())
+            if val < Decimal("0"):
+                val = Decimal("0")
+            if val > saldo:
+                val = saldo
 
-            monto = parse_money(self.txtMonto.text())
+            monto = self._leer_monto()
             suma_otros = Decimal("0.00")
             for r, _, _, a in self._ventas_iter():
-                if r != row: suma_otros += a
-            restante = _money(monto - suma_otros)
-            if val > restante: val = max(Decimal("0.00"), restante)
+                if r != row:
+                    suma_otros += a
+            restante = self._money(monto - suma_otros)
+            if val > restante:
+                val = max(Decimal("0.00"), restante)
 
-            item.setText(fmt_money(val))
+            item.setText(self._fmt0(val))
             self._recalc_restante()
         finally:
             self._updating = False
 
     def _repartir_monto(self):
-        if self.chkFIFO.isChecked(): return
+        if self.chkFIFO.isChecked():
+            return
         self._updating = True
         try:
-            restante = parse_money(self.txtMonto.text())
+            restante = self._leer_monto()
             for r, _, saldo, _ in self._ventas_iter():
                 aplicar = min(restante, saldo) if restante > 0 else Decimal("0.00")
-                self.tbl.item(r, 4).setText(fmt_money(aplicar))
+                self.tbl.item(r, 4).setText(self._fmt0(aplicar))
                 restante -= aplicar
         finally:
             self._updating = False
             self._recalc_restante()
 
     def _fill_full_on_doubleclick(self, item):
-        if item.column() != 4 or self.chkFIFO.isChecked(): return
+        if item.column() != 4 or self.chkFIFO.isChecked():
+            return
         row = item.row()
-        saldo = parse_money(self.tbl.item(row, 3).text())
-        monto = parse_money(self.txtMonto.text())
+        saldo = self._parse_money(self.tbl.item(row, 3).text())
+        monto = self._leer_monto()
         suma_otros = sum(a for r, _, _, a in self._ventas_iter() if r != row)
-        restante = _money(monto - suma_otros)
+        restante = self._money(monto - suma_otros)
         aplicar = min(restante, saldo) if restante > 0 else Decimal("0.00")
-        self.tbl.item(row, 4).setText(fmt_money(aplicar))
+        self.tbl.item(row, 4).setText(self._fmt0(aplicar))
         self._recalc_restante()
 
-    # ---------- Guardar ----------
+    # ============================== Guardar ================================
+
     def _on_guardar(self):
         try:
-            # Asegurar paciente (autocompletar si solo escribió)
+            # Asegurar paciente (si solo tipeó y dio Enter)
             if not getattr(self, "_selected_paciente_id", None):
                 self._guess_paciente_by_text()
             pid = getattr(self, "_selected_paciente_id", None)
@@ -485,8 +530,7 @@ class CobroDialog(QDialog):
                 QMessageBox.warning(self, "Cobro", "Seleccione un paciente.")
                 return
 
-            # Monto
-            monto = self._leer_monto()   # o: parse_money(self.txtMonto.text())
+            monto = self._leer_monto()
             if monto <= 0:
                 QMessageBox.warning(self, "Cobro", "Ingrese un monto válido.")
                 return
@@ -498,24 +542,23 @@ class CobroDialog(QDialog):
             if not auto_fifo:
                 imputaciones = []
                 suma = Decimal("0.00")
-                for _, idv, saldo, a in self._ventas_iter():   # (row, idventa, saldo, a_imputar)
+                for _, idv, saldo, a in self._ventas_iter():
                     if a > 0:
                         if a > saldo:
                             QMessageBox.warning(self, "Cobro",
-                                f"La imputación a la venta {idv} excede su saldo.")
+                                                f"La imputación a la venta {idv} excede su saldo.")
                             return
                         imputaciones.append({"idventa": idv, "monto": a})
                         suma += a
                 if suma > monto:
                     QMessageBox.warning(self, "Cobro",
-                        "La suma imputada supera el monto del cobro.")
+                                        "La suma imputada supera el monto del cobro.")
                     return
 
-            # Registrar (usa lo calculado arriba)
+            # Registrar cobro
             registrar_cobro(
                 session=self.session,
-                # Si preferís fecha de hoy, reemplazá por: fecha=date.today(),
-                fecha=self.dtpFecha.date().toPyDate(),
+                fecha=date.today(),   # o date.today()
                 idpaciente=int(pid),
                 monto=monto,
                 formapago=self.cboForma.currentText(),
@@ -525,8 +568,13 @@ class CobroDialog(QDialog):
                 auto_fifo=auto_fifo,
             )
 
+            # Confirmar y refrescar datos visibles
+            self.session.commit()           # asegura que el saldo actualizado se vea
+            self.session.expire_all()       # fuerza recarga desde DB en próximas consultas
             self.msg_ok("Cobro registrado.")
-            self.accept()
+
+            # Mantener el diálogo abierto y listo para el siguiente cobro
+            self._reset_after_save()
 
         except Exception as e:
             try:
@@ -536,19 +584,44 @@ class CobroDialog(QDialog):
             self.msg_error(f"Ocurrió un error al registrar el cobro:\n{e}")
 
 
-    # ---------- Event filters ----------
+    # ============================ Eventos varios ===========================
+    def _reset_after_save(self):
+        """Deja el formulario listo para cargar otro cobro sin cerrar el diálogo."""
+        # Vaciar panel izquierdo
+        self._selected_paciente_id = None
+        self.txtPaciente.clear()
+        self.txtMonto.setText(self._fmt0(0))
+        self.cboForma.setCurrentIndex(0)
+        self.chkFIFO.setChecked(False)
+        self.txtObs.clear()
+        self.tbl.setRowCount(0)
+        self.lblRestante.setText(f"Restante: {self._fmt0(0)}")
+
+        # Refrescar panel derecho (ventas del día/fecha seleccionada)
+        self._load_ventas_por_fecha()
+
+        # Foco de nuevo al buscador de paciente
+        self.txtPaciente.setFocus()
+
     def eventFilter(self, obj, event):
-        # Enter en combo de Forma => Guardar
         if obj is self.cboForma and event.type() == event.KeyPress and event.key() in (Qt.Key_Return, Qt.Key_Enter):
-            self.btnGuardar.setFocus(); return True
-        # Enter en tabla derecha => usar venta
+            self.btnGuardar.setFocus()
+            return True
         if obj is self.tblDia and event.type() == event.KeyPress and event.key() in (Qt.Key_Return, Qt.Key_Enter):
             it = self.tblDia.currentItem()
-            if it: self._usar_venta_de_la_derecha(it)
+            if it:
+                self._usar_venta_de_la_derecha(it)
             return True
         return super().eventFilter(obj, event)
 
     def _set_fifo_checked(self):
-        """Activa FIFO desde el botón/atajo y aplica el modo."""
         self.chkFIFO.setChecked(True)
         self._toggle_fifo_mode()
+
+    # ============================ Mensajería ===============================
+
+    def msg_error(self, msg: str):
+        QMessageBox.critical(self, "Error", msg)
+
+    def msg_ok(self, msg: str):
+        QMessageBox.information(self, "Cobro", msg)

@@ -13,6 +13,7 @@ class Cobro(Base):
     formapago = Column(String(30))
     observaciones = Column(String)
     usuarioregistro = Column(String(50))
+    estado = Column(String(20), default="ACTIVO")  # ← NUEVO (ACTIVO / ANULADO)
     imputaciones = relationship("CobroVenta", back_populates="cobro",
                                 cascade="all, delete-orphan")
     ventas = association_proxy("imputaciones", "venta")
