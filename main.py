@@ -61,6 +61,7 @@ from controllers.InformeStockForm import InformeStockForm
 from controllers.informe_compras import ComprasReportForm
 from controllers.informe_ventas_form import VentasReportForm
 from controllers.abm_items import ABMItems
+from controllers.cobro_dialog import CobroDialog
 from models.paciente import Paciente
 from models.profesional import Profesional
 from models.clinica import Clinica
@@ -191,6 +192,13 @@ class MainWindow(QMainWindow):
         self.action_plan_cuotas.triggered.connect(self.abrir_venta_cuotas)  # stub abajo
         self.menu_ventas.addAction(self.action_plan_cuotas)
 
+         # Menú Cobros
+        self.menu_cobros = menubar.addMenu("Cobros")
+        self.action_nuevo_cobro = QAction("Nuevo Cobro", self)
+        self.action_nuevo_cobro.triggered.connect(self.abrir_cobro)
+        self.menu_cobros.addAction(self.action_nuevo_cobro)
+ 
+
         # Menú Informes
         self.menu_informes = menubar.addMenu("Informes")
         action_abm_informe_stock = QAction("Stock", self)
@@ -218,6 +226,13 @@ class MainWindow(QMainWindow):
         lbl_usuario = QLabel(f"Usuario: {self.usuario.usuario} | Rol: {self.rol.upper()}")
         lbl_usuario.setStyleSheet("font-weight: bold; color: #175ca4; margin-right:20px;")
         status_bar.addPermanentWidget(lbl_usuario)
+
+
+    def abrir_cobro(self):
+        dlg = CobroDialog(parent=self, session=self.session, usuario_actual=getattr(self, "usuario_actual", None))
+        dlg.exec_()
+        # si querés refrescar listas/tableros después, hacelo acá
+        # self.refrescar_dashboard()
 
     def abrir_pacientes(self):
         for subwin in self.mdi_area.subWindowList():

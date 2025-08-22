@@ -503,7 +503,7 @@ class ABMVenta(QWidget):
         self.grilla.blockSignals(False)
 
 
-
+    
     def ir_primero(self):
         if self.ventas: self.mostrar_venta(0)
 
