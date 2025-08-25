@@ -1,12 +1,14 @@
 import sys
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
-    QPushButton, QTableWidget, QTableWidgetItem, QLabel, QMessageBox, QTextEdit, QComboBox
+    QPushButton, QTableWidget, QTableWidgetItem, QLabel, QMessageBox, QComboBox, QHeaderView
 )
+from PyQt5.QtCore import Qt
+
 from utils.db import SessionLocal
 from models.profesional import Profesional
-from models.agenda import Cita
-from PyQt5.QtCore import Qt
+# from models.agenda import Cita  # si no lo usás, podés comentar esta línea
+
 
 class ABMProfesionales(QMainWindow):
     def __init__(self):
@@ -26,7 +28,7 @@ class ABMProfesionales(QMainWindow):
             QPushButton#limpiar:disabled {background: #343a40; color: #bbb;}
             QLineEdit {font-size: 16px; padding: 6px; border-radius: 6px;}
         """)
-        
+
         main_layout = QVBoxLayout()
         widget = QWidget()
         widget.setLayout(main_layout)
@@ -53,39 +55,45 @@ class ABMProfesionales(QMainWindow):
         self.table.cellClicked.connect(self.seleccionar_fila)
         self.table.setColumnHidden(4, True)  # Oculta la columna de ID
 
-        from PyQt5.QtWidgets import QHeaderView
-        # >>> Estas líneas son las nuevas para distribuir bien el espacio:
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)  # Nombre Completo
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)  # Documento
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)  # Teléfono
-        self.table.setMinimumHeight(200)  # Opcional, para que se vea menos apretado
-        self.table.resizeColumnsToContents()  # Puedes dejarlo o quitarlo, según el resultado visual
+        self.table.setMinimumHeight(200)
+        self.table.resizeColumnsToContents()
         main_layout.addWidget(self.table)
 
         # --- Formulario (campos del modelo) ---
         form1 = QHBoxLayout()
         form2 = QHBoxLayout()
+
         form1.addWidget(QLabel("Nombre:"))
         self.input_nombre = QLineEdit()
         form1.addWidget(self.input_nombre)
+
         form1.addWidget(QLabel("Apellido:"))
         self.input_apellido = QLineEdit()
         form1.addWidget(self.input_apellido)
+
         form1.addWidget(QLabel("Documento:"))
         self.input_documento = QLineEdit()
         form1.addWidget(self.input_documento)
+
         form2.addWidget(QLabel("Matrícula:"))
         self.input_matricula = QLineEdit()
         form2.addWidget(self.input_matricula)
+
         form2.addWidget(QLabel("Teléfono:"))
         self.input_telefono = QLineEdit()
         form2.addWidget(self.input_telefono)
+
         form2.addWidget(QLabel("Email:"))
         self.input_email = QLineEdit()
         form2.addWidget(self.input_email)
+
         form2.addWidget(QLabel("Dirección:"))
         self.input_direccion = QLineEdit()
         form2.addWidget(self.input_direccion)
+
         main_layout.addLayout(form1)
         main_layout.addLayout(form2)
 
@@ -96,11 +104,12 @@ class ABMProfesionales(QMainWindow):
         obs_layout.addWidget(self.input_observaciones)
         main_layout.addLayout(obs_layout)
 
-        # Combo de estado
+        # Combo de estado (texto + userData True/False)
         estado_layout = QHBoxLayout()
         estado_layout.addWidget(QLabel("Estado:"))
         self.cbo_estado = QComboBox()
-        self.cbo_estado.addItems(["Activo", "Inactivo"])
+        self.cbo_estado.addItem("Activo", True)
+        self.cbo_estado.addItem("Inactivo", False)
         estado_layout.addWidget(self.cbo_estado)
         main_layout.addLayout(estado_layout)
 
@@ -120,7 +129,7 @@ class ABMProfesionales(QMainWindow):
         btn_layout.addWidget(self.btn_limpiar)
         main_layout.addLayout(btn_layout)
 
- # --- ENTER AVANZA AL SIGUIENTE ---
+        # --- ENTER AVANZA AL SIGUIENTE ---
         self.input_nombre.keyPressEvent = self.enter_siguiente(self.input_nombre, self.input_apellido)
         self.input_apellido.keyPressEvent = self.enter_siguiente(self.input_apellido, self.input_documento)
         self.input_documento.keyPressEvent = self.enter_siguiente(self.input_documento, self.input_matricula)
@@ -129,7 +138,7 @@ class ABMProfesionales(QMainWindow):
         self.input_email.keyPressEvent = self.enter_siguiente(self.input_email, self.input_direccion)
         self.input_direccion.keyPressEvent = self.enter_siguiente(self.input_direccion, self.input_observaciones)
         self.input_observaciones.keyPressEvent = self.enter_siguiente(self.input_observaciones, self.btn_agregar)
-        
+
         # --- Eventos ---
         self.btn_agregar.clicked.connect(self.agregar)
         self.btn_editar.clicked.connect(self.editar)
@@ -138,21 +147,24 @@ class ABMProfesionales(QMainWindow):
 
         self.profesional_seleccionado = None
         self.cargar_profesionales()
+        self.limpiar_formulario()  # estados iniciales de botones/combo
 
     def cargar_profesionales(self):
         self.table.setRowCount(0)
         session = SessionLocal()
-        profesionales = session.query(Profesional).all()  # Activos e inactivos
-        session.close()
-        for i, p in enumerate(profesionales):
-            nombre_completo = f"{p.nombre} {p.apellido}".strip()
-            self.table.insertRow(i)
-            self.table.setItem(i, 0, QTableWidgetItem(nombre_completo))
-            self.table.setItem(i, 1, QTableWidgetItem(p.documento or ""))
-            self.table.setItem(i, 2, QTableWidgetItem(p.telefono or ""))
-            estado_txt = "Activo" if p.estado else "Inactivo"
-            self.table.setItem(i, 3, QTableWidgetItem(estado_txt))
-            self.table.setItem(i, 4, QTableWidgetItem(str(p.idprofesional)))  # ID en columna 4
+        try:
+            profesionales = session.query(Profesional).all()  # Activos e inactivos
+            for i, p in enumerate(profesionales):
+                nombre_completo = f"{p.nombre} {p.apellido}".strip()
+                self.table.insertRow(i)
+                self.table.setItem(i, 0, QTableWidgetItem(nombre_completo))
+                self.table.setItem(i, 1, QTableWidgetItem(p.documento or ""))
+                self.table.setItem(i, 2, QTableWidgetItem(p.telefono or ""))
+                estado_txt = "Activo" if p.estado else "Inactivo"
+                self.table.setItem(i, 3, QTableWidgetItem(estado_txt))
+                self.table.setItem(i, 4, QTableWidgetItem(str(p.idprofesional)))  # ID en columna 4
+        finally:
+            session.close()
 
     def filtrar_tabla(self):
         filtro = self.input_buscar.text().lower()
@@ -160,7 +172,7 @@ class ABMProfesionales(QMainWindow):
             visible = False
             for col in range(2):
                 item = self.table.item(row, col)
-                if filtro in (item.text() or "").lower():
+                if item and filtro in (item.text() or "").lower():
                     visible = True
                     break
             self.table.setRowHidden(row, not visible)
@@ -174,6 +186,7 @@ class ABMProfesionales(QMainWindow):
         self.input_email.clear()
         self.input_direccion.clear()
         self.input_observaciones.clear()
+        self.cbo_estado.setCurrentIndex(self.cbo_estado.findData(True))  # Activo por defecto
         self.profesional_seleccionado = None
         self.table.clearSelection()
         self.btn_agregar.setEnabled(True)
@@ -185,21 +198,29 @@ class ABMProfesionales(QMainWindow):
         profesional_id_item = self.table.item(row, 4)
         if profesional_id_item is None:
             return
+
         profesional_id = int(profesional_id_item.text())
         session = SessionLocal()
-        profesional = session.query(Profesional).filter_by(idprofesional=profesional_id).first()
-        session.close()
+        try:
+            profesional = session.query(Profesional).filter_by(idprofesional=profesional_id).first()
+        finally:
+            session.close()
+
         if profesional:
             self.profesional_seleccionado = profesional.idprofesional
-            self.input_nombre.setText(profesional.nombre)
-            self.input_apellido.setText(profesional.apellido)
+            self.input_nombre.setText(profesional.nombre or "")
+            self.input_apellido.setText(profesional.apellido or "")
             self.input_documento.setText(profesional.documento or "")
             self.input_matricula.setText(profesional.matricula or "")
             self.input_telefono.setText(profesional.telefono or "")
             self.input_email.setText(profesional.email or "")
             self.input_direccion.setText(profesional.direccion or "")
             self.input_observaciones.setText(profesional.observaciones or "")
-            self.cbo_estado.setCurrentIndex(0 if profesional.estado else 1)
+
+            # posicionar combo por userData (True/False)
+            idx = self.cbo_estado.findData(bool(profesional.estado))
+            self.cbo_estado.setCurrentIndex(idx if idx != -1 else self.cbo_estado.findData(True))
+
             self.btn_agregar.setEnabled(False)
             self.btn_eliminar.setEnabled(True)
             self.btn_editar.setEnabled(True)
@@ -214,25 +235,35 @@ class ABMProfesionales(QMainWindow):
         email = self.input_email.text().strip()
         direccion = self.input_direccion.text().strip()
         observaciones = self.input_observaciones.text().strip()
-        estado = self.cbo_estado.currentText()  # Obtener el estado del combo
+
         if not nombre or not apellido:
             QMessageBox.warning(self, "Campos obligatorios", "Debe completar nombre y apellido.")
             return
+
+        estado_bool = bool(self.cbo_estado.currentData())  # True/False desde userData
+
         session = SessionLocal()
-        nuevo = Profesional(
-            nombre=nombre,
-            apellido=apellido,
-            documento=documento,
-            matricula=matricula,
-            telefono=telefono,
-            email=email,
-            direccion=direccion,
-            observaciones=observaciones,
-            estado=estado
-        )
-        session.add(nuevo)
-        session.commit()
-        session.close()
+        try:
+            nuevo = Profesional(
+                nombre=nombre,
+                apellido=apellido,
+                documento=documento,
+                matricula=matricula,
+                telefono=telefono,
+                email=email,
+                direccion=direccion,
+                observaciones=observaciones,
+                estado=estado_bool
+            )
+            session.add(nuevo)
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            QMessageBox.critical(self, "Error", f"No se pudo guardar: {e}")
+            return
+        finally:
+            session.close()
+
         self.limpiar_formulario()
         self.cargar_profesionales()
         QMessageBox.information(self, "OK", "Profesional agregado.")
@@ -241,6 +272,7 @@ class ABMProfesionales(QMainWindow):
         if not self.profesional_seleccionado:
             QMessageBox.warning(self, "Seleccionar", "Seleccione un profesional para editar.")
             return
+
         nombre = self.input_nombre.text().strip()
         apellido = self.input_apellido.text().strip()
         documento = self.input_documento.text().strip()
@@ -249,24 +281,34 @@ class ABMProfesionales(QMainWindow):
         email = self.input_email.text().strip()
         direccion = self.input_direccion.text().strip()
         observaciones = self.input_observaciones.text().strip()
-        estado = self.cbo_estado.currentText()  # Obtener el estado del combo
+
         if not nombre or not apellido:
             QMessageBox.warning(self, "Campos obligatorios", "Debe completar nombre y apellido.")
             return
+
+        estado_bool = bool(self.cbo_estado.currentData())
+
         session = SessionLocal()
-        profesional = session.query(Profesional).filter_by(idprofesional=self.profesional_seleccionado).first()
-        if profesional:
-            profesional.nombre = nombre
-            profesional.apellido = apellido
-            profesional.documento = documento
-            profesional.matricula = matricula
-            profesional.telefono = telefono
-            profesional.email = email
-            profesional.direccion = direccion
-            profesional.observaciones = observaciones
-            profesional.estado = (estado == "Activo")  # Actualizar estado
-            session.commit()
-        session.close()
+        try:
+            profesional = session.query(Profesional).filter_by(idprofesional=self.profesional_seleccionado).first()
+            if profesional:
+                profesional.nombre = nombre
+                profesional.apellido = apellido
+                profesional.documento = documento
+                profesional.matricula = matricula
+                profesional.telefono = telefono
+                profesional.email = email
+                profesional.direccion = direccion
+                profesional.observaciones = observaciones
+                profesional.estado = estado_bool
+                session.commit()
+        except Exception as e:
+            session.rollback()
+            QMessageBox.critical(self, "Error", f"No se pudo editar: {e}")
+            return
+        finally:
+            session.close()
+
         self.limpiar_formulario()
         self.cargar_profesionales()
         QMessageBox.information(self, "OK", "Profesional editado.")
@@ -275,26 +317,33 @@ class ABMProfesionales(QMainWindow):
         if not self.profesional_seleccionado:
             QMessageBox.warning(self, "Seleccionar", "Seleccione un profesional para eliminar.")
             return
+
         session = SessionLocal()
-        profesional = session.query(Profesional).filter_by(idprofesional=self.profesional_seleccionado).first()
-        if profesional:
-            profesional.estado = False
-            session.commit()
-        session.close()
+        try:
+            profesional = session.query(Profesional).filter_by(idprofesional=self.profesional_seleccionado).first()
+            if profesional:
+                profesional.estado = False
+                session.commit()
+        except Exception as e:
+            session.rollback()
+            QMessageBox.critical(self, "Error", f"No se pudo eliminar (lógico): {e}")
+            return
+        finally:
+            session.close()
+
         self.limpiar_formulario()
         self.cargar_profesionales()
         QMessageBox.information(self, "OK", "Profesional eliminado (lógico).")
 
-        
     def enter_siguiente(self, actual, siguiente):
         def handler(event):
             if event.key() in (Qt.Key_Return, Qt.Key_Enter):
-                    siguiente.setFocus()
+                siguiente.setFocus()
             else:
-                    type(actual).keyPressEvent(actual, event)
+                type(actual).keyPressEvent(actual, event)
         return handler
 
-       
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     win = ABMProfesionales()
