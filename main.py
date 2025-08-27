@@ -63,6 +63,7 @@ from controllers.informe_ventas_form import VentasReportForm
 from controllers.abm_items import ABMItems
 from controllers.cobro_dialog import CobroDialog
 from controllers.informe_cobros_form import InformeCobrosForm
+from controllers.cambiar_password_dialog import CambiarPasswordDialog
 from models.paciente import Paciente
 from models.profesional import Profesional
 from models.clinica import Clinica
@@ -87,8 +88,8 @@ class MainWindow(QMainWindow):
         self.ventana_profesional = None
         self.ventana_especialidad = None
         self.ventana_clinica = None
-        self.ventana_proveedor = None   
-       
+        self.ventana_proveedor = None
+        self.usuario_logueado = usuario
         # --- Colores institucionales ---
         palette = self.mdi_area.palette()
         palette.setColor(QPalette.Window, QColor("#eaf1fb"))
@@ -171,6 +172,10 @@ class MainWindow(QMainWindow):
         action_abm_item.triggered.connect(self.abrir_items)
         self.menu_mantenimiento.addAction(action_abm_item)
 
+        action_cambiar = QAction("Cambiar contraseña", self)
+        action_cambiar.triggered.connect(self.on_cambiar_password)
+        self.menu_mantenimiento.addAction(action_cambiar) 
+
           # Menú Agendar
         self.menu_agendar = menubar.addMenu("Agendar")
         
@@ -239,6 +244,10 @@ class MainWindow(QMainWindow):
         dlg = InformeCobrosForm(self.session, self)
         dlg.exec_()
 
+    def on_cambiar_password(self):
+        # si guardaste el id como self.usuario_logueado.idusuario:
+        dlg = CambiarPasswordDialog(self.usuario_logueado.idusuario, self)
+        dlg.exec_()
 
     def abrir_cobro(self):
         dlg = CobroDialog(parent=self, session=self.session, usuario_actual=getattr(self, "usuario_actual", None))

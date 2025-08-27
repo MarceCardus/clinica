@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QIcon, QRegularExpressionValidator,QKeySequence
 from PyQt5.QtCore import Qt, QDate, QEvent, QRegularExpression,QSize,QTimer
 from decimal import Decimal
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, func
 from utils.db import SessionLocal
 from controllers.ventas_controller import VentasController
 from models.paciente import Paciente
@@ -18,6 +18,7 @@ from models.venta_detalle import VentaDetalle
 from models.venta import Venta
 from models.item import Item
 from models.item import ItemTipo
+from controllers.buscar_venta_dialog import BuscarVentaDialog
 
 # --- Diálogo de selección genérico (producto o paquete)
 class ItemSelectDialog(QDialog):
@@ -39,6 +40,7 @@ class ItemSelectDialog(QDialog):
         layout.addWidget(btn)
         self.listWidget.itemDoubleClicked.connect(self.accept)
         self.resize(420, 330)
+       
 
     def accept(self):
         idx = self.listWidget.currentRow()
@@ -61,28 +63,31 @@ class ABMVenta(QWidget):
         self.setWindowTitle("Ventas")
         self.resize(980, 540)        # <<< igual que Compras
 
-        self._setup_ui()             # <<< crea los widgets
-        QShortcut(QKeySequence("Ctrl+G"), self, activated=self.guardar_venta)
+        self._setup_ui()  
+        self.btn_buscar_venta.clicked.connect(self.abrir_buscador_venta)
+        QShortcut(QKeySequence("Ctrl+F"), self, activated=self.abrir_buscador_venta)           # <<< crea los widgets
+        QShortcut(QKeySequence("Ctrl+G"), self, activated=self._on_guardar_click)
         self.grilla.itemChanged.connect(self._on_item_changed)
         # --- Conexiones (después del setup) ---
         self.btn_eliminar.clicked.connect(self.eliminar_fila_grilla)
-        self.btn_guardar.clicked.connect(self.guardar_venta)
+        self.btn_guardar.clicked.connect(self._on_guardar_click)
         self.btn_anular.clicked.connect(self.anular_venta_actual)
+        #self.btn_agregar.clicked.connect(self._agregar_fila_grilla)
         self.btn_anular.setEnabled(False)
-        self.btn_cancelar.clicked.connect(self.cancelar)
+        #self.btn_cancelar.clicked.connect(self.cancelar)
         self.btn_primero.clicked.connect(self.ir_primero)
         self.btn_anterior.clicked.connect(self.ir_anterior)
         self.btn_siguiente.clicked.connect(self.ir_siguiente)
         self.btn_ultimo.clicked.connect(self.ir_ultimo)
         self.btn_nuevo.clicked.connect(self.nuevo)
         self.btn_buscar.clicked.connect(self.buscar_y_agregar_item)
-
+        
         # Datos
         self.cargar_maestros()
         self.setup_focus()
         self.cbo_paciente.setFocus()
         self.cargar_ventas()
-
+        self.modo_edicion = False
     
     # Localiza el QMdiSubWindow real (si existe)
     def _mdi_subwindow(self):
@@ -188,9 +193,9 @@ class ABMVenta(QWidget):
 
         # Botones detalle
         btns_detalle = QHBoxLayout()
-        self.btn_agregar  = QPushButton(QIcon("imagenes/agregar.png"), "Agregar")
+        #self.btn_agregar  = QPushButton(QIcon("imagenes/agregar.png"), "Agregar")
         self.btn_eliminar = QPushButton(QIcon("imagenes/eliminar.png"), "Eliminar")
-        btns_detalle.addWidget(self.btn_agregar)
+        #btns_detalle.addWidget(self.btn_agregar)
         btns_detalle.addWidget(self.btn_eliminar)
         self.lbl_total = QLabel("Total: 0    IVA10: 0")
         btns_detalle.addStretch()
@@ -199,6 +204,15 @@ class ABMVenta(QWidget):
 
         # Pie
         pie_layout = QHBoxLayout()
+        self.btn_buscar_venta = QPushButton(QIcon("imagenes/buscar.png"), "Buscar")
+        self.btn_buscar_venta.setStyleSheet("""
+            QPushButton {
+                background-color: #0d6efd; color: white; font-weight: bold;
+                border-radius: 6px; padding: 4px 12px;
+            }
+            QPushButton:hover { background-color: #b6d4fe; color: #0d6efd; }
+        """)
+        pie_layout.addWidget(self.btn_buscar_venta)
         self.btn_primero   = QPushButton(QIcon("imagenes/primero.png"), "")
         self.btn_anterior  = QPushButton(QIcon("imagenes/anterior.png"), "")
         self.btn_siguiente = QPushButton(QIcon("imagenes/siguiente.png"), "")
@@ -220,13 +234,17 @@ class ABMVenta(QWidget):
         self.btn_nuevo    = QPushButton(QIcon("imagenes/nuevo.png"), "Nuevo")
         self.btn_guardar  = QPushButton(QIcon("imagenes/guardar.png"), "Guardar")
         self.btn_anular   = QPushButton(QIcon("imagenes/eliminar.png"), "Anular")
-        self.btn_cancelar = QPushButton(QIcon("imagenes/cancelar.png"), "Cancelar")
+        self.btn_editar   = QPushButton(QIcon("imagenes/editar.png"), "Editar")
+        self.btn_editar.setStyleSheet("""
+            QPushButton { background-color: #fd7e14; color: white; font-weight: bold;
+                        border-radius: 6px; padding: 4px 18px; }
+            QPushButton:hover { background-color: #ffb37a; }
+        """)
+        self.btn_editar.clicked.connect(self.editar_actual)
         botones = [
             (self.btn_nuevo, "#007bff", "white"),
             (self.btn_guardar, "#28a745", "white"),
             (self.btn_anular, "#dc3545", "white"),
-            (self.btn_cancelar, "#ffc9c9", "#dc3545"),
-            
         ]
         for btn, fondo, color in botones:
             btn.setStyleSheet(f"""
@@ -241,10 +259,9 @@ class ABMVenta(QWidget):
                     background-color: #b6d4fe;
                 }}
             """)
-        for b in [self.btn_nuevo, self.btn_guardar, self.btn_anular, self.btn_cancelar]:
+        for b in [self.btn_nuevo, self.btn_editar, self.btn_guardar, self.btn_anular]:
             pie_layout.addWidget(b)
         right_layout.addLayout(pie_layout)
-
         splitter.addWidget(right_widget)
         splitter.setSizes([340, 800])   # <<< igual que Compras
 
@@ -358,7 +375,7 @@ class ABMVenta(QWidget):
         self.cbo_tipo.setEnabled(estado)
         self.busca_item.setEnabled(estado)
         self.btn_buscar.setEnabled(estado)
-        self.btn_agregar.setEnabled(estado)
+        #self.btn_agregar.setEnabled(estado)
         self.btn_eliminar.setEnabled(estado)
 
     def limpiar_formulario(self, editable=False):
@@ -376,9 +393,11 @@ class ABMVenta(QWidget):
         self.lbl_estado.setText("Activo"); self.lbl_estado.setStyleSheet("font-weight:bold; color: green;")
         self.set_campos_enabled(editable)
         self.btn_guardar.setEnabled(editable)
-        self.btn_cancelar.setEnabled(True)
+        #self.btn_cancelar.setEnabled(True)
         self.btn_anular.setEnabled(False)
         self.btn_nuevo.setEnabled(not editable)
+        self.set_modo_edicion_minima(False)
+        self.btn_editar.setEnabled(False)
         
     def eliminar_fila_grilla(self):
         row = self.grilla.currentRow()
@@ -494,13 +513,14 @@ class ABMVenta(QWidget):
         self.idx_actual = idx
         self.set_campos_enabled(False)
         self.btn_guardar.setEnabled(False)
-        self.btn_cancelar.setEnabled(True)
+        #self.btn_cancelar.setEnabled(True)
         self.btn_anular.setEnabled(True)
         self.btn_nuevo.setEnabled(True)
-
+        self.set_modo_edicion_minima(False)
         self.actualizar_total_pie()
         self._pintar_estado(v)
         self.grilla.blockSignals(False)
+        
 
 
     
@@ -784,6 +804,63 @@ class ABMVenta(QWidget):
             f"Total: {total:,.0f}    IVA10: {int(round(total_iva)):,.0f}".replace(",", ".")
         )
 
+
+    def editar_actual(self):
+        if self.modo_nuevo:
+            QMessageBox.information(self, "Editar", "Estás creando una venta nueva. Guardala o cancelá antes de editar otra.")
+            return
+        if not self.idventa_actual:
+            QMessageBox.information(self, "Editar", "Primero seleccioná una venta (o usá Buscar venta).")
+            return
+        # solo permitir si no está anulada
+        v = next((x for x in self.ventas if x.idventa == self.idventa_actual), None)
+        if v and (getattr(v, "estadoventa", "").lower() == "anulada" or getattr(v, "anulada", False)):
+            QMessageBox.warning(self, "Editar", "La venta está anulada; no se puede editar.")
+            return
+        self.set_modo_edicion_minima(True)
+        self.txt_nro_factura.setFocus()
+
+    def _on_guardar_click(self):
+        if self.modo_edicion:
+            self.guardar_cambios_minimos()
+        else:
+            self.guardar_venta()
+
+    def guardar_cambios_minimos(self):
+        if not self.idventa_actual:
+            QMessageBox.warning(self, "Guardar", "No hay venta cargada.")
+            return
+
+        nro = (self.txt_nro_factura.text() or "").strip()
+        if self._mask_vacia(nro):
+            nro = None
+        else:
+            # si tenés validator, esto lo respeta; si no, siempre da True
+            if not self.txt_nro_factura.hasAcceptableInput():
+                QMessageBox.warning(self, "N° Factura", "Formato inválido. Usá 001-001-0000001.")
+                return
+
+        try:
+            v = self.session.query(Venta).get(int(self.idventa_actual))
+            if not v:
+                QMessageBox.warning(self, "Guardar", "Venta no encontrada.")
+                return
+
+            v.nro_factura = nro
+            v.observaciones = self.observaciones.toPlainText()
+            self.session.commit()
+
+            QMessageBox.information(self, "Venta", "Cambios guardados correctamente.")
+            # refrescar lista y mostrar la misma venta
+            cur_id = v.idventa
+            self.cargar_ventas()
+            self.cargar_venta_por_id(cur_id)
+            self.set_modo_edicion_minima(False)
+
+        except Exception as e:
+            self.session.rollback()
+            QMessageBox.critical(self, "Error", f"Ocurrió un error al guardar: {e}")
+
    
     def _collect_items(self):
         items = []
@@ -817,3 +894,56 @@ class ABMVenta(QWidget):
                         "descuento": Decimal("0"),
                     })
         return items
+    
+    def set_modo_edicion_minima(self, on: bool):
+        self.modo_edicion = on
+        self.set_campos_enabled(False)
+
+        # solo estos dos campos editables en modo edición
+        self.txt_nro_factura.setEnabled(on)
+        self.observaciones.setEnabled(on)
+        self.btn_guardar.setEnabled(on)
+
+        has_loaded = self.idventa_actual is not None
+
+        # botones/acciones
+        self.btn_editar.setEnabled((not on) and has_loaded)
+        self.btn_anular.setEnabled((not on) and has_loaded)
+
+        self.btn_buscar_venta.setEnabled(not on)
+        self.btn_primero.setEnabled(not on)
+        self.btn_anterior.setEnabled(not on)
+        self.btn_siguiente.setEnabled(not on)
+        self.btn_ultimo.setEnabled(not on)
+        self.btn_nuevo.setEnabled(not on)
+
+    def abrir_buscador_venta(self):
+        dlg = BuscarVentaDialog(self.session, self)
+        if dlg.exec_() == QDialog.Accepted and dlg.selected_idventa:
+            self.cargar_venta_por_id(dlg.selected_idventa)
+
+    def cargar_venta_por_id(self, idventa: int):
+        """
+        Carga en pantalla la venta indicada.
+        Si no está en self.ventas, refresca la lista e intenta ubicarla.
+        """
+        # ¿ya la tengo en memoria?
+        for i, v in enumerate(self.ventas or []):
+            if int(v.idventa) == int(idventa):
+                self.mostrar_venta(i)
+                return
+
+        # refrescar listado y buscar
+        self.cargar_ventas()
+        for i, v in enumerate(self.ventas or []):
+            if int(v.idventa) == int(idventa):
+                self.mostrar_venta(i)
+                return
+
+        # último recurso: traer solo esa venta de la BD y agregar al final
+        v = self.session.execute(select(Venta).where(Venta.idventa == int(idventa))).scalar_one_or_none()
+        if v:
+            (self.ventas or []).append(v)
+            self.mostrar_venta(len(self.ventas) - 1)
+        else:
+            QMessageBox.warning(self, "Venta", "No se encontró la venta seleccionada.")

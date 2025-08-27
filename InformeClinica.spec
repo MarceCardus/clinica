@@ -1,12 +1,19 @@
 # -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_dynamic_libs
+from PyInstaller.utils.hooks import collect_submodules
+
+binaries = []
+hiddenimports = []
+binaries += collect_dynamic_libs('psycopg2')
+hiddenimports += collect_submodules('sqlalchemy')
 
 
 a = Analysis(
-    ['envio_turnos_prof.py'],
+    ['enviar_informe.py'],
     pathex=[],
-    binaries=[],
+    binaries=binaries,
     datas=[],
-    hiddenimports=[],
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -22,7 +29,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='envio_turnos_prof',
+    name='InformeClinica',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

@@ -1,19 +1,25 @@
-import models 
+# login.py
+import models
 import models.usuario_actual
+
 from models.tipoproducto import TipoProducto
 from models.producto import Producto
 from models.item import Item
-from sqlalchemy.orm import configure_mappers,class_mapper
+from sqlalchemy.orm import configure_mappers, class_mapper
 configure_mappers()            # dispara el mapeo
 class_mapper(TipoProducto)
 class_mapper(Producto)
 class_mapper(Item)
 
-from PyQt5.QtWidgets import QDialog, QLabel, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout, QMessageBox
+from PyQt5.QtWidgets import (
+    QDialog, QLabel, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout, QMessageBox
+)
 from PyQt5.QtGui import QFont, QIcon
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QEvent
+
 from models.usuario import Usuario
 from utils.db import SessionLocal
+from utils.security import verify_password, hash_password, needs_rehash
 
 
 class LoginDialog(QDialog):
@@ -80,16 +86,45 @@ class LoginDialog(QDialog):
         self.rol = None
         self.usuario_actual = None
 
+        # ENTER para iniciar sesión
+        self.input_usuario.returnPressed.connect(self.login)
+        self.input_password.returnPressed.connect(self.login)
+
     def login(self):
         usuario = self.input_usuario.text().strip()
         password = self.input_password.text().strip()
+
+        if not usuario or not password:
+            QMessageBox.warning(self, "Atención", "Complete usuario y contraseña.")
+            return
+
         session = SessionLocal()
-        user = session.query(Usuario).filter_by(usuario=usuario, contrasena=password, estado=True).first()
-        if user:
+        try:
+            # Buscar solo por usuario ACTIVO
+            user = (
+                session.query(Usuario)
+                .filter(Usuario.usuario == usuario, Usuario.estado == True)
+                .first()
+            )
+
+            # Verificar hash/legacy
+            if not user or not verify_password(password, user.contrasena):
+                QMessageBox.warning(self, "Error", "Usuario o contraseña incorrectos")
+                return
+
+            # Migración/rehash automático si corresponde (p.ej., venía en texto plano)
+            if needs_rehash(user.contrasena):
+                user.contrasena = hash_password(password)
+                session.commit()
+
+            # Éxito: devolver objeto Usuario y rol
             self.rol = user.rol
-            self.usuario_actual = user  # Guarda el objeto Usuario, no solo el nombre
-            models.usuario_actual.usuario_id = user.idusuario  # <---- ¡IMPORTANTE!
+            self.usuario_actual = user  # Guarda el objeto Usuario
+            models.usuario_actual.usuario_id = user.idusuario  # ¡IMPORTANTE!
             self.accept()
-        else:
-            QMessageBox.warning(self, "Error", "Usuario o contraseña incorrectos")
-        session.close()
+
+        except Exception as ex:
+            session.rollback()
+            QMessageBox.critical(self, "Error", f"Ocurrió un problema durante el inicio de sesión:\n{ex}")
+        finally:
+            session.close()

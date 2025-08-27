@@ -629,7 +629,7 @@ class FichaClinicaForm(QDialog):
         self.receta_medicamento.clear()
         self.receta_medicamento.addItem("Seleccionar...", None)
         insumos = self.session.query(Insumo).filter(
-            Insumo.categoria == 'USO_PROCEDIMIENTO'  # Cambia el filtro si corresponde a "MEDICAMENTO" según tu modelo
+            Insumo.categoria == 'MEDICAMENTO'  # Cambia el filtro si corresponde a "MEDICAMENTO" según tu modelo
         ).order_by(Insumo.nombre).all()
         for insumo in insumos:
             self.receta_medicamento.addItem(insumo.nombre, insumo.idinsumo)

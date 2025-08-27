@@ -145,8 +145,8 @@ def main():
                 f"Le recordamos su cita para mañana a las {hora_cita}.\n"
                 "¿Podría confirmarnos su asistencia?\n"
                 "Responda por favor:\n"
-                "✅ *SI* para confirmar\n"
-                "❌ *NO* para cancelar\n"
+                "*SI*\n"
+                "*NO*\n"
                 "Gracias por su tiempo y preferencia 💖"
             )
 

@@ -2,11 +2,13 @@
 # Reqs: pip install SQLAlchemy psycopg2-binary python-dotenv
 # .env: DATABASE_URL=postgresql+psycopg2://usuario:pass@host:5432/consultorio
 #       SMTP_* (host, port, user, pass, from, to), REPORT_TZ=America/Asuncion
+#       IMAP_* (opcional, para guardar en Enviados)
 
 import os, sys, traceback
 from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
-from email.message import EmailMessage
+from pathlib import Path
+import imaplib, time
 
 # ---------------- util ----------------
 try:
@@ -15,25 +17,39 @@ except Exception:
     ZoneInfo = None
 
 def load_env():
+    """
+    Carga variables desde:
+      1) .env en la carpeta del ejecutable (cuando está “frozen”)
+      2) .env en el cwd como fallback
+    """
     try:
-        from dotenv import load_dotenv
-        load_dotenv()
+        from dotenv import load_dotenv  # pip install python-dotenv
+        base_dir = Path(getattr(sys, "_MEIPASS",
+                         Path(sys.executable).parent if getattr(sys, "frozen", False)
+                         else Path(__file__).parent))
+        load_dotenv(base_dir / ".env", override=False)
+        load_dotenv(override=False)  # por si ejecutás desde consola
     except Exception:
         pass
+
 load_env()
 
 def asu_now(tz_name: str | None):
     tz = None
     if tz_name and ZoneInfo is not None:
-        try: tz = ZoneInfo(tz_name)
-        except Exception: tz = None
+        try:
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            tz = None
     return datetime.now(tz) if tz else datetime.now()
 
 def period_day(d: date): return d, d
+
 def period_month(d: date):
     first = date(d.year, d.month, 1)
     last  = (date(d.year + (d.month//12), (d.month%12)+1, 1) - timedelta(days=1))
     return first, last
+
 def period_year(d: date): return date(d.year,1,1), date(d.year,12,31)
 
 def D(x):
@@ -73,7 +89,7 @@ ENGINE = create_engine(DB_URL, pool_pre_ping=True, future=True)
 # venta(idventa, fecha, montototal, estadoventa, saldo)
 # cobro(idcobro, fecha, monto, formapago, estado)
 # compra(idcompra, fecha, montototal, anulada bool)
-# compra_detalle(idcompra, iditem, cantidad, preciounitario, observaciones, iva?, ...)
+# compra_detalle(idcompra, iditem, cantidad, preciounitario, observaciones, ...)
 # item(iditem, nombre, iditemtipo)
 # item_tipo(iditemtipo, nombre -> 'PRODUCTO'/'INSUMO'/'AMBOS')
 
@@ -145,7 +161,7 @@ def sum_compras_insumos_productos(d1: date, d2: date) -> Decimal:
       AND COALESCE(c.anulada, FALSE) = FALSE
       AND (
             t.nombre IN ('PRODUCTO','INSUMO','AMBOS')
-            OR cd.iditem IS NOT NULL          -- por si t.nombre es NULL en históricos
+            OR cd.iditem IS NOT NULL
           )
     """
     with ENGINE.begin() as cx:
@@ -169,6 +185,8 @@ def sum_gastos_daisy(d1: date, d2: date) -> Decimal:
         return D(cx.execute(text(sql), {"d1": d1, "d2": d2}).scalar())
 
 # ---------------- email ----------------
+from email.message import EmailMessage
+
 def build_email_text(rep_date: date,
                      ventas_dia: Decimal, cobros_dia: dict, saldo_dia: Decimal,
                      compras_dia_ip: Decimal, compras_dia_gd: Decimal,
@@ -176,51 +194,90 @@ def build_email_text(rep_date: date,
                      compras_mes_ip: Decimal, compras_mes_gd: Decimal,
                      saldo_anual: Decimal) -> str:
     ddmmyyyy = rep_date.strftime("%d-%m-%Y")
-    lines = [
-        f"Informe del día: {ddmmyyyy}",
-        "",
-        f"Ventas del día = {money(ventas_dia)}",
-        f"Efectivo del día = {money(cobros_dia['EFECTIVO'])}",
-        f"Transferencia = {money(cobros_dia['TRANSFERENCIA'])}",
-        f"TC/TD = {money(cobros_dia['TC_TD_CHEQUE'])}",
-        f"Total ingreso del día = {money(cobros_dia['TOTAL'])}",
-        f"Saldo del día = {money(saldo_dia)}",
-        "Compras del día:",
-        f"  - Insumos y Productos = {money(compras_dia_ip)}",
-        f"  - Gastos Daisy = {money(compras_dia_gd)}",
-        "",
-        f"Ventas del mes = {money(ventas_mes)}",
-        f"Efectivo del mes = {money(cobros_mes['EFECTIVO'])}",
-        f"Transferencia del mes = {money(cobros_mes['TRANSFERENCIA'])}",
-        f"TC/TD del mes = {money(cobros_mes['TC_TD_CHEQUE'])}",
-        f"Total ingreso del mes = {money(cobros_mes['TOTAL'])}",
-        f"Saldo del mes = {money(saldo_mes)}",
-        "Compras del mes:",
-        f"  - Insumos y Productos = {money(compras_mes_ip)}",
-        f"  - Gastos Daisy = {money(compras_mes_gd)}",
-        "",
-        f"Saldo Anual = {money(saldo_anual)}",
-    ]
-    return "\n".join(lines)
+    L = []
+    L.append(f"📅 INFORME DEL DÍA: {ddmmyyyy}")
+    L.append("")
+
+    # Día
+    L.append("📊 RESUMEN DEL DÍA")
+    L.append(f"• 🧾 Ventas del día: {money(ventas_dia)}")
+    L.append(f"• 💵 Efectivo del día: {money(cobros_dia['EFECTIVO'])}")
+    L.append(f"• 🔁 Transferencia: {money(cobros_dia['TRANSFERENCIA'])}")
+    L.append(f"• 💳 TC/TD (y cheque): {money(cobros_dia['TC_TD_CHEQUE'])}")
+    L.append(f"• 📥 Total ingreso del día: {money(cobros_dia['TOTAL'])}")
+    L.append(f"• 🧮 Saldo del día: {money(saldo_dia)}")
+    L.append("")
+    L.append("🛒 COMPRAS DEL DÍA")
+    L.append(f"  • 📦 Insumos y Productos: {money(compras_dia_ip)}")
+    L.append(f"  • 🌼 Gastos Daisy: {money(compras_dia_gd)}")
+
+    # Dos saltos entre Día y Mes
+    L.append("")
+    L.append("")
+
+    # Mes
+    L.append("📈 RESUMEN DEL MES")
+    L.append(f"• 🧾 Ventas del mes: {money(ventas_mes)}")
+    L.append(f"• 💵 Efectivo del mes: {money(cobros_mes['EFECTIVO'])}")
+    L.append(f"• 🔁 Transferencia del mes: {money(cobros_mes['TRANSFERENCIA'])}")
+    L.append(f"• 💳 TC/TD del mes: {money(cobros_mes['TC_TD_CHEQUE'])}")
+    L.append(f"• 📥 Total ingreso del mes: {money(cobros_mes['TOTAL'])}")
+    L.append(f"• 🧮 Saldo del mes: {money(saldo_mes)}")
+    L.append("")
+    L.append("🛒 COMPRAS DEL MES")
+    L.append(f"  • 📦 Insumos y Productos: {money(compras_mes_ip)}")
+    L.append(f"  • 🌼 Gastos Daisy: {money(compras_mes_gd)}")
+    L.append("")
+    L.append(f"🏦 SALDO ANUAL: {money(saldo_anual)}")
+
+    return "\n".join(L)
+
+
+def _imap_append_to_sent(raw_bytes: bytes):
+    if os.getenv("IMAP_SAVE_SENT", "false").lower() not in ("1","true","yes","y"):
+        return
+    host = os.getenv("IMAP_HOST", "imap.gmail.com")
+    port = int(os.getenv("IMAP_PORT", "993"))
+    user = os.getenv("IMAP_USER")
+    password = os.getenv("IMAP_PASS")
+    sent_box = os.getenv("IMAP_SENT_FOLDER", "[Gmail]/Sent Mail")
+    if not (host and user and password):
+        return  # no config IMAP, salteamos
+    with imaplib.IMAP4_SSL(host, port) as M:
+        M.login(user, password)
+        M.append(sent_box, "\\Seen", imaplib.Time2Internaldate(time.time()), raw_bytes)
+        M.logout()
 
 def send_email(subject: str, body: str, to_addr: str):
     host = os.getenv("SMTP_HOST")
     port = int(os.getenv("SMTP_PORT", "587"))
-    user = os.getenv("SMTP_USER"); password = os.getenv("SMTP_PASS")
+    user = os.getenv("SMTP_USER")
+    password = os.getenv("SMTP_PASS")
     sender = os.getenv("SMTP_FROM", user or "noreply@example.com")
-    use_tls = os.getenv("SMTP_TLS", "true").lower() in ("1","true","yes","y")
-    if not host or not user or not password:
-        raise RuntimeError("Config SMTP incompleta: SMTP_HOST/PORT/USER/PASS")
+
     import smtplib
     msg = EmailMessage()
-    msg["From"] = sender; msg["To"] = to_addr; msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = to_addr
+    msg["Subject"] = subject
     msg.set_content(body)
-    if use_tls and port in (587,25):
+
+    if os.getenv("SMTP_TLS", "true").lower() in ("1","true","yes","y") and port in (587, 25):
         with smtplib.SMTP(host, port) as s:
-            s.ehlo(); s.starttls(); s.login(user, password); s.send_message(msg)
+            s.ehlo()
+            s.starttls()
+            s.login(user, password)
+            s.send_message(msg)
     else:
         with smtplib.SMTP_SSL(host, port) as s:
-            s.login(user, password); s.send_message(msg)
+            s.login(user, password)
+            s.send_message(msg)
+
+    # Guardar copia en Enviados (si está configurado)
+    try:
+        _imap_append_to_sent(msg.as_bytes())
+    except Exception:
+        pass
 
 # ---------------- main ----------------
 def main(argv=None):
