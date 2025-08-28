@@ -48,7 +48,7 @@ def registrar_cobro(
             monto=monto,
             formapago=(formapago or "").strip()[:30] or None,
             observaciones=(observaciones or None),
-            usuarioregistro=(usuarioregistro or None),
+            usuarioregistro=(str(usuarioregistro).strip() if usuarioregistro not in (None, "") else None),
         )
         session.add(c)
         session.flush()  # idcobro
@@ -157,7 +157,9 @@ def _begin_tx(session):
             yield
 # ============== ANULACIONES / REVERSAS ==============
 
-def anular_cobro(session: Session, idcobro: int, motivo: str | None = None):
+def anular_cobro(session: Session, idcobro: int, motivo: str | None = None,
+                 usuario: int | str | None = None):
+
     """
     Anula un cobro: elimina sus imputaciones (devolviendo los saldos a las ventas)
     y deja el cobro sin efecto. Si querés, podés moverlo a una tabla auditoría.
@@ -190,7 +192,7 @@ def anular_cobro(session: Session, idcobro: int, motivo: str | None = None):
         if hasattr(c, "estado"):
             c.estado = "ANULADO"
 
-        _auditar(session, usuario=None, accion="COBRO_ANULAR",
+        _auditar(session, usuario=usuario, accion="COBRO_ANULAR",
                  entidad="cobro", iddoc=idcobro, motivo=motivo)
         # Si preferís marcar estado en Cobro, agrega un campo 'estado' en vez de borrar.
 
@@ -300,15 +302,17 @@ def _imputar_fifo_por_paciente(session: Session, *, idcobro: int, idpaciente: in
     return aplicado_total
 
 
-def _auditar(session, *, usuario: str | None, accion: str, entidad: str,
+def _auditar(session, *, usuario: int | str | None, accion: str, entidad: str,
              iddoc: int, motivo: str | None = None, extra: dict | None = None):
     """
-    Guarda una línea en 'auditoria' según tu esquema:
-    idauditoria, fechahora, idusuario, modulo, accion, observaciones.
+    Guarda una línea en 'auditoria'.
+    - 'usuario' puede ser int (id), str numérica ("3") o el login ("Cardus").
     """
+    from datetime import datetime
+    from sqlalchemy import select
     from models.auditoria import Auditoria
 
-    # Armamos un texto amigable para 'observaciones'
+    # --- armar observaciones legibles ---
     partes = []
     if motivo:
         partes.append(f"Motivo: {motivo}")
@@ -318,21 +322,31 @@ def _auditar(session, *, usuario: str | None, accion: str, entidad: str,
         partes.append(f"Extra: {extra}")
     obs = " | ".join(partes) or None
 
+    # --- resolver idusuario ---
+    uid = None
+    if usuario is not None:
+        s = str(usuario).strip()
+        if s.isdigit():
+            uid = int(s)
+        else:
+            # Intentar resolver por login
+            try:
+                from models.usuario import Usuario
+                uid = session.execute(
+                    select(Usuario.idusuario).where(Usuario.usuario == s)
+                ).scalar_one_or_none()
+            except Exception:
+                uid = None  # si no existe la tabla/modelo o falla, seguimos sin UID
+
     a = Auditoria(
         fechahora=datetime.now(),
+        idusuario=uid,
         modulo=entidad,
         accion=accion,
         observaciones=obs,
     )
-
-    # Si 'usuario' viene con un id numérico, lo seteamos en idusuario
-    try:
-        if usuario is not None and str(usuario).strip().isdigit():
-            a.idusuario = int(usuario)
-    except Exception:
-        pass
-
     session.add(a)
+
 
 def _es_fisico(session: Session, iditem: int) -> bool:
     from models.item import Item

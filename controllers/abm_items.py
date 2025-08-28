@@ -97,7 +97,7 @@ class ABMItems(QDialog):
         fm = self.table.fontMetrics()
         self.table.verticalHeader().setDefaultSectionSize(int(fm.height() * 1.9))
         layout.addWidget(self.table)
-        self.table.setSortingEnabled(True)
+        
 
         # Botón agregar
         self.btn_agregar = QPushButton(" Agregar ítem")

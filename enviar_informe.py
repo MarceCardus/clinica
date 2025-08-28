@@ -1,10 +1,4 @@
-# enviar_informe.py (PostgreSQL) — ajustado a tus tablas/columnas
-# Reqs: pip install SQLAlchemy psycopg2-binary python-dotenv
-# .env: DATABASE_URL=postgresql+psycopg2://usuario:pass@host:5432/consultorio
-#       SMTP_* (host, port, user, pass, from, to), REPORT_TZ=America/Asuncion
-#       IMAP_* (opcional, para guardar en Enviados)
-
-import os, sys, traceback
+import os, sys, traceback, re, unicodedata
 from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -17,18 +11,14 @@ except Exception:
     ZoneInfo = None
 
 def load_env():
-    """
-    Carga variables desde:
-      1) .env en la carpeta del ejecutable (cuando está “frozen”)
-      2) .env en el cwd como fallback
-    """
+    """Carga .env desde la carpeta del ejecutable y desde el cwd como fallback."""
     try:
         from dotenv import load_dotenv  # pip install python-dotenv
         base_dir = Path(getattr(sys, "_MEIPASS",
                          Path(sys.executable).parent if getattr(sys, "frozen", False)
                          else Path(__file__).parent))
         load_dotenv(base_dir / ".env", override=False)
-        load_dotenv(override=False)  # por si ejecutás desde consola
+        load_dotenv(override=False)
     except Exception:
         pass
 
@@ -62,20 +52,34 @@ def money(x: Decimal):
     q = D(x).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
     return f"Gs. {q:,.0f}".replace(",", ".")
 
+# --- Normalización de forma de pago ---
+def _strip_accents(s: str) -> str:
+    return ''.join(c for c in unicodedata.normalize('NFKD', s) if not unicodedata.combining(c))
+
 def norm_fp(fp: str) -> str:
-    if not fp: return ""
-    s = fp.strip().upper()
-    m = {
-        "EFECTIVO": {"EFECTIVO", "CASH", "CONTADO"},
-        "TRANSFERENCIA": {"TRANSFERENCIA", "TRANSF", "TRANSFER", "GIRO"},
-        "TARJETA_CREDITO": {"TC", "TARJETA CREDITO", "TARJETA CRÉDITO", "CREDITO", "CRÉDITO"},
-        "TARJETA_DEBITO": {"TD", "TARJETA DEBITO", "TARJETA DÉBITO", "DEBITO", "DÉBITO"},
-        "CHEQUE": {"CHEQUE", "CHEQUES"},
-    }
-    for k, vals in m.items():
-        if s in vals: return k
-    if "TARJETA" in s: return "TARJETA_CREDITO"
-    return s
+    """
+    Devuelve una de: EFECTIVO, TRANSFERENCIA, TARJETA_CREDITO, TARJETA_DEBITO, CHEQUE.
+    Soporta variantes como: 'T. Crédito', 'T. Debito', 'Tarjeta', 'Transfer', etc.
+    """
+    if not fp:
+        return ""
+    s = _strip_accents(str(fp)).upper()
+    s = re.sub(r'[^A-Z0-9 ]+', ' ', s)
+    s = re.sub(r'\s+', ' ', s).strip()
+    tokens = set(s.split())
+
+    if 'EFECTIVO' in tokens or 'CASH' in tokens or 'CONTADO' in tokens:
+        return 'EFECTIVO'
+    if any(w in s for w in ('TRANSFER', 'TRANSF', 'GIRO', 'DEPOSITO', 'DEPOSI')):
+        return 'TRANSFERENCIA'
+    if 'CHEQUE' in s or 'CHEQ' in s:
+        return 'CHEQUE'
+    if 'TD' in tokens or 'DEBITO' in s or 'DEBIT' in s:
+        return 'TARJETA_DEBITO'
+    # Si dice "TARJETA" sin aclarar, lo contamos como crédito
+    if 'TC' in tokens or 'CREDITO' in s or 'CREDIT' in s or 'TARJETA' in tokens:
+        return 'TARJETA_CREDITO'
+    return s  # quedará como "OTRO" y se verá en REPORT_DEBUG
 
 # ---------------- DB ----------------
 from sqlalchemy import create_engine, text
@@ -119,14 +123,31 @@ def sum_cobros_por_fp(d1: date, d2: date):
       {_vigente_cobro_sql('c')}
     GROUP BY c.formapago
     """
-    res = {"EFECTIVO": D(0), "TRANSFERENCIA": D(0), "TC_TD_CHEQUE": D(0), "TOTAL": D(0)}
+    res = {
+        "EFECTIVO": D(0),
+        "TRANSFERENCIA": D(0),
+        "TARJETA_CREDITO": D(0),
+        "TARJETA_DEBITO": D(0),
+        "CHEQUE": D(0),
+        "OTROS": D(0),
+        "TOTAL": D(0),
+    }
+    unknown = {}
     with ENGINE.begin() as cx:
         for medio, total in cx.execute(text(sql), {"d1": d1, "d2": d2}):
-            s = D(total); n = norm_fp(medio or "")
-            if n == "EFECTIVO": res["EFECTIVO"] += s
-            elif n == "TRANSFERENCIA": res["TRANSFERENCIA"] += s
-            elif n in {"TARJETA_CREDITO","TARJETA_DEBITO","CHEQUE"}: res["TC_TD_CHEQUE"] += s
+            s = D(total)
+            key = norm_fp(medio or "")
+            if key in res:
+                res[key] += s
+            else:
+                res["OTROS"] += s
+                unknown[key] = unknown.get(key, D(0)) + s
             res["TOTAL"] += s
+
+    # Debug opcional: ver qué textos no están mapeados
+    if os.getenv("REPORT_DEBUG", "").lower() in ("1","true","yes","y") and unknown:
+        print("Formas de pago no mapeadas:", unknown, file=sys.stderr)
+
     return res
 
 def sum_saldo_periodo(d1: date, d2: date) -> Decimal:
@@ -203,7 +224,9 @@ def build_email_text(rep_date: date,
     L.append(f"• 🧾 Ventas del día: {money(ventas_dia)}")
     L.append(f"• 💵 Efectivo del día: {money(cobros_dia['EFECTIVO'])}")
     L.append(f"• 🔁 Transferencia: {money(cobros_dia['TRANSFERENCIA'])}")
-    L.append(f"• 💳 TC/TD (y cheque): {money(cobros_dia['TC_TD_CHEQUE'])}")
+    L.append(f"• 💳 T. Crédito: {money(cobros_dia['TARJETA_CREDITO'])}")
+    L.append(f"• 💳 T. Débito: {money(cobros_dia['TARJETA_DEBITO'])}")
+    L.append(f"• 🧾 Cheque: {money(cobros_dia['CHEQUE'])}")
     L.append(f"• 📥 Total ingreso del día: {money(cobros_dia['TOTAL'])}")
     L.append(f"• 🧮 Saldo del día: {money(saldo_dia)}")
     L.append("")
@@ -211,7 +234,6 @@ def build_email_text(rep_date: date,
     L.append(f"  • 📦 Insumos y Productos: {money(compras_dia_ip)}")
     L.append(f"  • 🌼 Gastos Daisy: {money(compras_dia_gd)}")
 
-    # Dos saltos entre Día y Mes
     L.append("")
     L.append("")
 
@@ -220,7 +242,9 @@ def build_email_text(rep_date: date,
     L.append(f"• 🧾 Ventas del mes: {money(ventas_mes)}")
     L.append(f"• 💵 Efectivo del mes: {money(cobros_mes['EFECTIVO'])}")
     L.append(f"• 🔁 Transferencia del mes: {money(cobros_mes['TRANSFERENCIA'])}")
-    L.append(f"• 💳 TC/TD del mes: {money(cobros_mes['TC_TD_CHEQUE'])}")
+    L.append(f"• 💳 T. Crédito del mes: {money(cobros_mes['TARJETA_CREDITO'])}")
+    L.append(f"• 💳 T. Débito del mes: {money(cobros_mes['TARJETA_DEBITO'])}")
+    L.append(f"• 🧾 Cheque del mes: {money(cobros_mes['CHEQUE'])}")
     L.append(f"• 📥 Total ingreso del mes: {money(cobros_mes['TOTAL'])}")
     L.append(f"• 🧮 Saldo del mes: {money(saldo_mes)}")
     L.append("")
@@ -232,7 +256,6 @@ def build_email_text(rep_date: date,
 
     return "\n".join(L)
 
-
 def _imap_append_to_sent(raw_bytes: bytes):
     if os.getenv("IMAP_SAVE_SENT", "false").lower() not in ("1","true","yes","y"):
         return
@@ -242,7 +265,7 @@ def _imap_append_to_sent(raw_bytes: bytes):
     password = os.getenv("IMAP_PASS")
     sent_box = os.getenv("IMAP_SENT_FOLDER", "[Gmail]/Sent Mail")
     if not (host and user and password):
-        return  # no config IMAP, salteamos
+        return  # sin config IMAP
     with imaplib.IMAP4_SSL(host, port) as M:
         M.login(user, password)
         M.append(sent_box, "\\Seen", imaplib.Time2Internaldate(time.time()), raw_bytes)

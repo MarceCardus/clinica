@@ -20,12 +20,12 @@ def _fmt0(x) -> str:
     return f"{n:,}".replace(",", ".")
 
 class AnularCobroDialog(QDialog):
-    def __init__(self, parent=None, session=None, usuario_actual: str | None = None):
+    def __init__(self, parent=None, session=None, usuario_actual: int | str | None = None):
         super().__init__(parent)
         self.setWindowTitle("Anular cobro")
         self.resize(980, 620)
         self.session = session or SessionLocal()
-        self.usuario_actual = usuario_actual or "sistema"
+        self.usuario_actual = usuario_actual
 
         root = QVBoxLayout(self)
 
@@ -166,7 +166,8 @@ class AnularCobroDialog(QDialog):
             return
 
         try:
-            anular_cobro(self.session, idcobro=idcobro, motivo=motivo or None)
+            anular_cobro(session=self.session, idcobro=idcobro, motivo=motivo,
+             usuario=self.usuario_actual)
             # Si tu `registrar/anular` ya maneja la transacción con begin_nested,
             # igual conviene hacer commit “externo” para cerrar la sesión del UI.
             self.session.commit()

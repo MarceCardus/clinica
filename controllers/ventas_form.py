@@ -390,14 +390,18 @@ class ABMVenta(QWidget):
         self.lbl_total.setText("Total: 0    IVA10: 0")
         self.idventa_actual = None
         self.idx_actual = -1
-        self.lbl_estado.setText("Activo"); self.lbl_estado.setStyleSheet("font-weight:bold; color: green;")
+        self.lbl_estado.setText("Activo")
+        self.lbl_estado.setStyleSheet("font-weight:bold; color: green;")
+
+        # habilita/inhabilita campos y botones propios del modo
         self.set_campos_enabled(editable)
         self.btn_guardar.setEnabled(editable)
-        #self.btn_cancelar.setEnabled(True)
         self.btn_anular.setEnabled(False)
         self.btn_nuevo.setEnabled(not editable)
-        self.set_modo_edicion_minima(False)
         self.btn_editar.setEnabled(False)
+
+    # navegación y "Buscar venta" solo cuando NO estoy creando
+        self._toggle_nav(not editable)
         
     def eliminar_fila_grilla(self):
         row = self.grilla.currentRow()
@@ -897,31 +901,37 @@ class ABMVenta(QWidget):
     
     def set_modo_edicion_minima(self, on: bool):
         self.modo_edicion = on
-        self.set_campos_enabled(False)
+        if on:
+            # Editar mínimo (sobre una venta existente)
+            self.set_campos_enabled(False)
+            self.txt_nro_factura.setEnabled(True)
+            self.observaciones.setEnabled(True)
+            self.btn_guardar.setEnabled(True)
 
-        # solo estos dos campos editables en modo edición
-        self.txt_nro_factura.setEnabled(on)
-        self.observaciones.setEnabled(on)
-        self.btn_guardar.setEnabled(on)
+            self.btn_editar.setEnabled(False)
+            self.btn_anular.setEnabled(False)
+            self.btn_nuevo.setEnabled(False)
+            self._toggle_nav(False)
+        else:
+            # Restaurar según si estoy creando (modo_nuevo) o solo visualizando
+            self.set_campos_enabled(self.modo_nuevo)
+            self.btn_guardar.setEnabled(self.modo_nuevo)
+            self.btn_nuevo.setEnabled(not self.modo_nuevo)
 
-        has_loaded = self.idventa_actual is not None
-
-        # botones/acciones
-        self.btn_editar.setEnabled((not on) and has_loaded)
-        self.btn_anular.setEnabled((not on) and has_loaded)
-
-        self.btn_buscar_venta.setEnabled(not on)
-        self.btn_primero.setEnabled(not on)
-        self.btn_anterior.setEnabled(not on)
-        self.btn_siguiente.setEnabled(not on)
-        self.btn_ultimo.setEnabled(not on)
-        self.btn_nuevo.setEnabled(not on)
+            has_loaded = self.idventa_actual is not None
+            self.btn_editar.setEnabled((not self.modo_nuevo) and has_loaded)
+            self.btn_anular.setEnabled((not self.modo_nuevo) and has_loaded)
+            self._toggle_nav(not self.modo_nuevo)
 
     def abrir_buscador_venta(self):
         dlg = BuscarVentaDialog(self.session, self)
         if dlg.exec_() == QDialog.Accepted and dlg.selected_idventa:
             self.cargar_venta_por_id(dlg.selected_idventa)
-
+    
+    def _toggle_nav(self, on: bool):
+        for b in (self.btn_buscar_venta, self.btn_primero, self.btn_anterior, self.btn_siguiente, self.btn_ultimo):
+            b.setEnabled(on)
+   
     def cargar_venta_por_id(self, idventa: int):
         """
         Carga en pantalla la venta indicada.

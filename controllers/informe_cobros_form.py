@@ -1,6 +1,6 @@
 # controllers/informe_cobros_form.py
 from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QDateEdit, QPushButton, QTableWidget, QTableWidgetItem, QMessageBox
-from PyQt5.QtCore import QDate
+from PyQt5.QtCore import QDate,Qt
 from services.informes_cobros_service import obtener_informe_cobros
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
@@ -8,6 +8,7 @@ from reportlab.lib.units import mm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
 from reportlab.lib.styles import getSampleStyleSheet
 import os
+import sys
 class InformeCobrosForm(QDialog):
     def __init__(self, session, parent=None):
         super().__init__(parent)
@@ -65,17 +66,20 @@ class InformeCobrosForm(QDialog):
             self.tabla.setItem(i, 5, QTableWidgetItem(str(fila.get("pagado", ""))))
             self.tabla.setItem(i, 6, QTableWidgetItem(str(fila.get("saldo", ""))))
             self.tabla.setItem(i, 7, QTableWidgetItem(str(fila.get("forma", ""))))
+            # Alineación numérica
+            for col in (4, 5, 6):
+                item = self.tabla.item(i, col)
+                if item:
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
-        # Footer de totales por forma de pago (en QLabel debajo de la tabla)
         sumatorias = datos.get("sumatorias_forma", {})
         formas_posibles = ["Efectivo", "Transferencia", "Cheque", "T. Crédito", "T. Débito"]
-        footer = "Totales: "
-        partes = []
-        for forma in formas_posibles:
-            valor = sumatorias.get(forma, "0")
-            partes.append(f"{forma}: {valor}")
-        footer += ",  ".join(partes)
+        partes = [f"{f}: {sumatorias.get(f, '0')}" for f in formas_posibles]
+        total_ingreso = datos.get("total_ingreso", "0")
+        footer = "Totales: " + ",  ".join(partes) + f"    Total Ingreso: {total_ingreso}"
         self.lbl_footer.setText(footer)
+        self.tabla.setSortingEnabled(True)
+        self.tabla.horizontalHeader().setStretchLastSection(True)
 
     def exportar_pdf(self):
         import datetime
@@ -83,18 +87,18 @@ class InformeCobrosForm(QDialog):
         hasta = self.date_hasta.date().toPyDate()
         datos = obtener_informe_cobros(self.session, desde, hasta)
         filas = datos.get("filas_cobros", datos.get("contado", []))
-        sumatorias = datos["sumatorias_forma"]
+        sumatorias = datos.get("sumatorias_forma", {})
         anulaciones_ventas = datos.get("anulaciones_ventas", [])
         anulaciones_cobros = datos.get("anulaciones_cobros", [])
+        total_ingreso = datos.get("total_ingreso", "0")
+
         now = datetime.datetime.now()
-        fecha_str = now.strftime("%Y%m%d")
-        hora_str = now.strftime("%H%M%S")
-        path = f"informe_cobro_{fecha_str}_{hora_str}.pdf"
-        exportar_cobros_pdf(filas, sumatorias, desde, hasta, anulaciones_ventas, anulaciones_cobros, path)
+        path = f"informe_cobro_{now:%Y%m%d_%H%M%S}.pdf"
+        exportar_cobros_pdf(filas, sumatorias, desde, hasta, anulaciones_ventas, anulaciones_cobros, total_ingreso, path)
         QMessageBox.information(self, "Exportar PDF", f"Informe exportado a {path}")
     
     # Mover la función fuera de la clase
-def exportar_cobros_pdf(datos, sumatorias, desde, hasta, anulaciones_ventas, anulaciones_cobros, path_pdf="informe_cobros.pdf"):
+def exportar_cobros_pdf(datos, sumatorias, desde, hasta, anulaciones_ventas, anulaciones_cobros, total_ingreso="0", path_pdf="informe_cobros.pdf"):
     from reportlab.lib.pagesizes import landscape, A4
     doc = SimpleDocTemplate(path_pdf, pagesize=landscape(A4), rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
     elements = []
@@ -103,7 +107,8 @@ def exportar_cobros_pdf(datos, sumatorias, desde, hasta, anulaciones_ventas, anu
     styleH = styles["Heading1"]
 
     # Logo y título
-    logo_path = os.path.join("imagenes", "logo_grande.jpg")
+    base_dir = getattr(sys, "_MEIPASS", os.getcwd())
+    logo_path = os.path.join(base_dir, "imagenes", "logo_grande.jpg")
     if os.path.exists(logo_path):
         img = Image(logo_path, width=60*mm, height=25*mm)
         elements.append(img)
@@ -142,11 +147,9 @@ def exportar_cobros_pdf(datos, sumatorias, desde, hasta, anulaciones_ventas, anu
         ])
     # Totales por forma de pago (todas)
     formas_posibles = ["Efectivo", "Transferencia", "Cheque", "T. Crédito", "T. Débito"]
-    partes = []
-    for forma in formas_posibles:
-        valor = sumatorias.get(forma, "0")
-        partes.append(f"{forma}: {valor}")
-    totales = "  ".join(partes)
+    partes = [f"{forma}: {sumatorias.get(forma, '0')}" for forma in formas_posibles]
+    totales = "  ".join(partes) + f"    Total Ingreso: {total_ingreso}"
+
     data.append([""]*7 + [f"Totales: {totales}"])
 
     # Agrandar la grilla principal

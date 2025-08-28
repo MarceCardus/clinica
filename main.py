@@ -250,7 +250,7 @@ class MainWindow(QMainWindow):
         dlg.exec_()
 
     def abrir_cobro(self):
-        dlg = CobroDialog(parent=self, session=self.session, usuario_actual=getattr(self, "usuario_actual", None))
+        dlg = CobroDialog(parent=self, session=self.session, usuario_actual=self.usuario.idusuario)  # <-- ID numérico
         dlg.exec_()
         # si querés refrescar listas/tableros después, hacelo acá
         # self.refrescar_dashboard()
@@ -258,7 +258,7 @@ class MainWindow(QMainWindow):
     def abrir_anular_cobro(self):
         from controllers.anular_cobro_dialog import AnularCobroDialog
         dlg = AnularCobroDialog(parent=self, session=self.session,
-                                usuario_actual=getattr(self, "usuario_actual", None))
+                                usuario_actual=self.usuario.idusuario)
         dlg.exec_()
 
     def abrir_pacientes(self):

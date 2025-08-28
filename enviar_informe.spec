@@ -2,11 +2,11 @@
 
 
 a = Analysis(
-    ['main.py'],
+    ['enviar_informe.py'],
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=['passlib.handlers.bcrypt', 'bcrypt', 'cffi'],
+    hiddenimports=['dotenv'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -22,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='main',
+    name='enviar_informe',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

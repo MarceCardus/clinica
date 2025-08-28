@@ -21,14 +21,14 @@ from services.cobros_service import registrar_cobro
 
 
 class CobroDialog(QDialog):
-    def __init__(self, parent=None, session=None, usuario_actual: str = None):
+    def __init__(self, parent=None, session=None, usuario_actual: str | int | None = None):
         super().__init__(parent)
         self.setWindowTitle("Registrar cobro")
         self.resize(1440, 720)          # más ancho/alto de inicio
         self.setMinimumSize(1150, 620)  # evita que quede demasiado chico
 
         self.session = session or SessionLocal()
-        self.usuario_actual = usuario_actual or "sistema"
+        self.usuario_actual = usuario_actual if usuario_actual is not None else "sistema"
 
         self._updating = False
         self._pacientes_cache = []      # [(id, doc, nombre, apellido, display)]
@@ -140,14 +140,7 @@ class CobroDialog(QDialog):
         # Normalizar monto al salir del control
         self.txtMonto.editingFinished.connect(self._normalize_monto)
 
-        def _normalize_monto(self):
-            self.txtMonto.blockSignals(True)
-            try:
-                self.txtMonto.setText(self._fmt0(self._leer_monto()))
-            finally:
-                self.txtMonto.blockSignals(False)
-            self._recalc_restante()
-
+        
         # Observaciones
         self.txtObs = QTextEdit()
         self.txtObs.setPlaceholderText("Observaciones…")
