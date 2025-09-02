@@ -64,6 +64,7 @@ from controllers.abm_items import ABMItems
 from controllers.cobro_dialog import CobroDialog
 from controllers.informe_cobros_form import InformeCobrosForm
 from controllers.cambiar_password_dialog import CambiarPasswordDialog
+from controllers.informe_stock_mensual_form import InformeStockMensualForm
 from models.paciente import Paciente
 from models.profesional import Profesional
 from models.clinica import Clinica
@@ -212,6 +213,10 @@ class MainWindow(QMainWindow):
         action_abm_informe_stock = QAction("Stock", self)
         action_abm_informe_stock.triggered.connect(self.abrir_informe_stock)
         self.menu_informes.addAction(action_abm_informe_stock)
+         # Informes → stock mes
+        self.action_informe_stock_mensual = QAction("Stock Mensual", self)
+        self.action_informe_stock_mensual.triggered.connect(self.abrir_informe_stock_mensual)
+        self.menu_informes.addAction(self.action_informe_stock_mensual)
         # Informes → Compras
         self.action_informe_compras = QAction("Compras", self)
         self.action_informe_compras.triggered.connect(self.abrir_informe_compras)
@@ -239,6 +244,10 @@ class MainWindow(QMainWindow):
         lbl_usuario = QLabel(f"Usuario: {self.usuario.usuario} | Rol: {self.rol.upper()}")
         lbl_usuario.setStyleSheet("font-weight: bold; color: #175ca4; margin-right:20px;")
         status_bar.addPermanentWidget(lbl_usuario)
+
+    def abrir_informe_stock_mensual(self):
+        dlg = InformeStockMensualForm(self.session, self)  # usa la misma Session de Main
+        dlg.exec_() 
 
     def abrir_informe_cobros(self):
         dlg = InformeCobrosForm(self.session, self)

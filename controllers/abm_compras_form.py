@@ -1,18 +1,45 @@
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QComboBox,
     QDateEdit, QTextEdit, QTableWidget, QTableWidgetItem, QSplitter, QGroupBox, QFormLayout,
-    QMessageBox, QDialog, QListWidget
+    QMessageBox, QDialog, QListWidget, QCompleter
 )
 from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import Qt, QDate, QEvent
 from utils.db import SessionLocal
 from models.proveedor import Proveedor
-from models.insumo import Insumo
+# from models.insumo import Insumo   # <- no se usa
 from models.compra_detalle import CompraDetalle
 from models.compra import Compra
 from controllers.abm_compras import CompraController
 from models.usuario_actual import usuario_id
 from models.item import Item, ItemTipo
+from decimal import Decimal
+
+
+def _num(texto: str) -> Decimal:
+    """Convierte '1.234.567' o '1234,50' a Decimal seguro."""
+    if not texto:
+        return Decimal(0)
+    t = texto.replace('.', '').replace(' ', '')
+    t = t.replace(',', '.')  # por si viene con coma decimal
+    try:
+        return Decimal(t)
+    except Exception:
+        return Decimal(0)
+
+
+def _item_ro(texto, align=Qt.AlignLeft | Qt.AlignVCenter):
+    it = QTableWidgetItem(texto)
+    it.setFlags(it.flags() & ~Qt.ItemIsEditable)
+    it.setTextAlignment(align)
+    return it
+
+
+def _item_editable(texto, align=Qt.AlignRight | Qt.AlignVCenter):
+    it = QTableWidgetItem(texto)
+    it.setTextAlignment(align)
+    return it
+
 
 class InsumoSelectDialog(QDialog):
     def __init__(self, insumos, parent=None):
@@ -25,17 +52,19 @@ class InsumoSelectDialog(QDialog):
             self.listWidget.addItem(f"{insumo.iditem} - {insumo.nombre}")
         layout.addWidget(self.listWidget)
         self.listWidget.setCurrentRow(0)
-        
+
         btn = QPushButton("Seleccionar")
         btn.clicked.connect(self.accept)
         layout.addWidget(btn)
         self.listWidget.itemDoubleClicked.connect(self.accept)
         self.resize(350, 300)
+
     def accept(self):
         idx = self.listWidget.currentRow()
         if idx >= 0:
             self.selected = idx
             super().accept()
+
 
 class ABMCompra(QWidget):
     def __init__(self, parent=None):
@@ -45,15 +74,15 @@ class ABMCompra(QWidget):
         self.setWindowTitle("Compras")
         self.resize(980, 540)
         self._setup_ui()
-        self.btn_eliminar.clicked.connect(self.eliminar_fila_grilla)
         self.cargar_proveedores()
         self.setup_focus()
+        self.txt_filtro_prov.installEventFilter(self)
         self.proveedor.setFocus()  # Focus inicial en proveedor
 
         # Conectar botones principales
         self.btn_guardar.clicked.connect(self.guardar_compra)
         self.btn_anular.clicked.connect(self.anular_compra_actual)
-        self.btn_anular.setEnabled(False) 
+        self.btn_anular.setEnabled(False)
         self.btn_cancelar.clicked.connect(self.cancelar)
         self.btn_primero.clicked.connect(self.ir_primero)
         self.btn_anterior.clicked.connect(self.ir_anterior)
@@ -67,13 +96,26 @@ class ABMCompra(QWidget):
         main_layout = QVBoxLayout(self)
         title_layout = QHBoxLayout()
         icono = QLabel()
-        icono.setPixmap(QIcon("imagenes/compra.png").pixmap(32,32))
+        icono.setPixmap(QIcon("imagenes/compra.png").pixmap(32, 32))
         title_layout.addWidget(icono)
         title_label = QLabel("Compras")
         title_label.setStyleSheet("font-size: 18pt; font-weight: bold; margin-left:8px;")
         title_layout.addWidget(title_label)
         title_layout.addStretch()
         main_layout.addLayout(title_layout)
+
+        filtro_layout = QHBoxLayout()
+        self.txt_filtro_prov = QLineEdit()
+        self.txt_filtro_prov.setPlaceholderText("Buscar compras por proveedor...")
+        self.btn_filtro_prov = QPushButton(QIcon("imagenes/buscar.png"), "Buscar")
+        self.btn_limpiar_filtro = QPushButton(QIcon("imagenes/cancelar.png"), "Quitar filtro")
+        self.btn_filtro_prov.clicked.connect(self.aplicar_filtro_proveedor)
+        self.btn_limpiar_filtro.clicked.connect(self._limpiar_filtro_proveedor)
+        filtro_layout.addWidget(self.txt_filtro_prov)
+        filtro_layout.addWidget(self.btn_filtro_prov)
+        filtro_layout.addWidget(self.btn_limpiar_filtro)
+        filtro_layout.addStretch()
+        main_layout.addLayout(filtro_layout)
 
         splitter = QSplitter(Qt.Horizontal)
 
@@ -134,7 +176,7 @@ class ABMCompra(QWidget):
         self.grilla.cellChanged.connect(self._on_grilla_cell_changed)
         right_layout.addWidget(self.grilla)
 
-        # Botones detalle (Agregar/Eliminar insumo)
+        # Botones detalle
         btns_detalle = QHBoxLayout()
         self.btn_agregar = QPushButton(QIcon("imagenes/agregar.png"), "Agregar")
         self.btn_agregar.setStyleSheet("""
@@ -163,6 +205,7 @@ class ABMCompra(QWidget):
                 color: white;
             }
         """)
+        self.btn_agregar.clicked.connect(self.buscar_y_agregar_insumo)
         btns_detalle.addWidget(self.btn_agregar)
         btns_detalle.addWidget(self.btn_eliminar)
         btns_detalle.addStretch()
@@ -170,13 +213,13 @@ class ABMCompra(QWidget):
 
         # Pie - totales y navegación
         pie_layout = QHBoxLayout()
-        self.lbl_subtotal = QLabel("Subtotal: 0")
+        self.lbl_subtotal = QLabel("Total: 0")
         self.lbl_iva = QLabel("IVA: 0")
         pie_layout.addWidget(self.lbl_subtotal)
         pie_layout.addWidget(self.lbl_iva)
         pie_layout.addStretch()
 
-        # Botones de navegación
+        # Navegación
         self.btn_primero = QPushButton(QIcon("imagenes/primero.png"), "")
         self.btn_anterior = QPushButton(QIcon("imagenes/anterior.png"), "")
         self.btn_siguiente = QPushButton(QIcon("imagenes/siguiente.png"), "")
@@ -195,19 +238,17 @@ class ABMCompra(QWidget):
             """)
             pie_layout.addWidget(btn)
 
-        # Botones principales (Nuevo, Guardar, Anular, Cancelar, Salir)
+        # Botones principales
         self.btn_nuevo = QPushButton(QIcon("imagenes/nuevo.png"), "Nuevo")
         self.btn_guardar = QPushButton(QIcon("imagenes/guardar.png"), "Guardar")
         self.btn_anular = QPushButton(QIcon("imagenes/eliminar.png"), "Anular")
         self.btn_cancelar = QPushButton(QIcon("imagenes/cancelar.png"), "Cancelar")
-        
 
         botones = [
             (self.btn_nuevo, "#007bff", "white"),
             (self.btn_guardar, "#28a745", "white"),
             (self.btn_anular, "#dc3545", "white"),
             (self.btn_cancelar, "#ffc9c9", "#dc3545"),
-            
         ]
         for btn, fondo, color in botones:
             btn.setStyleSheet(f"""
@@ -231,19 +272,45 @@ class ABMCompra(QWidget):
         main_layout.addWidget(splitter)
         self.setLayout(main_layout)
 
+        header = self.grilla.horizontalHeader()
+        header.setStretchLastSection(True)
+        self.grilla.setColumnWidth(0, 80)   # Código
+        self.grilla.setColumnWidth(1, 260)  # Nombre
+        self.grilla.setColumnWidth(2, 90)   # Cantidad
+        self.grilla.setColumnWidth(3, 110)  # Precio
+        self.grilla.setColumnWidth(4, 90)   # IVA
 
+    # ---------- helpers de celda ----------
+    def _set_or_text(self, row, col, texto, ro=True):
+        """Crea la celda si no existe y setea el texto; ro=True => read-only."""
+        it = self.grilla.item(row, col)
+        if it is None:
+            it = _item_ro(texto, Qt.AlignRight | Qt.AlignVCenter) if ro else _item_editable(texto)
+            self.grilla.setItem(row, col, it)
+        else:
+            it.setText(texto)
+
+    # ---------- datos ----------
     def cargar_proveedores(self):
         session = SessionLocal()
         self.proveedor.clear()
-        proveedores = (
-            session.query(Proveedor)
-            .filter_by(estado=True)
-            .order_by(Proveedor.nombre)
-            .all()
-        )
-        for prov in proveedores:
-            self.proveedor.addItem(prov.nombre, prov.idproveedor)
-        session.close()
+        try:
+            proveedores = (
+                session.query(Proveedor)
+                .filter_by(estado=True)
+                .order_by(Proveedor.nombre)
+                .all()
+            )
+            for prov in proveedores:
+                self.proveedor.addItem(prov.nombre, prov.idproveedor)
+
+            # Completer DESPUÉS de cargar el combo
+            nombres = [p.nombre for p in proveedores]
+            self._compProv = QCompleter(nombres, self)
+            self._compProv.setCaseSensitivity(Qt.CaseInsensitive)
+            self.txt_filtro_prov.setCompleter(self._compProv)
+        finally:
+            session.close()
 
     def guardar_compra(self):
         if not self.modo_nuevo:
@@ -256,24 +323,19 @@ class ABMCompra(QWidget):
         if self.grilla.rowCount() == 0:
             QMessageBox.warning(self, "Sin detalle", "Debe agregar al menos un insumo a la compra.")
             return
-        if self.proveedor.currentData() is None:
-            QMessageBox.warning(self, "Falta proveedor", "Debe seleccionar un proveedor.")
-            return
-        if self.grilla.rowCount() == 0:
-            QMessageBox.warning(self, "Sin detalle", "Debe agregar al menos un insumo a la compra.")
-            return
 
         detalles = []
         for row in range(self.grilla.rowCount()):
-            cantidad = float(self.grilla.item(row, 2).text().replace(".", ""))
-            precio = float(self.grilla.item(row, 3).text().replace(".", ""))
-            iva = float(self.grilla.item(row, 4).text().replace(".", ""))
+            iditem = int(self.grilla.item(row, 0).text())
+            cantidad = _num(self.grilla.item(row, 2).text())
+            precio = _num(self.grilla.item(row, 3).text())
+            iva = _num(self.grilla.item(row, 4).text())
             detalles.append({
-                "iditem": int(self.grilla.item(row, 0).text()),
-                "cantidad": cantidad,
-                "preciounitario": precio,
-                "iva": iva,
-        })
+                "iditem": iditem,
+                "cantidad": float(cantidad),
+                "preciounitario": float(precio),
+                "iva": float(iva),
+            })
 
         compra_data = {
             "fecha": self.fecha.date().toPyDate(),
@@ -293,14 +355,18 @@ class ABMCompra(QWidget):
             QMessageBox.information(self, "Compra guardada", f"Compra N° {idcompra} guardada correctamente.")
             self.modo_nuevo = False
             self.cargar_compras()
-            self.limpiar_formulario(editable=False)
-                 
+            idx = next((i for i, c in enumerate(self.compras) if c.idcompra == idcompra), None)
+            if idx is not None:
+                self.mostrar_compra(idx)
+            else:
+                self.ir_primero()
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
             session.rollback()
         finally:
             session.close()
 
+    # ---------- UI state ----------
     def set_campos_enabled(self, estado: bool):
         self.fecha.setEnabled(estado)
         self.proveedor.setEnabled(estado)
@@ -320,7 +386,7 @@ class ABMCompra(QWidget):
         self.nro_comp.clear()
         self.observaciones.clear()
         self.grilla.setRowCount(0)
-        self.lbl_subtotal.setText("Subtotal: 0")
+        self.lbl_subtotal.setText("Total: 0")
         self.lbl_iva.setText("IVA: 0")
         self.idcompra_actual = None
         self.idx_actual = -1
@@ -332,37 +398,51 @@ class ABMCompra(QWidget):
         self.btn_anular.setEnabled(False)
         self.btn_nuevo.setEnabled(not editable)
 
-    def cargar_compras(self):
+    # ---------- navegación / carga ----------
+    def cargar_compras(self, proveedor_like: str | None = None):
         session = SessionLocal()
         try:
             controller = CompraController(session, usuario_id=usuario_id)
-            self.compras = controller.listar_compras(solo_no_anuladas=False)
-            self.idx_actual = -1
-            self.limpiar_formulario(editable=False)
+            if proveedor_like:
+                self.compras = controller.listar_compras_por_proveedor(proveedor_like, solo_no_anuladas=False)
+            else:
+                self.compras = controller.listar_compras(solo_no_anuladas=False)
 
+            self.idx_actual = -1
+            if self.compras:
+                self.mostrar_compra(0)
+            else:
+                self.limpiar_formulario(editable=False)
+                QMessageBox.information(self, "Sin resultados", "No se encontraron compras con ese criterio.")
         finally:
             session.close()
-        
+
+    def aplicar_filtro_proveedor(self):
+        texto = (self.txt_filtro_prov.text() or "").strip()
+        self.cargar_compras(texto if texto else None)
+
     def nuevo(self):
         self.modo_nuevo = True
-        self.limpiar_formulario(editable=True)  # Esto también debe dejar campos habilitados
-        
+        self.limpiar_formulario(editable=True)
 
     def cancelar(self):
         self.modo_nuevo = False
         self.limpiar_formulario(editable=False)
-        
 
     def mostrar_compra(self, idx):
         if not self.compras or idx < 0 or idx >= len(self.compras):
             return
+
         compra = self.compras[idx]
         self.idcompra_actual = compra.idcompra
+
         self.fecha.setDate(QDate(compra.fecha.year, compra.fecha.month, compra.fecha.day))
         self.proveedor.setCurrentIndex(self.proveedor.findData(compra.idproveedor))
         self.comprobante.setCurrentText(compra.tipo_comprobante or "")
         self.nro_comp.setText(compra.nro_comprobante or "")
         self.observaciones.setPlainText(compra.observaciones or "")
+
+        self.grilla.blockSignals(True)
         self.grilla.setRowCount(0)
         session = SessionLocal()
         try:
@@ -370,24 +450,36 @@ class ABMCompra(QWidget):
             for det in detalles:
                 row = self.grilla.rowCount()
                 self.grilla.insertRow(row)
-                self.grilla.setItem(row, 0, QTableWidgetItem(str(det.iditem)))
-                item = session.query(Item).get(det.iditem)
-                nombre_insumo = item.nombre if item else ""
-                self.grilla.setItem(row, 1, QTableWidgetItem(nombre_insumo))
-                self.grilla.setItem(row, 2, QTableWidgetItem(f"{det.cantidad:,.0f}".replace(",", ".")))
-                self.grilla.setItem(row, 3, QTableWidgetItem(f"{det.preciounitario:,.0f}".replace(",", ".")))
-                self.grilla.setItem(row, 4, QTableWidgetItem(f"{det.iva:,.0f}".replace(",", ".")))
-                total = det.cantidad * det.preciounitario
-                self.grilla.setItem(row, 5, QTableWidgetItem(f"{total:,.0f}".replace(",", ".")))
+
+                item = session.get(Item, det.iditem)
+                nombre = item.nombre if item else ""
+
+                cantidad = det.cantidad or 0
+                precio = det.preciounitario or 0
+                iva = det.iva or 0
+                total = (cantidad or 0) * (precio or 0)
+
+                # 0-1 read-only, 2-3 editables, 4-5 read-only
+                self.grilla.setItem(row, 0, _item_ro(str(det.iditem)))
+                self.grilla.setItem(row, 1, _item_ro(nombre))
+                self.grilla.setItem(row, 2, _item_editable(f"{cantidad:,.0f}".replace(",", ".")))
+                self.grilla.setItem(row, 3, _item_editable(f"{precio:,.0f}".replace(",", ".")))
+                self.grilla.setItem(row, 4, _item_ro(f"{iva:,.0f}".replace(",", "."), Qt.AlignRight | Qt.AlignVCenter))
+                self.grilla.setItem(row, 5, _item_ro(f"{total:,.0f}".replace(",", "."), Qt.AlignRight | Qt.AlignVCenter))
         finally:
             session.close()
+            self.grilla.blockSignals(False)
+
+        self.actualizar_totales()
+
         self.idx_actual = idx
         self.idcompra.setText(str(compra.idcompra))
         self.set_campos_enabled(False)
         self.btn_guardar.setEnabled(False)
         self.btn_cancelar.setEnabled(True)
-        self.btn_anular.setEnabled(not getattr(compra, "anulada", False))
+        self.btn_anular.setEnabled(not bool(getattr(compra, "anulada", False)))
         self.btn_nuevo.setEnabled(True)
+
         if getattr(compra, "anulada", False):
             self.lbl_estado.setText("Anulado")
             self.lbl_estado.setStyleSheet("font-weight:bold; color: red;")
@@ -411,7 +503,7 @@ class ABMCompra(QWidget):
         if self.compras:
             self.mostrar_compra(len(self.compras) - 1)
 
-
+    # ---------- acciones ----------
     def eliminar_fila_grilla(self):
         row = self.grilla.currentRow()
         if row >= 0:
@@ -422,10 +514,11 @@ class ABMCompra(QWidget):
             )
             if respuesta == QMessageBox.Yes:
                 self.grilla.removeRow(row)
+                self.actualizar_totales()
         else:
             QMessageBox.information(self, "Atención", "Debe seleccionar una fila para eliminar.")
-    
 
+    # ---------- UX ----------
     def setup_focus(self):
         self.proveedor.installEventFilter(self)
         self.comprobante.installEventFilter(self)
@@ -450,11 +543,14 @@ class ABMCompra(QWidget):
             elif obj == self.busca_insumo:
                 self.buscar_y_agregar_insumo()
                 return True
+            elif obj == self.txt_filtro_prov:
+                self.aplicar_filtro_proveedor()
+                return True   # este 'return True' debe quedar dentro del elif
         return super().eventFilter(obj, event)
 
+    # ---------- búsqueda/agregado de insumos ----------
     def buscar_insumos(self, texto):
         session = SessionLocal()
-        # Filtra por tipo insumo o ambos
         items = session.query(Item).join(ItemTipo).filter(
             Item.activo == True,
             Item.nombre.ilike(f"%{texto}%"),
@@ -484,31 +580,31 @@ class ABMCompra(QWidget):
             if self.grilla.item(row, 0) and self.grilla.item(row, 0).text() == str(insumo.iditem):
                 # Si ya existe, sumar cantidad
                 cant_item = self.grilla.item(row, 2)
-                cant_actual = float(cant_item.text()) if cant_item and cant_item.text() else 0
-                cant_item.setText(str(cant_actual + 1))
+                cant_actual = _num(cant_item.text()) if cant_item and cant_item.text() else Decimal(0)
+                cant_item.setText(str(int(cant_actual) + 1))
                 self.grilla.setCurrentCell(row, 2)
                 return
-            
+
         row = self.grilla.rowCount()
         self.grilla.insertRow(row)
-        self.grilla.setItem(row, 0, QTableWidgetItem(str(insumo.iditem)))
-        self.grilla.setItem(row, 1, QTableWidgetItem(insumo.nombre))
-        self.grilla.setItem(row, 2, QTableWidgetItem("1"))  # cantidad default
-        self.grilla.setItem(row, 3, QTableWidgetItem("0"))  # precio
-        self.grilla.setItem(row, 4, QTableWidgetItem("0"))  # iva
-        self.grilla.setItem(row, 5, QTableWidgetItem("0"))  # total
+        self.grilla.setItem(row, 0, _item_ro(str(insumo.iditem)))
+        self.grilla.setItem(row, 1, _item_ro(insumo.nombre))
+        self.grilla.setItem(row, 2, _item_editable("1"))
+        self.grilla.setItem(row, 3, _item_editable("0"))
+        self.grilla.setItem(row, 4, _item_ro("0", Qt.AlignRight | Qt.AlignVCenter))
+        self.grilla.setItem(row, 5, _item_ro("0", Qt.AlignRight | Qt.AlignVCenter))
 
         # Focus y selección total en cantidad
         self.grilla.setCurrentCell(row, 2)
         self.grilla.editItem(self.grilla.item(row, 2))
         self.grilla.setFocus()
         self.grilla.item(row, 2).setSelected(True)
-    
-    
+
     def anular_compra_actual(self):
         if not hasattr(self, 'idcompra_actual') or self.idcompra_actual is None:
             QMessageBox.warning(self, "Atención", "No hay compra cargada para anular.")
             return
+
         respuesta = QMessageBox.question(
             self, "Confirmar anulación",
             "¿Está seguro que desea anular esta compra?",
@@ -516,19 +612,30 @@ class ABMCompra(QWidget):
         )
         if respuesta == QMessageBox.No:
             return
+
         session = SessionLocal()
         try:
+            idx_actual = self.idx_actual
+            filtro = (self.txt_filtro_prov.text() or "").strip() or None
+
             controller = CompraController(session, usuario_id=usuario_id)
             controller.anular_compra(self.idcompra_actual)
+
             QMessageBox.information(self, "Éxito", "Compra anulada correctamente.")
-            self.cargar_compras()
-            self.limpiar_formulario(editable=False)
+
+            # Recargar respetando filtro y mantener posición
+            self.cargar_compras(filtro)
+            if self.compras:
+                self.mostrar_compra(min(idx_actual, len(self.compras) - 1))
+            else:
+                self.limpiar_formulario(editable=False)
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
             session.rollback()
         finally:
             session.close()
 
+    # ---------- eventos ----------
     def keyPressEvent(self, event):
         # Si el foco está en la grilla de insumos
         if self.grilla.hasFocus():
@@ -549,40 +656,44 @@ class ABMCompra(QWidget):
 
     def calcular_iva_total_row(self, row):
         try:
-            self.grilla.blockSignals(True)  # Bloquea señales para evitar recursividad
+            self.grilla.blockSignals(True)
             cantidad_item = self.grilla.item(row, 2)
             precio_item = self.grilla.item(row, 3)
-            cantidad = float(cantidad_item.text()) if cantidad_item and cantidad_item.text() else 0
-            precio = float(precio_item.text()) if precio_item and precio_item.text() else 0
-            total = round(precio * cantidad)
-            iva = round(total / 11) if total else 0
-            self.grilla.setItem(row, 4, QTableWidgetItem(f"{iva:,.0f}".replace(",", ".")))
-            self.grilla.setItem(row, 5, QTableWidgetItem(f"{total:,.0f}".replace(",", ".")))
-            self.grilla.setItem(row, 3, QTableWidgetItem(f"{precio:,.0f}".replace(",", ".")))
+
+            cantidad = _num(cantidad_item.text()) if cantidad_item and cantidad_item.text() else Decimal(0)
+            precio = _num(precio_item.text()) if precio_item and precio_item.text() else Decimal(0)
+
+            total = (precio * cantidad).quantize(Decimal("1"))
+            iva = (total / Decimal(11)).quantize(Decimal("1")) if total > 0 else Decimal(0)
+
+            # col 3 es editable, 4 y 5 son read-only
+            self._set_or_text(row, 3, f"{int(precio):,}".replace(",", "."), ro=False)
+            self._set_or_text(row, 4, f"{int(iva):,}".replace(",", "."), ro=True)
+            self._set_or_text(row, 5, f"{int(total):,}".replace(",", "."), ro=True)
         except Exception as e:
             print(f"Error en calcular_iva_total_row: {e}")
-            self.grilla.setItem(row, 4, QTableWidgetItem("0"))
-            self.grilla.setItem(row, 5, QTableWidgetItem("0"))
+            self._set_or_text(row, 4, "0", ro=True)
+            self._set_or_text(row, 5, "0", ro=True)
         finally:
-            self.grilla.blockSignals(False)  # Desbloquea señales
+            self.grilla.blockSignals(False)
 
     def actualizar_totales(self):
-        subtotal = 0
-        iva_total = 0
+        subtotal = Decimal(0)
+        iva_total = Decimal(0)
         for row in range(self.grilla.rowCount()):
-            try:
-                cantidad = float(self.grilla.item(row, 2).text().replace(".", "").replace(",", "."))
-                precio = float(self.grilla.item(row, 3).text().replace(".", "").replace(",", "."))
-                iva = float(self.grilla.item(row, 4).text().replace(".", "").replace(",", "."))
-            except Exception:
-                cantidad = precio = iva = 0
-            subtotal += precio * cantidad
+            cantidad = _num(self.grilla.item(row, 2).text())
+            precio = _num(self.grilla.item(row, 3).text())
+            iva = _num(self.grilla.item(row, 4).text())
+            subtotal += (precio * cantidad)
             iva_total += iva
-        self.lbl_subtotal.setText(f"Total: {subtotal:,.0f}".replace(",", "."))
-        self.lbl_iva.setText(f"IVA: {iva_total:,.0f}".replace(",", "."))
+        self.lbl_subtotal.setText(f"Total: {int(round(subtotal)):,}".replace(",", "."))
+        self.lbl_iva.setText(f"IVA: {int(round(iva_total)):,}".replace(",", "."))
 
     def _on_grilla_cell_changed(self, row, column):
         if column in (2, 3):  # Cantidad o Precio
             self.calcular_iva_total_row(row)
             self.actualizar_totales()
 
+    def _limpiar_filtro_proveedor(self):
+        self.txt_filtro_prov.clear()
+        self.cargar_compras()
