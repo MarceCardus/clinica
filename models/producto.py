@@ -33,7 +33,7 @@ class Producto(Base):
     # y el back_populates debe matchear lo definido en TipoProducto
     tipoproducto = relationship("TipoProducto", back_populates="productos")
     especialidad  = relationship("Especialidad", back_populates="productos")
-    indicaciones = relationship("Indicacion", back_populates="producto", cascade="all, delete-orphan")
+     # indicaciones = relationship("Indicacion", back_populates="producto", cascade="all, delete-orphan")
 
 
     # si usás Indicacion:

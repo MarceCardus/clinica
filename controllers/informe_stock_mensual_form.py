@@ -1,12 +1,14 @@
 # controllers/informe_stock_mensual_form.py
 from __future__ import annotations
+from datetime import datetime
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QLineEdit,
-    QPushButton, QTableWidget, QTableWidgetItem, QMessageBox, QWidget, QFileDialog
+    QPushButton, QTableWidget, QTableWidgetItem, QMessageBox, QWidget, QFileDialog,QAbstractItemView,QHeaderView
 )
 from PyQt5.QtCore import Qt, QDate
 from decimal import Decimal
-
+from utils.db import new_session
+from sqlalchemy.exc import OperationalError, InterfaceError,DisconnectionError
 from services.informe_stock_mensual_service import (
     obtener_informe_stock_mensual,
     exportar_pdf_informe_stock_mensual,
@@ -15,10 +17,10 @@ from services.informe_stock_mensual_service import (
 )
 
 class InformeStockMensualForm(QDialog):
-    def __init__(self, session, parent: QWidget | None = None):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
-        self.session = session
-
+     
+        
         self.setWindowTitle("Informe de Stock Mensual (Agrupado por Tipo)")
         self.resize(1100, 700)
 
@@ -57,17 +59,22 @@ class InformeStockMensualForm(QDialog):
         lay.addWidget(self.lbl_leyenda)
 
         # -------- Tabla --------
-        self.tbl = QTableWidget(0, 8)
+        self.tbl = QTableWidget(0, 7)
         self.tbl.setHorizontalHeaderLabels([
-            "#", "Tipo / Ítem", "Unidad", "Inicial", "Ingreso", "Ventas", "Otros (Insumo)", "Actual"
+            "#", "Tipo / Ítem", "Inicial", "Ingreso", "Ventas", "Insumo", "Actual"
         ])
         self.tbl.setColumnWidth(0, 50)
         self.tbl.setColumnWidth(1, 420)
         self.tbl.setColumnWidth(2, 90)
-        for c in range(3, 8):
+        for c in range(3, 7):
             self.tbl.setColumnWidth(c, 110)
         lay.addWidget(self.tbl)
-
+        self.tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tbl.horizontalHeader().setStretchLastSection(True)
+        self.tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self.tbl.setSortingEnabled(False)
+        self.tbl.setAlternatingRowColors(True)
         # -------- Signals --------
         self.btn_generar.clicked.connect(self.buscar)
         self.btn_pdf.clicked.connect(self.exportar_pdf)
@@ -77,6 +84,17 @@ class InformeStockMensualForm(QDialog):
         # Primera carga
         self.buscar()
 
+
+    def _num(self, x) -> QTableWidgetItem:
+        # texto formateado + dato crudo para ordenar numéricamente
+        it = QTableWidgetItem(self._fmt(x))
+        it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        try:
+            n = int(Decimal(str(x)).quantize(Decimal("1")))
+        except Exception:
+            n = 0
+        it.setData(Qt.EditRole, n)  # <- sorting numérico
+        return it
     # -------- Util --------
     def _fmt(self, x) -> str:
         try:
@@ -91,76 +109,129 @@ class InformeStockMensualForm(QDialog):
             it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
         return it
 
-    # -------- Cargar datos --------
-    def buscar(self):
+
+    def _correr_con_sesion(self, fn):
+        """Corre una función con sesión fresca y la cierra. Reintenta 1 vez si la conexión cae."""
         try:
-            mes = self.cmb_mes.currentData()
+            s = new_session()
+            try:
+                return fn(s)
+            finally:
+                s.close()
+        except (OperationalError, InterfaceError, DisconnectionError):
+            # Reintento limpio
+            s = new_session()
+            try:
+                return fn(s)
+            finally:
+                s.close()
+    def _busy(self, v: bool):
+        for b in (self.btn_generar, self.btn_excel, self.btn_pdf):
+            b.setEnabled(not v)
+
+    def buscar(self):
+        self._busy(True)
+        try:
+            mes  = self.cmb_mes.currentData()
             anio = int(self.txt_anio.text().strip())
-        except Exception:
-            QMessageBox.warning(self, "Validación", "Año inválido.")
-            return
 
-        info = obtener_informe_stock_mensual(self.session, year=anio, month=mes)
+            info = self._correr_con_sesion(lambda s: obtener_informe_stock_mensual(s, year=anio, month=mes))
 
-        # Leyenda clara (coincide con el cálculo del service: ingreso = todos los INGRESOS del mes)
-        self.lbl_leyenda.setText(
-            f"Inicial = stock al {info.corte_inicial.strftime('%d/%m/%Y')}   •   "
-            f"Ingreso = ingresos de {SPANISH_MONTHS[mes]} {anio}   •   "
-            f"Ventas = ventas de {SPANISH_MONTHS[mes]} {anio}   •   "
-            f"Otros (Insumo) = salidas no-venta de {SPANISH_MONTHS[mes]} {anio}"
-        )
+            self.lbl_leyenda.setText(
+                f"Inicial = stock al {info.corte_inicial.strftime('%d/%m/%Y')}   •   "
+                f"Ingreso = compras de {SPANISH_MONTHS[mes]} {anio}   •   "
+                f"Ventas = ventas de {SPANISH_MONTHS[mes]} {anio}   •   "
+                f"Insumo = salidas no-venta de {SPANISH_MONTHS[mes]} {anio}"
+            )
 
-        self.tbl.setRowCount(0)
-        i = 1
-        for g in info.grupos:
-            # Cabecera del grupo (Tipo)
-            r = self.tbl.rowCount()
-            self.tbl.insertRow(r)
-            self.tbl.setSpan(r, 1, 1, 7)
-            hdr = QTableWidgetItem(f"{g.tipo}")
-            hdr.setFlags(Qt.ItemIsEnabled)
-            hdr.setBackground(Qt.lightGray)
-            self.tbl.setItem(r, 1, hdr)
+            self.tbl.setSortingEnabled(False)
+            self.tbl.setUpdatesEnabled(False)
+            self.tbl.setRowCount(0)
 
-            # Ítems del grupo
-            for it in g.items:
+            i = 1
+            grand_ini = grand_ing = grand_ven = grand_otr = grand_act = Decimal(0)
+
+            # info.grupos tiene un solo grupo con todos los ítems ordenados
+            for g in info.grupos:
+                for it in g.items:
+                    r = self.tbl.rowCount()
+                    self.tbl.insertRow(r)
+                    self.tbl.setItem(r, 0, self._cell(str(i)))
+                    self.tbl.setItem(r, 1, self._cell(it.nombre))
+                    self.tbl.setItem(r, 2, self._num(it.inicial))
+                    self.tbl.setItem(r, 3, self._num(it.ingreso))
+                    self.tbl.setItem(r, 4, self._num(it.ventas))
+                    self.tbl.setItem(r, 5, self._num(it.otros))
+                    self.tbl.setItem(r, 6, self._num(it.actual))
+                    i += 1
+
+                    grand_ini += it.inicial
+                    grand_ing += it.ingreso
+                    grand_ven += it.ventas
+                    grand_otr += it.otros
+                    grand_act += it.actual
+
+            # Total general
+            if i > 1:
                 r = self.tbl.rowCount()
                 self.tbl.insertRow(r)
-                self.tbl.setItem(r, 0, self._cell(str(i)))
-                self.tbl.setItem(r, 1, self._cell(it.nombre))
-                self.tbl.setItem(r, 2, self._cell(it.unidad or ""))
-                self.tbl.setItem(r, 3, self._cell(self._fmt(it.inicial), True))
-                self.tbl.setItem(r, 4, self._cell(self._fmt(it.ingreso), True))
-                self.tbl.setItem(r, 5, self._cell(self._fmt(it.ventas), True))
-                self.tbl.setItem(r, 6, self._cell(self._fmt(it.otros), True))
-                self.tbl.setItem(r, 7, self._cell(self._fmt(it.actual), True))
-                i += 1
+                lab = self._cell("TOTAL GENERAL")
+                f = lab.font(); f.setBold(True); lab.setFont(f)
+                self.tbl.setItem(r, 1, lab)
+                self.tbl.setItem(r, 0, self._cell(""))
+                self.tbl.setItem(r, 2, self._num(grand_ini))
+                self.tbl.setItem(r, 3, self._num(grand_ing))
+                self.tbl.setItem(r, 4, self._num(grand_ven))
+                self.tbl.setItem(r, 5, self._num(grand_otr))
+                self.tbl.setItem(r, 6, self._num(grand_act))
 
-        self.tbl.resizeRowsToContents()
+            self.tbl.resizeRowsToContents()
 
+        except ValueError:
+            QMessageBox.warning(self, "Validación", "Año inválido.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", str(e))
+        finally:
+            self.tbl.setUpdatesEnabled(True)
+            self.tbl.setSortingEnabled(True)
+            self._busy(False)
+
+            
     # -------- Exportaciones --------
     def exportar_pdf(self):
         mes = self.cmb_mes.currentData()
         anio = int(self.txt_anio.text().strip())
-        sug = f"informe_stock_{anio}_{mes:02d}.pdf"
+
+        stamp = datetime.now().strftime("%H_%M")              # <-- hh_mm
+        sug = f"informe_stock_{anio}_{mes:02d}_{stamp}.pdf"   # <-- nombre con hora
+
         ruta, _ = QFileDialog.getSaveFileName(self, "Guardar PDF", sug, "PDF (*.pdf)")
         if not ruta:
             return
+        if not ruta.lower().endswith(".pdf"):                # asegura extensión
+            ruta += ".pdf"
+
+        self._busy(True)
         try:
-            exportar_pdf_informe_stock_mensual(self.session, year=anio, month=mes, ruta_pdf=ruta)
+            self._correr_con_sesion(lambda s: exportar_pdf_informe_stock_mensual(s, year=anio, month=mes, ruta_pdf=ruta))
             QMessageBox.information(self, "PDF", f"PDF generado:\n{ruta}")
         except Exception as e:
             QMessageBox.critical(self, "Error PDF", str(e))
+        finally:
+            self._busy(False)
 
     def exportar_excel(self):
         mes = self.cmb_mes.currentData()
         anio = int(self.txt_anio.text().strip())
         sug = f"informe_stock_{anio}_{mes:02d}.xlsx"
         ruta, _ = QFileDialog.getSaveFileName(self, "Guardar Excel", sug, "Excel (*.xlsx)")
-        if not ruta:
-            return
+        if not ruta: return
+        self._busy(True)
         try:
-            exportar_excel_informe_stock_mensual(self.session, year=anio, month=mes, ruta_xlsx=ruta)
+            self._correr_con_sesion(lambda s: exportar_excel_informe_stock_mensual(s, year=anio, month=mes, ruta_xlsx=ruta))
             QMessageBox.information(self, "Excel", f"Excel generado:\n{ruta}")
         except Exception as e:
             QMessageBox.critical(self, "Error Excel", str(e))
+        finally:
+            self._busy(False)
+

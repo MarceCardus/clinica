@@ -246,7 +246,7 @@ class MainWindow(QMainWindow):
         status_bar.addPermanentWidget(lbl_usuario)
 
     def abrir_informe_stock_mensual(self):
-        dlg = InformeStockMensualForm(self.session, self)  # usa la misma Session de Main
+        dlg = InformeStockMensualForm(self) 
         dlg.exec_() 
 
     def abrir_informe_cobros(self):

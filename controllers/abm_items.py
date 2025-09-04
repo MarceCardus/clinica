@@ -13,7 +13,7 @@ from sqlalchemy import exists, or_
 from sqlalchemy.exc import IntegrityError
 
 # MODELOS
-from models.item import Item, ItemTipo, ProductoMap, InsumoMap
+from models.item import Item, ItemTipo
 from models.tipoproducto import TipoProducto
 from models.especialidad import Especialidad
 from models.compra_detalle import CompraDetalle
@@ -338,9 +338,8 @@ class ABMItems(QDialog):
         s = self.session
         usado_en_compra = s.query(exists().where(CompraDetalle.iditem == iditem)).scalar()
         usado_en_venta  = s.query(exists().where(VentaDetalle.iditem == iditem)).scalar()
-        map_prod        = s.query(exists().where(ProductoMap.iditem == iditem)).scalar()
-        map_ins         = s.query(exists().where(InsumoMap.iditem == iditem)).scalar()
-        return bool(usado_en_compra or usado_en_venta or map_prod or map_ins)
+
+        return bool(usado_en_compra or usado_en_venta)
 
     def eliminar_item(self, row):
         if row < 0 or row >= self.table.rowCount():
@@ -398,7 +397,7 @@ class ABMItems(QDialog):
 
 # ------------ FORM MODAL ------------
 class FormularioItem(QDialog):
-    TIPOS_INSUMO = ["MEDICAMENTO", "DESCARTABLE", "REACTIVO", "ANTIBIOTICO", "VARIOS"]
+    TIPOS_INSUMO = ["Medicamento", "Descartable", "Reactivo", "Limpieza", "Cafetería","Varios"]
 
     def __init__(self, session, parent=None, item: Item=None):
         super().__init__(parent)

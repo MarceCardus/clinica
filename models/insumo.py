@@ -19,4 +19,4 @@ class Insumo(Base):
         'USO_PROCEDIMIENTO', 
         name='categoria_insumo'
     ), nullable=False)
-    indicaciones = relationship('Indicacion', back_populates='insumo')
+    #indicaciones = relationship('Indicacion', back_populates='insumo')

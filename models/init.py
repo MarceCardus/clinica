@@ -1,76 +1,76 @@
 # models/__init__.py
-# models/__init__.py
 from .base import Base
 
-# 1) Primero los "fundacionales"
-from .item import Item, ItemTipo, ProductoMap, InsumoMap
-from .tipoproducto import TipoProducto
-from .indicacion import Indicacion
-# 2) Luego el resto
+# --- Núcleo de ítems (unificado) ---
+from .item import Item, ItemTipo
+from .tipoproducto import TipoProducto          # Item lo referencia
+from .especialidad import Especialidad          # Item lo referencia
+
+# --- Clínica / Personas / Profesionales ---
 from .clinica import Clinica
 from .paciente import Paciente
-from .procedimiento import Procedimiento
 from .profesional import Profesional
-from .especialidad import Especialidad
 from .profesional_especialidad import ProfesionalEspecialidad
 from .usuario import Usuario
-from .producto import Producto
-from .paquete import Paquete
-from .paquete_producto import PaqueteProducto
-from .proveedor import Proveedor
-from .insumo import Insumo
-from .compra import Compra
-from .compra_detalle import CompraDetalle
-from .venta import Venta
-from .venta_detalle import VentaDetalle
-from .cobro import Cobro
-from .cobro_venta import CobroVenta
-from .venta_cuota import VentaCuota
-from .sesion import Sesion
-from .fotoavance import FotoAvance
-from .receta import Receta
-from .comisionprofesional import ComisionProfesional
-from .cajamovimiento import CajaMovimiento
-from .auditoria import Auditoria
+
+# --- Historia clínica ---
+from .indicacion import Indicacion              # usa idinsumo por ahora o iditem si ya migraste
+from .procedimiento import Procedimiento
 from .antecPatologico import AntecedentePatologicoPersonal
 from .antecEnfActual import AntecedenteEnfermedadActual
 from .antecFliar import AntecedenteFamiliar
-# Importa también los que faltaban:
 from .pacienteEncargado import PacienteEncargado
-
 from .recordatorio_paciente import RecordatorioPaciente
+
+# --- Geografía ---
 from .departamento import Departamento
 from .ciudad import Ciudad
 from .barrio import Barrio
 
-# Ahora sí, definí relaciones DIFERIDAS con CLASES (no strings)
+# Si necesitás StockMovimiento en otros lados, lo importás directo:
+# from .StockMovimiento import StockMovimiento
+
+# --------------------------------------------------------------------
+# Relaciones diferidas SEGURAS (sin forzar joins entre tablas sin FK)
+# --------------------------------------------------------------------
 from sqlalchemy.orm import relationship
 
 # Ciudad <-> Departamento
 Ciudad.departamento = relationship(Departamento, back_populates="ciudades")
-Departamento.ciudades = relationship(Ciudad, back_populates="departamento",
-                                     cascade="all, delete-orphan")
+Departamento.ciudades = relationship(
+    Ciudad, back_populates="departamento", cascade="all, delete-orphan"
+)
 
 # Barrio <-> Ciudad
 Barrio.ciudad = relationship(Ciudad, back_populates="barrios")
-Ciudad.barrios = relationship(Barrio, back_populates="ciudad",
-                              cascade="all, delete-orphan")
-
-# (tu ejemplo existente)
-Paciente.procedimientos = relationship(
-    "Procedimiento",
-    order_by=Procedimiento.id,
-    back_populates="paciente",
-    cascade="all, delete-orphan"
+Ciudad.barrios = relationship(
+    Barrio, back_populates="ciudad", cascade="all, delete-orphan"
 )
 
+# Paciente <-> Procedimiento (si Paciente no lo declara en su modelo)
+# Nota: Procedimiento sí declara `paciente = relationship('Paciente', back_populates='procedimientos')`
+# así que acá agregamos el lado inverso en Paciente.
+Paciente.procedimientos = relationship(
+    Procedimiento,
+    order_by=Procedimiento.id,
+    back_populates="paciente",
+    cascade="all, delete-orphan",
+)
+
+# --------------------------------------------------------------------
+# __all__ solo con lo que realmente exponemos ahora
+# --------------------------------------------------------------------
 __all__ = [
-    "Base","Clinica","Paciente","Procedimiento","Profesional","Especialidad", "TipoProducto",
-    "ProfesionalEspecialidad","Usuario","Producto","Paquete","PaqueteProducto",
-    "Proveedor","Insumo","Compra","CompraDetalle","Venta","VentaDetalle","Cobro",
-    "CobroVenta","VentaCuota","Sesion","FotoAvance","Receta","ComisionProfesional",
-    "CajaMovimiento","Auditoria","AntecedentePatologicoPersonal",
-    "AntecedenteEnfermedadActual","AntecedenteFamiliar",
-    "PacienteEncargado","Indicacion","RecordatorioPaciente",
-    "Departamento","Ciudad","Barrio","Item","ItemTipo","ProductoMap","InsumoMap"
+    # Base
+    "Base",
+    # Ítems
+    "Item", "ItemTipo", "TipoProducto", "Especialidad",
+    # Clínica / Personas
+    "Clinica", "Paciente", "Profesional", "ProfesionalEspecialidad", "Usuario",
+    # Historia clínica
+    "Indicacion", "Procedimiento",
+    "AntecedentePatologicoPersonal", "AntecedenteEnfermedadActual", "AntecedenteFamiliar",
+    "PacienteEncargado", "RecordatorioPaciente",
+    # Geografía
+    "Departamento", "Ciudad", "Barrio",
 ]

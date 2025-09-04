@@ -6,7 +6,7 @@ from calendar import monthrange
 from decimal import Decimal
 from typing import Dict, List
 
-from sqlalchemy import func, case, literal, or_
+from sqlalchemy import func, case, literal, or_, false
 from sqlalchemy.orm import Session
 
 from models.item import Item
@@ -39,9 +39,11 @@ def _as_decimal(x) -> Decimal:
 
 def _tipo_to_str(t) -> str:
     try:
-        return t.name if hasattr(t, "name") else str(t or "").upper()
+        s = t.nombre if hasattr(t, "nombre") else (t.name if hasattr(t, "name") else str(t or ""))
     except Exception:
-        return str(t or "")
+        s = str(t or "")
+    s = (s or "").strip()
+    return s.upper() if s else "SIN TIPO"
 
 def _icol(cls, names: tuple[str, ...]):
     for n in names:
@@ -54,7 +56,7 @@ def _icol(cls, names: tuple[str, ...]):
 ITEM_ID_COL   = _icol(Item, ("id", "iditem", "id_item", "itemid"))
 ITEM_NOM_COL  = _icol(Item, ("nombre", "descripcion", "detalle", "nombreitem"))
 ITEM_UNI_COL  = _icol(Item, ("unidad", "unidadmedida", "unid", "unidad_medida"))
-ITEM_TIPO_COL = _icol(Item, ("tipo", "categoria", "tipoi", "tipo_item"))
+ITEM_TIPO_COL = _icol(Item, ("categoria", "grupo", "rubro", "tipo_item", "tipoi"))
 
 if ITEM_ID_COL is None:
     raise AttributeError("Item: no se encontró la PK (id, iditem, id_item o itemid).")
@@ -101,26 +103,23 @@ def obtener_informe_stock_mensual(session: Session, *, year: int, month: int) ->
 
     filtros_no_anulado = []
     if hasattr(StockMovimiento, "anulado"):
-        filtros_no_anulado.append(StockMovimiento.anulado.is_(False))
+        filtros_no_anulado.append(or_(StockMovimiento.anulado.is_(False),
+                                    StockMovimiento.anulado.is_(None)))
     if hasattr(StockMovimiento, "estado"):
-        filtros_no_anulado.append(StockMovimiento.estado != literal("ANULADO"))
+        filtros_no_anulado.append(or_(StockMovimiento.estado.is_(None),
+                                    StockMovimiento.estado != "ANULADO"))
 
     # ---------- Inicial ----------
     q_ini = (
         session.query(
             StockMovimiento.iditem.label("iditem"),
-            func.coalesce(
-                func.sum(
-                    case((StockMovimiento.tipo == literal("INGRESO"), func.abs(StockMovimiento.cantidad)), else_=literal(0))
-                ), 0
-            ).label("sum_in"),
-            func.coalesce(
-                func.sum(
-                    case((StockMovimiento.tipo == literal("EGRESO"), func.abs(StockMovimiento.cantidad)), else_=literal(0))
-                ), 0
-            ).label("sum_out"),
+            func.coalesce(func.sum(case((StockMovimiento.tipo == "INGRESO", func.abs(StockMovimiento.cantidad)), else_=0)), 0).label("sum_in"),
+            func.coalesce(func.sum(case((StockMovimiento.tipo == "EGRESO", func.abs(StockMovimiento.cantidad)), else_=0)), 0).label("sum_out"),
         )
-        .filter(StockMovimiento.fecha <= corte, *filtros_no_anulado)
+        .filter(
+            StockMovimiento.fecha < desde,   # <--- antes era <= corte
+            *filtros_no_anulado
+        )
         .group_by(StockMovimiento.iditem)
         .all()
     )
@@ -135,9 +134,9 @@ def obtener_informe_stock_mensual(session: Session, *, year: int, month: int) ->
     # por texto COMPRA en columnas de origen/motivo/etc.
     for col in ("origen", "motivo", "tipo_origen", "tipo_mov", "tipomov"):
         if hasattr(StockMovimiento, col):
-            compra_preds.append(func.upper(getattr(StockMovimiento, col)) == literal("COMPRA"))
+            compra_preds.append(func.upper(getattr(StockMovimiento, col)) == "COMPRA")
 
-    compra_cond = or_(*compra_preds) if compra_preds else literal(False)
+    compra_cond = or_(*compra_preds) if compra_preds else false()
 
     q_ing = (
         session.query(
@@ -147,8 +146,8 @@ def obtener_informe_stock_mensual(session: Session, *, year: int, month: int) ->
         .filter(
             StockMovimiento.fecha >= desde,
             StockMovimiento.fecha <= hasta,
-            StockMovimiento.tipo == literal("INGRESO"),
-            compra_cond,                         # <-- sólo compras
+            StockMovimiento.tipo == "INGRESO",
+            compra_cond,                 # <-- condición de compra
             *filtros_no_anulado
         )
         .group_by(StockMovimiento.iditem)
@@ -165,7 +164,7 @@ def obtener_informe_stock_mensual(session: Session, *, year: int, month: int) ->
         .filter(
             StockMovimiento.fecha >= desde,
             StockMovimiento.fecha <= hasta,
-            StockMovimiento.tipo == literal("EGRESO"),
+            StockMovimiento.tipo == "EGRESO",
             *filtros_no_anulado
         )
         .group_by(StockMovimiento.iditem)
@@ -180,9 +179,9 @@ def obtener_informe_stock_mensual(session: Session, *, year: int, month: int) ->
             venta_preds.append(getattr(StockMovimiento, col).isnot(None))
     for col in ("origen", "motivo", "tipo_origen", "tipo_mov", "tipomov"):
         if hasattr(StockMovimiento, col):
-            venta_preds.append(func.upper(getattr(StockMovimiento, col)) == literal("VENTA"))
+            venta_preds.append(func.upper(getattr(StockMovimiento, col)) == "VENTA")
 
-    venta_cond = or_(*venta_preds) if venta_preds else literal(False)
+    venta_cond  = or_(*venta_preds)  if venta_preds  else false()
 
     q_ven = (
         session.query(
@@ -192,8 +191,8 @@ def obtener_informe_stock_mensual(session: Session, *, year: int, month: int) ->
         .filter(
             StockMovimiento.fecha >= desde,
             StockMovimiento.fecha <= hasta,
-            StockMovimiento.tipo == literal("EGRESO"),
-            venta_cond,
+            StockMovimiento.tipo == "EGRESO",
+            venta_cond,                  # <-- condición de venta
             *filtros_no_anulado
         )
         .group_by(StockMovimiento.iditem)
@@ -212,27 +211,26 @@ def obtener_informe_stock_mensual(session: Session, *, year: int, month: int) ->
     if not ids_informe:
         return InformeStockMensual(year=year, month=month, desde=desde, hasta=hasta, corte_inicial=corte, grupos=[])
 
-    # Datos de ítems
-    nom_col  = ITEM_NOM_COL  or literal("")
-    uni_col  = ITEM_UNI_COL  or literal("")
-    tipo_col = ITEM_TIPO_COL or literal("SIN TIPO")
+    # Datos de ítems (ordenados por nombre)
+    nom_col = ITEM_NOM_COL or literal("")
+    uni_col = ITEM_UNI_COL or literal("")
 
     items = (
         session.query(
             ITEM_ID_COL.label("iid"),
             nom_col.label("nombre"),
             uni_col.label("unidad"),
-            tipo_col.label("tipo"),
         )
         .filter(ITEM_ID_COL.in_(ids_informe))
-        .order_by(tipo_col, nom_col)
+        .group_by(ITEM_ID_COL, nom_col, uni_col)   # evita duplicados
+        .order_by(nom_col.asc())
         .all()
     )
 
-    grupos_dict: Dict[str, List[ItemRow]] = {}
-    for iid, nombre, unidad, tipo in items:
-        tstr = _tipo_to_str(tipo) if ITEM_TIPO_COL is not None else "SIN TIPO"
-        grupos_dict.setdefault(tstr, []).append(
+    # Lista PLANA (sin agrupar)
+    rows = []
+    for iid, nombre, unidad in items:
+        rows.append(
             ItemRow(
                 iditem=iid,
                 nombre=str(nombre or ""),
@@ -244,38 +242,52 @@ def obtener_informe_stock_mensual(session: Session, *, year: int, month: int) ->
             )
         )
 
-    grupos = [GrupoTipo(tipo=k, items=v) for k, v in sorted(grupos_dict.items(), key=lambda kv: kv[0])]
-    return InformeStockMensual(year=year, month=month, desde=desde, hasta=hasta, corte_inicial=corte, grupos=grupos)
+    # Reusamos la estructura InformeStockMensual con un solo "grupo"
+    return InformeStockMensual(
+        year=year, month=month, desde=desde, hasta=hasta, corte_inicial=corte,
+        grupos=[GrupoTipo(tipo="", items=rows)]
+    )
 
 # ===================== Exportadores =====================
 
 def exportar_pdf_informe_stock_mensual(session: Session, *, year: int, month: int, ruta_pdf: str) -> str:
     from reportlab.lib.pagesizes import A4
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.platypus import SimpleDocTemplate, LongTable, TableStyle, Paragraph, Spacer
     from reportlab.lib import colors
-    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import mm
+    from xml.sax.saxutils import escape
 
     info = obtener_informe_stock_mensual(session, year=year, month=month)
 
-    doc = SimpleDocTemplate(ruta_pdf, pagesize=A4,
-                            rightMargin=12*mm, leftMargin=12*mm,
-                            topMargin=12*mm, bottomMargin=12*mm)
+    doc = SimpleDocTemplate(
+        ruta_pdf, pagesize=A4,
+        leftMargin=15*mm, rightMargin=15*mm, topMargin=15*mm, bottomMargin=15*mm
+    )
     styles = getSampleStyleSheet()
-    story = []
+    st_item = ParagraphStyle("item", parent=styles["Normal"], fontSize=9, leading=11)
 
-    titulo = Paragraph("<b>Informe de Stock Mensual (Agrupado por Tipo)</b>", styles["Title"])
+    story = []
+    titulo = Paragraph("<b>Informe de Stock Mensual</b>", styles["Title"])
     leyenda = Paragraph(
         f"Período: {SPANISH_MONTHS[month]} {year} — "
         f"Inicial = stock al {info.corte_inicial.strftime('%d/%m/%Y')} • "
         f"Ingreso = compras de {SPANISH_MONTHS[month]} {year} • "
         f"Ventas = ventas de {SPANISH_MONTHS[month]} {year} • "
-        f"Otros (Insumo) = salidas no-venta de {SPANISH_MONTHS[month]} {year}",
+        f"Insumo = salidas no-venta de {SPANISH_MONTHS[month]} {year}",
         styles["Normal"]
     )
     story += [titulo, Spacer(1, 6*mm), leyenda, Spacer(1, 6*mm)]
 
-    head = ["#", "Item", "Unidad", "Inicial", "Ingreso", "Ventas", "Otros (Insumo)", "Actual"]
+    # Cabecera sin Unidad
+    head = ["#", "Item", "Inicial", "Ingreso", "Ventas", "Insumo", "Actual"]
+
+    # Anchos: "Item" ocupa el resto
+    avail_w = A4[0] - doc.leftMargin - doc.rightMargin
+    fixed_after_item = [20*mm, 20*mm, 20*mm, 22*mm, 20*mm]  # desde "Inicial" hasta "Actual"
+    fixed_total = 12*mm + sum(fixed_after_item)             # "#" + resto fijo
+    item_w = max(60*mm, avail_w - fixed_total)
+    col_widths = [12*mm, item_w] + fixed_after_item
 
     def _fmt(n) -> str:
         try:
@@ -283,26 +295,41 @@ def exportar_pdf_informe_stock_mensual(session: Session, *, year: int, month: in
         except Exception:
             return str(n or 0)
 
-    i_global = 1
+    # Aplano los ítems (un solo grupo)
+    rows = []
+    idx = 1
     for g in info.grupos:
-        story.append(Paragraph(f"<b>{g.tipo}</b>", styles["Heading3"]))
-        data = [head[:]]
         for r in g.items:
-            data.append([i_global, r.nombre, r.unidad or "", _fmt(r.inicial), _fmt(r.ingreso), _fmt(r.ventas), _fmt(r.otros), _fmt(r.actual)])
-            i_global += 1
+            rows.append([
+                idx,
+                Paragraph(escape(r.nombre or ""), st_item),
+                _fmt(r.inicial),
+                _fmt(r.ingreso),
+                _fmt(r.ventas),
+                _fmt(r.otros),
+                _fmt(r.actual),
+            ])
+            idx += 1
 
-        t = Table(data, repeatRows=1, colWidths=[12*mm, None, 20*mm, 22*mm, 22*mm, 22*mm, 28*mm, 22*mm])
-        t.setStyle(TableStyle([
-            ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-            ("BACKGROUND", (0,0), (-1,0), colors.lightgrey),
-            ("ALIGN", (3,1), (-1,-1), "RIGHT"),
-            ("GRID", (0,0), (-1,-1), 0.25, colors.grey),
-            ("BOTTOMPADDING", (0,0), (-1,0), 6),
-        ]))
-        story += [t, Spacer(1, 6*mm)]
+    data = [head] + rows
 
+    t = LongTable(data, repeatRows=1, colWidths=col_widths, hAlign="LEFT")
+    t.setStyle(TableStyle([
+        ("FONTNAME",  (0,0), (-1,0), "Helvetica-Bold"),
+        ("FONTSIZE",  (0,0), (-1,0), 9),
+        ("BACKGROUND",(0,0), (-1,0), colors.lightgrey),
+        ("ALIGN",     (2,1), (-1,-1), "RIGHT"),   # números desde col 2
+        ("VALIGN",    (0,0), (-1,-1), "MIDDLE"),
+        ("GRID",      (0,0), (-1,-1), 0.25, colors.grey),
+        ("LEFTPADDING",(0,0), (-1,-1), 3),
+        ("RIGHTPADDING",(0,0), (-1,-1), 3),
+        ("TOPPADDING",(0,0), (-1,-1), 2),
+        ("BOTTOMPADDING",(0,0), (-1,-1), 2),
+    ]))
+    story += [t]
     doc.build(story)
     return ruta_pdf
+
 
 def exportar_excel_informe_stock_mensual(session: Session, *, year: int, month: int, ruta_xlsx: str) -> str:
     import pandas as pd
@@ -311,15 +338,15 @@ def exportar_excel_informe_stock_mensual(session: Session, *, year: int, month: 
     for g in info.grupos:
         for r in g.items:
             rows.append({
-                "Tipo": g.tipo,
                 "Item": r.nombre,
-                "Unidad": r.unidad or "",
                 "Inicial": int(r.inicial),
                 "Ingreso": int(r.ingreso),
                 "Ventas": int(r.ventas),
-                "Otros (Insumo)": int(r.otros),
+                "Insumo": int(r.otros),
                 "Actual": int(r.actual),
             })
     with pd.ExcelWriter(ruta_xlsx, engine="openpyxl") as writer:
         pd.DataFrame(rows).to_excel(writer, index=False, sheet_name=f"{SPANISH_MONTHS[month]} {year}")
     return ruta_xlsx
+
+   

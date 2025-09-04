@@ -1,3 +1,4 @@
+# controllers/fichaClinica.py
 import sys
 from functools import partial
 
@@ -5,15 +6,18 @@ from PyQt5.QtWidgets import (
     QApplication, QDialog, QVBoxLayout, QTabWidget, QWidget, QHBoxLayout,
     QFormLayout, QLabel, QLineEdit, QPushButton, QTextEdit, QCheckBox,
     QDateEdit, QTableWidget, QTableWidgetItem, QComboBox, QGridLayout, QMessageBox,
-    QSpinBox, QTimeEdit, QCompleter, QDoubleSpinBox
+    QSpinBox, QTimeEdit, QCompleter, QDoubleSpinBox, QAbstractItemView, QHeaderView
 )
-from PyQt5.QtGui import QIcon, QColor
+from PyQt5.QtGui import QIcon, QColor, QDoubleValidator
 from PyQt5.QtCore import QDate, Qt, QSize, QTime
 
 from sqlalchemy.orm import joinedload
-from sqlalchemy import func
+from sqlalchemy import func, or_
+from contextlib import contextmanager
 
 from utils.db import SessionLocal
+
+# Modelos
 from models.paciente import Paciente
 from models.antecPatologico import AntecedentePatologicoPersonal
 from models.antecFliar import AntecedenteFamiliar
@@ -21,12 +25,15 @@ from models.antecEnfActual import AntecedenteEnfermedadActual
 from models.encargado import Encargado
 from models.pacienteEncargado import PacienteEncargado
 from models.indicacion import Indicacion
-from models.insumo import Insumo
-from models.producto import Producto
+from models.profesional import Profesional
 from models.barrio import Barrio
 from models.ciudad import Ciudad
 from models.departamento import Departamento
 from models.StockMovimiento import StockMovimiento
+from models.recordatorio_paciente import RecordatorioPaciente
+from models.item import Item          # ← único catálogo que usamos
+from models.procedimiento import Procedimiento
+
 from controllers.generador_recordatorios import (
     generar_recordatorios_medicamento,
     validar_indicacion_medicamento,
@@ -42,16 +49,57 @@ def convertir_vacio_a_none(valor: str):
         return None
 
 
+@contextmanager
+def _painting_suspended(tbl):
+    try:
+        tbl.setUpdatesEnabled(False)
+        sort_was = tbl.isSortingEnabled()
+        tbl.setSortingEnabled(False)
+        yield
+    finally:
+        tbl.setSortingEnabled(sort_was)
+        tbl.setUpdatesEnabled(True)
+        tbl.viewport().update()
+
+
+class NumericItem(QTableWidgetItem):
+    """Item numérico que ordena por valor y alinea a la derecha."""
+    def __init__(self, val, fmt="{:.2f}"):
+        f = None
+        if val not in (None, ""):
+            try:
+                f = float(val)
+            except Exception:
+                try:
+                    f = float(str(val).replace(",", ".").split()[0])
+                except Exception:
+                    f = None
+        super().__init__("" if f is None else fmt.format(f))
+        self._val = f if f is not None else float("-inf")
+        self.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+    def __lt__(self, other):
+        if isinstance(other, NumericItem):
+            return self._val < other._val
+        try:
+            return self._val < float(other.text().replace(",", "."))
+        except Exception:
+            return super().__lt__(other)
+
+
 class FichaClinicaForm(QDialog):
     def __init__(self, idpaciente, parent=None, solo_control=False):
         super().__init__(parent)
         self.setWindowTitle("Ficha Clínica del Paciente")
         self.setMinimumWidth(1100)
+
         self.idpaciente = idpaciente
         self.solo_control = solo_control
         self.session = SessionLocal()
+
         self.control_editando_id = None
         self.procedimiento_editando_id = None
+        self.receta_editando_id = None
 
         self.init_ui()
         self.cargar_todo()
@@ -84,7 +132,7 @@ class FichaClinicaForm(QDialog):
         if hasattr(self, "cbo_departamento"):
             self._cargar_departamentos()
 
-        if getattr(self, 'solo_control', False):
+        if self.solo_control:
             self.tabs.addTab(self.tab_enfactual, "📈 Control de Estado")
             self.tabs.addTab(self.tab_procedimientos, "💉 Procedimientos")
             self.tabs.addTab(self.tab_recetas, "📋 Indicaciones")
@@ -101,10 +149,25 @@ class FichaClinicaForm(QDialog):
 
         main_layout.addWidget(self.tabs)
 
+        for tbl in (
+            self.table_controles,
+            self.table_procedimientos,
+            self.table_recetas,
+            self.table_recordatorios,
+            self.table_encargados,
+        ):
+            tbl.clearSelection()
+            tbl.verticalHeader().setVisible(False)
+            tbl.setSortingEnabled(True)
+            tbl.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+            tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
+            tbl.setSelectionMode(QAbstractItemView.SingleSelection)
+
         self.btn_guardar = QPushButton("Guardar Cambios")
         self.btn_guardar.clicked.connect(self.guardar_todo)
         main_layout.addWidget(self.btn_guardar)
-        self.btn_guardar.setVisible(not getattr(self, 'solo_control', False))
+        self.btn_guardar.setVisible(self.solo_control) if hasattr(self, 'solo_control') else self.btn_guardar.setVisible(True)
+
 
     # ================== DATOS BÁSICOS ==================
     def ui_tab_basicos(self):
@@ -159,7 +222,7 @@ class FichaClinicaForm(QDialog):
 
         self.txt_observaciones = QTextEdit()
         layout.addRow("Observaciones:", self.txt_observaciones)
-        if getattr(self, 'solo_control', False):
+        if self.solo_control:
             self.txt_observaciones.setReadOnly(True)
             self.txt_observaciones.setVisible(False)
 
@@ -247,6 +310,8 @@ class FichaClinicaForm(QDialog):
         layout = QVBoxLayout(self.tab_encargados)
         self.table_encargados = QTableWidget(0, 5)
         self.table_encargados.setHorizontalHeaderLabels(["Nombre", "CI", "Edad", "Ocupación", "Teléfono"])
+        self.table_encargados.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table_encargados.setAlternatingRowColors(True)
         layout.addWidget(self.table_encargados)
         btn_agregar = QPushButton("Agregar Encargado")
         btn_agregar.clicked.connect(self.abrir_dialogo_encargado)
@@ -331,6 +396,7 @@ class FichaClinicaForm(QDialog):
     # ================== CONTROLES ==================
     def ui_tab_enfactual(self):
         layout = QVBoxLayout(self.tab_enfactual)
+
         self.table_controles = QTableWidget(0, 14)
         self.table_controles.setHorizontalHeaderLabels([
             "Fecha", "Peso", "Altura", "Cintura", "OMB", "Bajo OMB", "P. Ideal",
@@ -338,8 +404,11 @@ class FichaClinicaForm(QDialog):
             "Editar", "Eliminar"
         ])
         layout.addWidget(self.table_controles)
+        self.table_controles.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table_controles.setAlternatingRowColors(True)
 
         form_grid = QGridLayout()
+
         self.input_fecha = QDateEdit(calendarPopup=True); self.input_fecha.setDate(QDate.currentDate())
         self.input_peso = QLineEdit()
         self.input_altura = QLineEdit()
@@ -352,6 +421,22 @@ class FichaClinicaForm(QDialog):
         self.input_pierna_izq = QLineEdit()
         self.input_pierna_der = QLineEdit()
         self.input_espalda = QLineEdit()
+
+        for w in (
+            self.input_peso, self.input_altura, self.input_cint, self.input_omb,
+            self.input_bajo_omb, self.input_pideal, self.input_brazo_izq, self.input_brazo_der,
+            self.input_pierna_izq, self.input_pierna_der, self.input_espalda
+        ):
+            w.setAlignment(Qt.AlignRight)
+
+        dv = QDoubleValidator(0.0, 1000.0, 2, self)
+        for w in (
+            self.input_peso, self.input_altura, self.input_cint, self.input_omb,
+            self.input_bajo_omb, self.input_pideal, self.input_brazo_izq, self.input_brazo_der,
+            self.input_pierna_izq, self.input_pierna_der, self.input_espalda
+        ):
+            w.setValidator(dv)
+
         campos = [
             ("Fecha:", self.input_fecha),
             ("Peso:", self.input_peso),
@@ -371,6 +456,7 @@ class FichaClinicaForm(QDialog):
             col = (idx % 3) * 2
             form_grid.addWidget(QLabel(label), row, col)
             form_grid.addWidget(widget, row, col + 1)
+
         layout.addLayout(form_grid)
 
         self.btn_guardar_control = QPushButton("Agregar Control")
@@ -378,6 +464,7 @@ class FichaClinicaForm(QDialog):
         self.btn_cancelar_edicion = QPushButton("Cancelar")
         self.btn_cancelar_edicion.clicked.connect(self.cancelar_edicion_control)
         self.btn_cancelar_edicion.setVisible(False)
+
         hl = QHBoxLayout()
         hl.addWidget(self.btn_guardar_control)
         hl.addWidget(self.btn_cancelar_edicion)
@@ -386,12 +473,12 @@ class FichaClinicaForm(QDialog):
 
     # ================== PROCEDIMIENTOS ==================
     def ui_tab_procedimientos(self):
-        from models.tipoproducto import TipoProducto
-
         layout = QVBoxLayout(self.tab_procedimientos)
 
         self.table_procedimientos = QTableWidget(0, 5)
         self.table_procedimientos.setHorizontalHeaderLabels(["Fecha", "Item", "Comentario", "", ""])
+        self.table_procedimientos.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table_procedimientos.setAlternatingRowColors(True)
         layout.addWidget(self.table_procedimientos)
 
         form = QFormLayout()
@@ -399,17 +486,24 @@ class FichaClinicaForm(QDialog):
         self.proc_fecha.setDate(QDate.currentDate())
 
         self.proc_combo = QComboBox()
+        self.proc_combo.clear()
         self.proc_combo.addItem("Seleccionar...", None)
 
-        procedimientos = (
-            self.session.query(Producto)
-            .join(Producto.tipoproducto)
-            .filter(func.lower(TipoProducto.nombre) == 'procedimientos')
-            .order_by(Producto.nombre)
-            .all()
-        )
-        for prod in procedimientos:
-            self.proc_combo.addItem(prod.nombre, prod.idproducto)
+        # Ítems de procedimiento/servicio
+        q = (self.session.query(Item)
+             .filter(
+                 Item.activo.is_(True),
+                 or_(
+                     Item.uso_procedimiento.is_(True),
+                     Item.categoria == 'USO_PROCEDIMIENTO',
+                     func.lower(Item.tipo_producto).in_(['procedimiento', 'procedimientos', 'servicio'])
+                 )
+             )
+             .order_by(Item.nombre.asc()))
+        for it in q.all():
+            self.proc_combo.addItem(it.nombre, it.iditem)
+
+        self._setup_contains_completer(self.proc_combo)
 
         self.proc_cantidad = QDoubleSpinBox()
         self.proc_cantidad.setDecimals(2)
@@ -438,10 +532,8 @@ class FichaClinicaForm(QDialog):
         layout.addLayout(hl)
 
     def agregar_o_editar_procedimiento(self):
-        from models.procedimiento import Procedimiento
-
-        idproducto = self.proc_combo.currentData()
-        if not idproducto:
+        iditem = self.proc_combo.currentData()
+        if not iditem:
             QMessageBox.warning(self, "Falta procedimiento", "Seleccioná un procedimiento.")
             return
 
@@ -450,23 +542,32 @@ class FichaClinicaForm(QDialog):
             QMessageBox.warning(self, "Cantidad inválida", "La cantidad debe ser mayor que cero.")
             return
 
+        # 👉 si hay una transacción abierta por consultas previas, la cerramos
+        if self.session.in_transaction():
+            try:
+                self.session.rollback()
+            except Exception:
+                pass
+
         try:
             if self.procedimiento_editando_id:
                 # EDITAR
-                proc = self.session.query(Procedimiento).filter_by(id=self.procedimiento_editando_id).first()
+                proc = (self.session.query(Procedimiento)
+                        .filter_by(id=self.procedimiento_editando_id).first())
                 if not proc:
                     QMessageBox.warning(self, "Procedimiento", "No se encontró el procedimiento a editar.")
                     return
 
                 proc.fecha = self.proc_fecha.date().toPyDate()
-                proc.idproducto = idproducto
+                proc.iditem = iditem
                 proc.comentario = self.proc_comentario.text().strip()
-                self.session.commit()
+                self.session.flush()
 
-                # Actualizar movimiento: borrar y recrear
+                # Actualizar movimiento de stock
                 self.session.query(StockMovimiento).filter_by(
                     motivo='PROCEDIMIENTO', idorigen=proc.id
                 ).delete(synchronize_session=False)
+
                 self._crear_movimiento_procedimiento(proc, cantidad)
 
             else:
@@ -474,30 +575,29 @@ class FichaClinicaForm(QDialog):
                 proc = Procedimiento(
                     idpaciente=self.idpaciente,
                     fecha=self.proc_fecha.date().toPyDate(),
-                    idproducto=idproducto,
+                    iditem=iditem,
                     comentario=self.proc_comentario.text().strip()
                 )
                 self.session.add(proc)
-                self.session.commit()
+                self.session.flush()  # para tener proc.id
 
-                # Movimiento de stock (EGRESO)
                 self._crear_movimiento_procedimiento(proc, cantidad)
 
-                # Recordatorio automático (si corresponde)
-                producto = self.session.query(Producto).get(idproducto)
-                if producto and getattr(producto, "requiere_recordatorio", None) and getattr(producto, "dias_recordatorio", None):
+                # Recordatorio automático opcional
+                item = self.session.get(Item, iditem)
+                if item and getattr(item, "requiere_recordatorio", None) and getattr(item, "dias_recordatorio", None):
                     from datetime import timedelta
-                    from models.recordatorio_paciente import RecordatorioPaciente
-                    fecha_recordatorio = proc.fecha + timedelta(days=producto.dias_recordatorio)
-                    mensaje = (getattr(producto, "mensaje_recordatorio", None) or f"Control de {producto.nombre}")
-                    recordatorio = RecordatorioPaciente(
+                    fecha_recordatorio = proc.fecha + timedelta(days=item.dias_recordatorio)
+                    mensaje = (getattr(item, "mensaje_recordatorio", None) or f"Control de {item.nombre}")
+                    rec = RecordatorioPaciente(
                         idpaciente=self.idpaciente,
                         idprocedimiento=proc.id,
                         fecha_recordatorio=fecha_recordatorio,
                         mensaje=mensaje
                     )
-                    self.session.add(recordatorio)
-                    self.session.commit()
+                    self.session.add(rec)
+
+            self.session.commit()
 
             self.cancelar_edicion_procedimiento()
             self.cargar_todo()
@@ -508,101 +608,32 @@ class FichaClinicaForm(QDialog):
             self.session.rollback()
             QMessageBox.critical(self, "Error", f"Ocurrió un error guardando el procedimiento:\n{e}")
 
-    def _resolver_iditem_para_producto(self, prod):
-        """
-        Devuelve el iditem (tabla item) que se debe descontar para un Producto de tipo 'procedimiento'.
-        Orden de resolución:
-          1) Campo directo en Producto (iditem, id_item, item_id, iditem_stock, iditem_consumo)
-          2) Relación prod.item.iditem
-          3) PK compartida: producto.idproducto == item.iditem (validado)
-          4) Vía Insumo: producto.idinsumo -> insumo.iditem
-        """
-        # 1) directo en Producto
-        for attr in ("iditem", "id_item", "item_id", "iditem_stock", "iditem_consumo"):
-            val = getattr(prod, attr, None)
-            if val:
-                try:
-                    return int(val)
-                except Exception:
-                    return val
-
-        # 2) relación a Item
-        try:
-            rel_item = getattr(prod, "item", None)
-            if rel_item is not None:
-                val = getattr(rel_item, "iditem", None) or getattr(rel_item, "id", None)
-                if val:
-                    return int(val)
-        except Exception:
-            pass
-
-        # 3) PK compartida Producto <-> Item
-        try:
-            from models.item import Item  # si tu proyecto lo nombra distinto, ajustá acá
-            maybe_id = getattr(prod, "idproducto", None)
-            if maybe_id:
-                itm = self.session.query(Item).get(maybe_id)
-                if itm:
-                    return int(itm.iditem)
-        except Exception:
-            pass
-
-        # 4) vía Insumo
-        try:
-            idinsumo = getattr(prod, "idinsumo", None)
-            if idinsumo:
-                ins = self.session.query(Insumo).get(idinsumo)
-                if ins:
-                    val = getattr(ins, "iditem", None) or getattr(ins, "item_id", None)
-                    if val:
-                        return int(val)
-        except Exception:
-            pass
-
-        return None
 
     def _crear_movimiento_procedimiento(self, proc, cantidad) -> bool:
-        """Crea un EGRESO en stock_movimiento vinculado al procedimiento."""
-        try:
-            prod = self.session.query(Producto).filter_by(idproducto=proc.idproducto).first()
-            if not prod:
-                QMessageBox.warning(self, "Stock", "No se encontró el producto del procedimiento.")
-                return False
-
-            iditem = self._resolver_iditem_para_producto(prod)
-            if not iditem:
-                QMessageBox.warning(
-                    self, "Stock",
-                    "El procedimiento seleccionado no está vinculado a un ítem de stock (iditem).\n"
-                    "Si tu esquema usa PK compartida, asegurate que exista Item con id = idproducto."
-                )
-                return False
-
-            mov = StockMovimiento(
-                fecha=proc.fecha,
-                iditem=iditem,
-                cantidad=cantidad,
-                tipo='EGRESO',
-                motivo='PROCEDIMIENTO',
-                idorigen=proc.id,
-                observacion=f"Proc #{proc.id} - {getattr(prod, 'nombre', '')}"
-            )
-            self.session.add(mov)
-            self.session.commit()
-            return True
-
-        except Exception as e:
-            self.session.rollback()
-            QMessageBox.critical(self, "Stock", f"No se pudo crear el egreso de stock:\n{e}")
+        it = self.session.get(Item, proc.iditem)
+        if not it:
+            QMessageBox.warning(self, "Stock", "No se encontró el ítem del procedimiento.")
             return False
+
+        mov = StockMovimiento(
+            fecha=proc.fecha,
+            iditem=proc.iditem,
+            cantidad=cantidad,
+            tipo='EGRESO',
+            motivo='PROCEDIMIENTO',
+            idorigen=proc.id,
+            observacion=f"Proc #{proc.id} - {it.nombre}"
+        )
+        self.session.add(mov)
+        return True
 
     def cargar_procedimiento_en_form(self, proc):
         self.procedimiento_editando_id = proc.id
         self.proc_fecha.setDate(QDate(proc.fecha.year, proc.fecha.month, proc.fecha.day))
-        idx = self.proc_combo.findData(proc.idproducto)
+        idx = self.proc_combo.findData(proc.iditem)
         self.proc_combo.setCurrentIndex(idx if idx != -1 else 0)
         self.proc_comentario.setText(proc.comentario or "")
-        # Cargar cantidad desde movimiento, si existe
+
         try:
             mov = (self.session.query(StockMovimiento)
                    .filter_by(motivo='PROCEDIMIENTO', idorigen=proc.id)
@@ -628,11 +659,9 @@ class FichaClinicaForm(QDialog):
         self.btn_cancelar_procedimiento.setVisible(False)
 
     def eliminar_procedimiento(self, idproc):
-        """Elimina un procedimiento y revierte su movimiento de stock."""
         from sqlalchemy.exc import IntegrityError
-        from models.procedimiento import Procedimiento
 
-        if getattr(self, "solo_control", False):
+        if self.solo_control:
             return
 
         reply = QMessageBox.question(self, "Confirmar", "¿Eliminar procedimiento?", QMessageBox.Yes | QMessageBox.No)
@@ -642,7 +671,7 @@ class FichaClinicaForm(QDialog):
         proc = self.session.query(Procedimiento).filter_by(id=idproc).first()
         if proc:
             try:
-                # borrar movimientos asociados (vuelve al stock por neto de movimientos)
+                # borrar movimientos asociados
                 self.session.query(StockMovimiento).filter_by(
                     motivo='PROCEDIMIENTO', idorigen=proc.id
                 ).delete(synchronize_session=False)
@@ -730,14 +759,14 @@ class FichaClinicaForm(QDialog):
 
     # ================== INDICACIONES ==================
     def ui_tab_recetas(self):
-        from models.profesional import Profesional
-
         layout = QVBoxLayout(self.tab_recetas)
 
         self.table_recetas = QTableWidget(0, 8)
         self.table_recetas.setHorizontalHeaderLabels(
             ["Fecha", "Profesional", "Medicamento", "Dosis", "Frecuencia (h)", "Duración (d)", "Editar", "Eliminar"]
         )
+        self.table_recetas.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table_recetas.setAlternatingRowColors(True)
         layout.addWidget(self.table_recetas)
 
         form = QFormLayout()
@@ -756,23 +785,25 @@ class FichaClinicaForm(QDialog):
             nombre = f"{prof.apellido}, {prof.nombre}"
             self.receta_profesional.addItem(nombre, prof.idprofesional)
 
-        # MEDICAMENTO (Insumo.tipo == 'MEDICAMENTO')
+        # MEDICAMENTO -> Item (tipo_insumo == 'medicamento')
         self.receta_medicamento = QComboBox()
         self.receta_medicamento.clear()
         self.receta_medicamento.addItem("Seleccionar...", None)
-        insumos = (self.session.query(Insumo)
-                   .filter(Insumo.tipo == 'MEDICAMENTO')
-                   .order_by(Insumo.nombre)
-                   .all())
-        for ins in insumos:
-            self.receta_medicamento.addItem(ins.nombre, ins.idinsumo)
 
-        # autocompletar por contiene
+        items_meds = (self.session.query(Item)
+                      .filter(
+                          Item.activo.is_(True),
+                          func.lower(Item.tipo_insumo) == 'medicamento'
+                      )
+                      .order_by(Item.nombre.asc())
+                      .all())
+        for it in items_meds:
+            self.receta_medicamento.addItem(it.nombre, it.iditem)
         self._setup_contains_completer(self.receta_medicamento)
 
         self.receta_dosis = QLineEdit()
         self.receta_frecuencia = QSpinBox(); self.receta_frecuencia.setRange(1, 24); self.receta_frecuencia.setValue(8)
-        self.receta_duracion = QSpinBox();   self.receta_duracion.setRange(1, 30);   self.receta_duracion.setValue(7)
+        self.receta_duracion = QSpinBox();   self.receta_duracion.setRange(1, 60);  self.receta_duracion.setValue(7)
         self.receta_hora_inicio = QTimeEdit(); self.receta_hora_inicio.setTime(QTime.currentTime())
         self.receta_recordatorio = QCheckBox("Recordatorio activo")
         self.receta_obs = QTextEdit()
@@ -800,55 +831,76 @@ class FichaClinicaForm(QDialog):
         hl.addWidget(self.btn_cancelar_receta)
         hl.addStretch()
         layout.addLayout(hl)
-        self.receta_editando_id = None
 
     def ui_tab_recordatorios(self):
         layout = QVBoxLayout(self.tab_recordatorios)
         self.table_recordatorios = QTableWidget(0, 6)
         self.table_recordatorios.setHorizontalHeaderLabels(["Fecha", "Mensaje", "Estado", "Editar", "Realizado", "Eliminar"])
+        self.table_recordatorios.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table_recordatorios.setAlternatingRowColors(True)
         layout.addWidget(self.table_recordatorios)
 
     def cargar_recordatorios(self):
-        from models.recordatorio_paciente import RecordatorioPaciente
-        self.table_recordatorios.setRowCount(0)
-        recordatorios = (
-            self.session.query(RecordatorioPaciente)
-            .filter(RecordatorioPaciente.idpaciente == self.idpaciente,
-                    RecordatorioPaciente.estado == "pendiente")
-            .order_by(RecordatorioPaciente.fecha_recordatorio.desc())
-            .all()
-        )
-        for i, r in enumerate(recordatorios):
-            self.table_recordatorios.insertRow(i)
-            try:
-                dt = r.fecha_recordatorio
-                txt_fecha = dt.strftime("%d/%m/%Y %H:%M") if hasattr(dt, "hour") else dt.strftime("%d/%m/%Y")
-            except Exception:
-                txt_fecha = str(r.fecha_recordatorio)
-            self.table_recordatorios.setItem(i, 0, QTableWidgetItem(txt_fecha))
-            self.table_recordatorios.setItem(i, 1, QTableWidgetItem(r.mensaje or ""))
+        with _painting_suspended(self.table_recordatorios):
+            recs = (
+                self.session.query(RecordatorioPaciente)
+                .filter(
+                    RecordatorioPaciente.idpaciente == self.idpaciente,
+                    RecordatorioPaciente.estado.in_(["pendiente", "realizado"])
+                )
+                .order_by(RecordatorioPaciente.fecha_recordatorio.desc())
+                .all()
+            )
 
-            item_estado = QTableWidgetItem(r.estado or "")
-            if r.estado == "realizado":
-                item_estado.setBackground(QColor("#b6fcb6"))
-            self.table_recordatorios.setItem(i, 2, item_estado)
+            tbl = self.table_recordatorios
+            tbl.setRowCount(len(recs))
 
-            btn_editar = QPushButton("Editar"); btn_editar.setIconSize(QSize(16, 16)); btn_editar.setFlat(True)
-            self.table_recordatorios.setCellWidget(i, 3, btn_editar)
+            for i, r in enumerate(recs):
+                try:
+                    dt = r.fecha_recordatorio
+                    txt_fecha = dt.strftime("%d/%m/%Y %H:%M") if hasattr(dt, "hour") else dt.strftime("%d/%m/%Y")
+                except Exception:
+                    txt_fecha = str(r.fecha_recordatorio)
 
-            btn_realizado = QPushButton("Realizado")
-            btn_realizado.setStyleSheet("color: green; font-weight: bold")
-            btn_realizado.setEnabled(r.estado != "realizado")
-            btn_realizado.clicked.connect(lambda _, rid=r.id: self.marcar_recordatorio_realizado(rid))
-            self.table_recordatorios.setCellWidget(i, 4, btn_realizado)
+                tbl.setItem(i, 0, QTableWidgetItem(txt_fecha))
+                tbl.setItem(i, 1, QTableWidgetItem(r.mensaje or ""))
 
-            btn_eliminar = QPushButton("Eliminar")
-            btn_eliminar.setStyleSheet("color: red")
-            btn_eliminar.clicked.connect(lambda _, rid=r.id: self.eliminar_recordatorio(rid))
-            self.table_recordatorios.setCellWidget(i, 5, btn_eliminar)
+                item_estado = QTableWidgetItem(r.estado or "")
+                if r.estado == "realizado":
+                    item_estado.setBackground(QColor("#b6fcb6"))
+                tbl.setItem(i, 2, item_estado)
+
+                btn_editar = QPushButton("Editar")
+                btn_editar.setIconSize(QSize(16, 16))
+                btn_editar.setFlat(True)
+                btn_editar.clicked.connect(lambda _, rid=r.id: self.editar_recordatorio(rid))
+                tbl.setCellWidget(i, 3, btn_editar)
+
+                btn_realizado = QPushButton("Realizado")
+                btn_realizado.setStyleSheet("color: green; font-weight: bold")
+                btn_realizado.setEnabled(r.estado != "realizado")
+                btn_realizado.clicked.connect(lambda _, rid=r.id: self.marcar_recordatorio_realizado(rid))
+                tbl.setCellWidget(i, 4, btn_realizado)
+
+                btn_eliminar = QPushButton("Eliminar")
+                btn_eliminar.setStyleSheet("color: red")
+                btn_eliminar.clicked.connect(lambda _, rid=r.id: self.eliminar_recordatorio(rid))
+                tbl.setCellWidget(i, 5, btn_eliminar)
+
+            tbl.resizeColumnsToContents()
+
+    def editar_recordatorio(self, rid):
+        from PyQt5.QtWidgets import QInputDialog
+        rec = self.session.query(RecordatorioPaciente).filter_by(id=rid).first()
+        if not rec:
+            return
+        nuevo_msg, ok = QInputDialog.getText(self, "Editar recordatorio", "Mensaje:", text=rec.mensaje or "")
+        if ok:
+            rec.mensaje = (nuevo_msg or "").strip()
+            self.session.commit()
+            self.cargar_recordatorios()
 
     def marcar_recordatorio_realizado(self, rid):
-        from models.recordatorio_paciente import RecordatorioPaciente
         rec = self.session.query(RecordatorioPaciente).filter_by(id=rid).first()
         if rec:
             rec.estado = "realizado"
@@ -857,7 +909,6 @@ class FichaClinicaForm(QDialog):
             self.cargar_recordatorios()
 
     def eliminar_recordatorio(self, rid):
-        from models.recordatorio_paciente import RecordatorioPaciente
         rec = self.session.query(RecordatorioPaciente).filter_by(id=rid).first()
         if rec:
             self.session.delete(rec)
@@ -865,38 +916,100 @@ class FichaClinicaForm(QDialog):
             self.cargar_recordatorios()
 
     # ================== INDICACIONES (CRUD) ==================
+    def cargar_indicaciones(self):
+        with _painting_suspended(self.table_recetas):
+            indicaciones = (
+                self.session.query(Indicacion)
+                .filter_by(idpaciente=self.idpaciente, tipo='MEDICAMENTO')
+                .order_by(Indicacion.fecha.desc())
+                .all()
+            )
+
+            tbl = self.table_recetas
+            rows = len(indicaciones)
+            tbl.setRowCount(rows)
+
+            prof_cache = {}
+            item_cache = {}
+
+            for i, ind in enumerate(indicaciones):
+                tbl.setItem(i, 0, QTableWidgetItem(str(ind.fecha)))
+
+                # Profesional
+                pid = ind.idprofesional
+                if pid not in prof_cache:
+                    prof = self.session.query(Profesional).filter_by(idprofesional=pid).first() if pid else None
+                    prof_cache[pid] = (f"{getattr(prof,'nombre','')} {getattr(prof,'apellido','')}".strip() or "-") if prof else "-"
+                tbl.setItem(i, 1, QTableWidgetItem(prof_cache.get(pid, "-")))
+
+                # Medicamento (Item)
+                iid = ind.iditem
+                if iid not in item_cache:
+                    it = self.session.get(Item, iid) if iid else None
+                    item_cache[iid] = it.nombre if it else "-"
+                tbl.setItem(i, 2, QTableWidgetItem(item_cache.get(iid, "-")))
+
+                tbl.setItem(i, 3, QTableWidgetItem(ind.dosis or ""))
+                tbl.setItem(i, 4, QTableWidgetItem(str(ind.frecuencia_horas or "")))
+                tbl.setItem(i, 5, QTableWidgetItem(str(ind.duracion_dias or "")))
+
+                # Acciones (ocultas en solo_control)
+                if not self.solo_control:
+                    btn_editar = QPushButton()
+                    btn_editar.setIcon(QIcon("imagenes/editar.png"))
+                    btn_editar.setIconSize(QSize(24, 24))
+                    btn_editar.setFlat(True)
+                    btn_editar.clicked.connect(partial(self.cargar_indicacion_en_form, ind))
+                    tbl.setCellWidget(i, 6, btn_editar)
+
+                    btn_eliminar = QPushButton()
+                    btn_eliminar.setIcon(QIcon("imagenes/eliminar.png"))
+                    btn_eliminar.setIconSize(QSize(24, 24))
+                    btn_eliminar.setFlat(True)
+                    btn_eliminar.clicked.connect(partial(self.eliminar_indicacion, ind.idindicacion))
+                    tbl.setCellWidget(i, 7, btn_eliminar)
+                else:
+                    tbl.setCellWidget(i, 6, QWidget())
+                    tbl.setCellWidget(i, 7, QWidget())
+
+            tbl.resizeColumnsToContents()
+
     def cargar_indicacion_en_form(self, ind):
+        if self.solo_control:
+            return
         self.receta_editando_id = ind.idindicacion
+
+        # Fecha
         self.receta_fecha.setDate(QDate(ind.fecha.year, ind.fecha.month, ind.fecha.day))
 
+        # Profesional
         idx_prof = self.receta_profesional.findData(ind.idprofesional)
         self.receta_profesional.setCurrentIndex(idx_prof if idx_prof != -1 else 0)
 
-        idx_insumo = self.receta_medicamento.findData(ind.idinsumo)
-        self.receta_medicamento.setCurrentIndex(idx_insumo if idx_insumo != -1 else 0)
+        # Medicamento (Item)
+        idx_item = self.receta_medicamento.findData(ind.iditem)
+        self.receta_medicamento.setCurrentIndex(idx_item if idx_item != -1 else 0)
 
         self.receta_dosis.setText(ind.dosis or "")
         self.receta_frecuencia.setValue(ind.frecuencia_horas or 8)
         self.receta_duracion.setValue(ind.duracion_dias or 7)
 
-        if ind.hora_inicio:
-            try:
-                h = getattr(ind.hora_inicio, 'hour', None)
-                m = getattr(ind.hora_inicio, 'minute', None)
-                s = getattr(ind.hora_inicio, 'second', 0)
-                if h is not None and m is not None:
-                    self.receta_hora_inicio.setTime(QTime(h, m, s))
+        try:
+            if ind.hora_inicio:
+                if hasattr(ind.hora_inicio, "hour"):
+                    h, m, s = ind.hora_inicio.hour, ind.hora_inicio.minute, getattr(ind.hora_inicio, "second", 0)
                 else:
-                    parts = str(ind.hora_inicio).split(':')
-                    hh = int(parts[0]); mm = int(parts[1]); ss = int(parts[2]) if len(parts) > 2 else 0
-                    self.receta_hora_inicio.setTime(QTime(hh, mm, ss))
-            except Exception:
+                    parts = str(ind.hora_inicio).split(":")
+                    h, m = int(parts[0]), int(parts[1]); s = int(parts[2]) if len(parts) > 2 else 0
+                self.receta_hora_inicio.setTime(QTime(h, m, s))
+            else:
                 self.receta_hora_inicio.setTime(QTime.currentTime())
-        else:
+        except Exception:
             self.receta_hora_inicio.setTime(QTime.currentTime())
 
-        self.receta_recordatorio.setChecked(ind.recordatorio_activo)
+        self.receta_recordatorio.setChecked(bool(ind.recordatorio_activo))
         self.receta_obs.setPlainText(ind.observaciones or "")
+
         self.btn_agregar_receta.setText("Guardar Cambios")
         self.btn_cancelar_receta.setVisible(True)
 
@@ -915,6 +1028,8 @@ class FichaClinicaForm(QDialog):
         self.btn_cancelar_receta.setVisible(False)
 
     def eliminar_indicacion(self, idindicacion):
+        if self.solo_control:
+            return
         reply = QMessageBox.question(self, "Confirmar", "¿Eliminar indicación y sus recordatorios?", QMessageBox.Yes | QMessageBox.No)
         if reply == QMessageBox.No:
             return
@@ -927,99 +1042,62 @@ class FichaClinicaForm(QDialog):
             self.cargar_recordatorios()
 
     def agregar_o_editar_indicacion(self):
+      
+
         idprof = self.receta_profesional.currentData()
-        idinsumo = self.receta_medicamento.currentData()
+        iditem = self.receta_medicamento.currentData()
 
         if not idprof:
             QMessageBox.warning(self, "Falta profesional", "Seleccioná un profesional.")
             return
-        if not idinsumo:
+        if not iditem:
             QMessageBox.warning(self, "Falta medicamento", "Seleccioná un medicamento.")
             return
 
-        if self.receta_editando_id:
-            indicacion = self.session.query(Indicacion).filter_by(idindicacion=self.receta_editando_id).first()
-            if indicacion:
-                indicacion.fecha = self.receta_fecha.date().toPyDate()
-                indicacion.idprofesional = idprof
-                indicacion.idinsumo = idinsumo
-                indicacion.dosis = self.receta_dosis.text().strip()
-                indicacion.frecuencia_horas = self.receta_frecuencia.value()
-                indicacion.duracion_dias = self.receta_duracion.value()
-                indicacion.hora_inicio = self.receta_hora_inicio.time().toPyTime()
-                indicacion.recordatorio_activo = self.receta_recordatorio.isChecked()
-                indicacion.observaciones = self.receta_obs.toPlainText().strip()
-        else:
-            indicacion = Indicacion(
-                fecha=self.receta_fecha.date().toPyDate(),
-                idpaciente=self.idpaciente,
-                idprofesional=idprof,
-                tipo='MEDICAMENTO',
-                idinsumo=idinsumo,
-                dosis=self.receta_dosis.text().strip(),
-                frecuencia_horas=self.receta_frecuencia.value(),
-                duracion_dias=self.receta_duracion.value(),
-                hora_inicio=self.receta_hora_inicio.time().toPyTime(),
-                recordatorio_activo=self.receta_recordatorio.isChecked(),
-                observaciones=self.receta_obs.toPlainText().strip()
-            )
-            self.session.add(indicacion)
-        self.session.commit()
+        try:
+            if self.receta_editando_id:
+                indicacion = self.session.query(Indicacion).filter_by(idindicacion=self.receta_editando_id).first()
+                if not indicacion:
+                    QMessageBox.warning(self, "Indicacion", "No se encontró la indicación a editar.")
+                    return
+            else:
+                indicacion = Indicacion(idpaciente=self.idpaciente, tipo='MEDICAMENTO')
+                self.session.add(indicacion)
 
-        errores = validar_indicacion_medicamento(indicacion)
-        if errores:
-            QMessageBox.warning(self, "Faltan datos", "\n".join(errores))
-            return
+            # Asignar campos
+            indicacion.fecha = self.receta_fecha.date().toPyDate()
+            indicacion.idprofesional = idprof
+            indicacion.iditem = iditem                  # ← clave del cambio
+            indicacion.dosis = self.receta_dosis.text().strip()
+            indicacion.frecuencia_horas = self.receta_frecuencia.value()
+            indicacion.duracion_dias = self.receta_duracion.value()
+            indicacion.hora_inicio = self.receta_hora_inicio.time().toPyTime()
+            indicacion.recordatorio_activo = self.receta_recordatorio.isChecked()
+            indicacion.observaciones = self.receta_obs.toPlainText().strip()
 
-        eliminar_recordatorios_de_indicacion(self.session, indicacion.idindicacion)
-        if indicacion.recordatorio_activo:
-            generar_recordatorios_medicamento(self.session, indicacion)
+            # Validación de tu módulo
+            errores = validar_indicacion_medicamento(indicacion)
+            if errores:
+                self.session.rollback()
+                QMessageBox.warning(self, "Faltan datos", "\n".join(errores))
+                return
 
-        self.cargar_indicaciones()
-        self.cancelar_edicion_receta()
-        self.cargar_recordatorios()
-        QMessageBox.information(self, "Indicacion", "Guardado correctamente.")
+            self.session.flush()
 
-    def cargar_indicaciones(self):
-        from models.profesional import Profesional
+            eliminar_recordatorios_de_indicacion(self.session, indicacion.idindicacion)
+            if indicacion.recordatorio_activo:
+                generar_recordatorios_medicamento(self.session, indicacion)
 
-        self.table_recetas.setRowCount(0)
-        indicaciones = (
-            self.session.query(Indicacion)
-            .filter_by(idpaciente=self.idpaciente, tipo='MEDICAMENTO')
-            .order_by(Indicacion.fecha.desc())
-            .all()
-        )
-        for ind in indicaciones:
-            row = self.table_recetas.rowCount()
-            self.table_recetas.insertRow(row)
-            self.table_recetas.setItem(row, 0, QTableWidgetItem(str(ind.fecha)))
+            self.session.commit()
 
-            profesional = self.session.query(Profesional).filter_by(idprofesional=ind.idprofesional).first()
-            nombre_prof = f"{profesional.nombre} {profesional.apellido}" if profesional else "-"
-            self.table_recetas.setItem(row, 1, QTableWidgetItem(nombre_prof))
+            self.cargar_indicaciones()
+            self.cancelar_edicion_receta()
+            self.cargar_recordatorios()
+            QMessageBox.information(self, "Indicacion", "Guardado correctamente.")
 
-            insumo = self.session.query(Insumo).filter_by(idinsumo=ind.idinsumo).first()
-            nombre_insumo = insumo.nombre if insumo else "-"
-            self.table_recetas.setItem(row, 2, QTableWidgetItem(nombre_insumo))
-
-            self.table_recetas.setItem(row, 3, QTableWidgetItem(ind.dosis or ""))
-            self.table_recetas.setItem(row, 4, QTableWidgetItem(str(ind.frecuencia_horas or "")))
-            self.table_recetas.setItem(row, 5, QTableWidgetItem(str(ind.duracion_dias or "")))
-
-            btn_editar = QPushButton()
-            btn_editar.setIcon(QIcon("imagenes/editar.png"))
-            btn_editar.setIconSize(QSize(24, 24))
-            btn_editar.setFlat(True)
-            btn_editar.clicked.connect(partial(self.cargar_indicacion_en_form, ind))
-            self.table_recetas.setCellWidget(row, 6, btn_editar)
-
-            btn_eliminar = QPushButton()
-            btn_eliminar.setIcon(QIcon("imagenes/eliminar.png"))
-            btn_eliminar.setIconSize(QSize(24, 24))
-            btn_eliminar.setFlat(True)
-            btn_eliminar.clicked.connect(partial(self.eliminar_indicacion, ind.idindicacion))
-            self.table_recetas.setCellWidget(row, 7, btn_eliminar)
+        except Exception as e:
+            self.session.rollback()
+            QMessageBox.critical(self, "Error", f"Ocurrió un error guardando la indicación:\n{e}")
 
     # ================== CARGAS GENERALES ==================
     def cargar_todo(self):
@@ -1040,35 +1118,40 @@ class FichaClinicaForm(QDialog):
 
         # ---------- Procedimientos ----------
         if hasattr(self, "table_procedimientos"):
-            self.table_procedimientos.setRowCount(0)
-            can_edit_proc = not getattr(self, "solo_control", False)
-            self.table_procedimientos.setColumnHidden(3, not can_edit_proc)
-            self.table_procedimientos.setColumnHidden(4, not can_edit_proc)
+            with _painting_suspended(self.table_procedimientos):
+                self.table_procedimientos.setRowCount(0)
 
-            for proc in (getattr(paciente, "procedimientos", []) or []):
-                row = self.table_procedimientos.rowCount()
-                self.table_procedimientos.insertRow(row)
-                self.table_procedimientos.setItem(row, 0, QTableWidgetItem(str(proc.fecha)))
+                can_edit_proc = not self.solo_control
+                self.table_procedimientos.setColumnHidden(3, not can_edit_proc)
+                self.table_procedimientos.setColumnHidden(4, not can_edit_proc)
 
-                producto = self.session.query(Producto).filter_by(idproducto=proc.idproducto).first()
-                nombre_proc = producto.nombre if producto else "-"
-                self.table_procedimientos.setItem(row, 1, QTableWidgetItem(nombre_proc))
-                self.table_procedimientos.setItem(row, 2, QTableWidgetItem(proc.comentario or ""))
+                for proc in (getattr(paciente, "procedimientos", []) or []):
+                    row = self.table_procedimientos.rowCount()
+                    self.table_procedimientos.insertRow(row)
 
-                if can_edit_proc:
-                    btn_e = QPushButton()
-                    btn_e.setIcon(QIcon("imagenes/editar.png"))
-                    btn_e.setIconSize(QSize(24, 24))
-                    btn_e.setFlat(True)
-                    btn_e.clicked.connect(partial(self.cargar_procedimiento_en_form, proc))
-                    self.table_procedimientos.setCellWidget(row, 3, btn_e)
+                    self.table_procedimientos.setItem(row, 0, QTableWidgetItem(str(proc.fecha)))
 
-                    btn_d = QPushButton()
-                    btn_d.setIcon(QIcon("imagenes/eliminar.png"))
-                    btn_d.setIconSize(QSize(24, 24))
-                    btn_d.setFlat(True)
-                    btn_d.clicked.connect(partial(self.eliminar_procedimiento, proc.id))
-                    self.table_procedimientos.setCellWidget(row, 4, btn_d)
+                    it = self.session.get(Item, proc.iditem)
+                    nombre_proc = it.nombre if it else "-"
+                    self.table_procedimientos.setItem(row, 1, QTableWidgetItem(nombre_proc))
+                    self.table_procedimientos.setItem(row, 2, QTableWidgetItem(proc.comentario or ""))
+
+                    if can_edit_proc:
+                        btn_e = QPushButton()
+                        btn_e.setIcon(QIcon("imagenes/editar.png"))
+                        btn_e.setIconSize(QSize(24, 24))
+                        btn_e.setFlat(True)
+                        btn_e.clicked.connect(partial(self.cargar_procedimiento_en_form, proc))
+                        self.table_procedimientos.setCellWidget(row, 3, btn_e)
+
+                        btn_d = QPushButton()
+                        btn_d.setIcon(QIcon("imagenes/eliminar.png"))
+                        btn_d.setIconSize(QSize(24, 24))
+                        btn_d.setFlat(True)
+                        btn_d.clicked.connect(partial(self.eliminar_procedimiento, proc.id))
+                        self.table_procedimientos.setCellWidget(row, 4, btn_d)
+
+                self.table_procedimientos.resizeColumnsToContents()
 
         # Si no hay paciente, limpiar y salir
         if not paciente:
@@ -1094,7 +1177,7 @@ class FichaClinicaForm(QDialog):
         self.txt_direccion.setText(paciente.direccion or "")
         self.txt_ruc.setText(paciente.ruc or "")
         self.txt_razon_social.setText(paciente.razon_social or "")
-        self.txt_observaciones.setText(paciente.observaciones or "")
+        self.txt_observaciones.setPlainText(paciente.observaciones or "")
 
         if hasattr(self, "cbo_departamento"):
             dep_id = ciu_id = bar_id = None
@@ -1113,16 +1196,18 @@ class FichaClinicaForm(QDialog):
 
         # ---------- Encargados ----------
         if hasattr(self, "table_encargados"):
-            self.table_encargados.setRowCount(0)
-            for enc_rel in (paciente.encargados or []):
-                encargado = enc_rel.encargado
-                row = self.table_encargados.rowCount()
-                self.table_encargados.insertRow(row)
-                self.table_encargados.setItem(row, 0, QTableWidgetItem(getattr(encargado, "nombre", "") or ""))
-                self.table_encargados.setItem(row, 1, QTableWidgetItem(getattr(encargado, "ci", "") or ""))
-                self.table_encargados.setItem(row, 2, QTableWidgetItem(str(getattr(encargado, "edad", "") or "")))
-                self.table_encargados.setItem(row, 3, QTableWidgetItem(getattr(encargado, "ocupacion", "") or ""))
-                self.table_encargados.setItem(row, 4, QTableWidgetItem(getattr(encargado, "telefono", "") or ""))
+            with _painting_suspended(self.table_encargados):
+                self.table_encargados.setRowCount(0)
+                for enc_rel in (paciente.encargados or []):
+                    encargado = enc_rel.encargado
+                    row = self.table_encargados.rowCount()
+                    self.table_encargados.insertRow(row)
+                    self.table_encargados.setItem(row, 0, QTableWidgetItem(getattr(encargado, "nombre", "") or ""))
+                    self.table_encargados.setItem(row, 1, QTableWidgetItem(getattr(encargado, "ci", "") or ""))
+                    self.table_encargados.setItem(row, 2, QTableWidgetItem(str(getattr(encargado, "edad", "") or "")))
+                    self.table_encargados.setItem(row, 3, QTableWidgetItem(getattr(encargado, "ocupacion", "") or ""))
+                    self.table_encargados.setItem(row, 4, QTableWidgetItem(getattr(encargado, "telefono", "") or ""))
+                self.table_encargados.resizeColumnsToContents()
 
         # ---------- Antecedentes familiares ----------
         if paciente.antecedentes_familiares:
@@ -1132,7 +1217,7 @@ class FichaClinicaForm(QDialog):
             self.txt_patologia_madre.setText(af.patologia_madre or "")
             self.txt_patologia_hermanos.setText(af.patologia_hermanos or "")
             self.txt_patologia_hijos.setText(af.patologia_hijos or "")
-            self.txt_fliares_obs.setText(af.observaciones or "")
+            self.txt_fliares_obs.setPlainText(af.observaciones or "")
 
         # ---------- Patológicos personales ----------
         if paciente.antecedentes_patologicos_personales:
@@ -1152,45 +1237,50 @@ class FichaClinicaForm(QDialog):
             self.chk_psicologicos.setChecked(bool(ap.psicologicos))
             self.chk_audiovisuales.setChecked(bool(ap.audiovisuales))
             self.chk_transfusiones.setChecked(bool(ap.transfusiones))
-            self.txt_otros_patologicos.setText(ap.otros or "")
+            self.txt_otros_patologicos.setPlainText(ap.otros or "")
 
         # ---------- Controles ----------
         if hasattr(self, "table_controles"):
-            self.table_controles.setRowCount(0)
-            can_edit_ctrl = not getattr(self, "solo_control", False)
-            self.table_controles.setColumnHidden(12, not can_edit_ctrl)
-            self.table_controles.setColumnHidden(13, not can_edit_ctrl)
+            with _painting_suspended(self.table_controles):
+                self.table_controles.setRowCount(0)
 
-            for ctrl in (paciente.antecedentes_enfermedad_actual or []):
-                row = self.table_controles.rowCount()
-                self.table_controles.insertRow(row)
-                self.table_controles.setItem(row, 0,  QTableWidgetItem(str(ctrl.fecha)))
-                self.table_controles.setItem(row, 1,  QTableWidgetItem(str(ctrl.peso or "")))
-                self.table_controles.setItem(row, 2,  QTableWidgetItem(str(ctrl.altura or "")))
-                self.table_controles.setItem(row, 3,  QTableWidgetItem(str(ctrl.cint or "")))
-                self.table_controles.setItem(row, 4,  QTableWidgetItem(str(ctrl.omb or "")))
-                self.table_controles.setItem(row, 5,  QTableWidgetItem(str(ctrl.bajo_omb or "")))
-                self.table_controles.setItem(row, 6,  QTableWidgetItem(str(ctrl.p_ideal or "")))
-                self.table_controles.setItem(row, 7,  QTableWidgetItem(str(ctrl.brazo_izquierdo or "")))
-                self.table_controles.setItem(row, 8,  QTableWidgetItem(str(ctrl.brazo_derecho or "")))
-                self.table_controles.setItem(row, 9,  QTableWidgetItem(str(ctrl.pierna_izquierda or "")))
-                self.table_controles.setItem(row, 10, QTableWidgetItem(str(ctrl.pierna_derecha or "")))
-                self.table_controles.setItem(row, 11, QTableWidgetItem(str(ctrl.espalda or "")))
+                can_edit_ctrl = not self.solo_control
+                self.table_controles.setColumnHidden(12, not can_edit_ctrl)
+                self.table_controles.setColumnHidden(13, not can_edit_ctrl)
 
-                if can_edit_ctrl:
-                    btn_editar = QPushButton()
-                    btn_editar.setIcon(QIcon("imagenes/editar.png"))
-                    btn_editar.setIconSize(QSize(24, 24))
-                    btn_editar.setFlat(True)
-                    btn_editar.clicked.connect(partial(self.cargar_control_en_form, ctrl))
-                    self.table_controles.setCellWidget(row, 12, btn_editar)
+                for ctrl in (paciente.antecedentes_enfermedad_actual or []):
+                    row = self.table_controles.rowCount()
+                    self.table_controles.insertRow(row)
 
-                    btn_eliminar = QPushButton()
-                    btn_eliminar.setIcon(QIcon("imagenes/eliminar.png"))
-                    btn_eliminar.setIconSize(QSize(24, 24))
-                    btn_eliminar.setFlat(True)
-                    btn_eliminar.clicked.connect(partial(self.eliminar_control, ctrl.id))
-                    self.table_controles.setCellWidget(row, 13, btn_eliminar)
+                    self.table_controles.setItem(row, 0,  QTableWidgetItem(str(ctrl.fecha)))
+                    self.table_controles.setItem(row, 1,  NumericItem(ctrl.peso))
+                    self.table_controles.setItem(row, 2,  NumericItem(ctrl.altura))
+                    self.table_controles.setItem(row, 3,  NumericItem(ctrl.cint))
+                    self.table_controles.setItem(row, 4,  NumericItem(ctrl.omb))
+                    self.table_controles.setItem(row, 5,  NumericItem(ctrl.bajo_omb))
+                    self.table_controles.setItem(row, 6,  NumericItem(ctrl.p_ideal))
+                    self.table_controles.setItem(row, 7,  NumericItem(ctrl.brazo_izquierdo))
+                    self.table_controles.setItem(row, 8,  NumericItem(ctrl.brazo_derecho))
+                    self.table_controles.setItem(row, 9,  NumericItem(ctrl.pierna_izquierda))
+                    self.table_controles.setItem(row, 10, NumericItem(ctrl.pierna_derecha))
+                    self.table_controles.setItem(row, 11, NumericItem(ctrl.espalda))
+
+                    if can_edit_ctrl:
+                        btn_editar = QPushButton()
+                        btn_editar.setIcon(QIcon("imagenes/editar.png"))
+                        btn_editar.setIconSize(QSize(24, 24))
+                        btn_editar.setFlat(True)
+                        btn_editar.clicked.connect(partial(self.cargar_control_en_form, ctrl))
+                        self.table_controles.setCellWidget(row, 12, btn_editar)
+
+                        btn_eliminar = QPushButton()
+                        btn_eliminar.setIcon(QIcon("imagenes/eliminar.png"))
+                        btn_eliminar.setIconSize(QSize(24, 24))
+                        btn_eliminar.setFlat(True)
+                        btn_eliminar.clicked.connect(partial(self.eliminar_control, ctrl.id))
+                        self.table_controles.setCellWidget(row, 13, btn_eliminar)
+
+                self.table_controles.resizeColumnsToContents()
 
         # ---------- Pestañas dependientes ----------
         self.cargar_recordatorios()
@@ -1198,20 +1288,23 @@ class FichaClinicaForm(QDialog):
 
     # ================== VARIOS ==================
     def cargar_encargados(self):
-        self.table_encargados.setRowCount(0)
-        paciente = self.session.query(Paciente).options(
-            joinedload(Paciente.encargados).joinedload(PacienteEncargado.encargado)
-        ).filter_by(idpaciente=self.idpaciente).first()
-        if paciente:
-            for rel in paciente.encargados:
-                encargado = rel.encargado
-                row = self.table_encargados.rowCount()
-                self.table_encargados.insertRow(row)
-                self.table_encargados.setItem(row, 0, QTableWidgetItem(encargado.nombre or ""))
-                self.table_encargados.setItem(row, 1, QTableWidgetItem(encargado.ci or ""))
-                self.table_encargados.setItem(row, 2, QTableWidgetItem(str(encargado.edad or "")))
-                self.table_encargados.setItem(row, 3, QTableWidgetItem(encargado.ocupacion or ""))
-                self.table_encargados.setItem(row, 4, QTableWidgetItem(encargado.telefono or ""))
+        with _painting_suspended(self.table_encargados):
+            self.table_encargados.setRowCount(0)
+            paciente = (self.session.query(Paciente)
+                        .options(joinedload(Paciente.encargados)
+                                 .joinedload(PacienteEncargado.encargado))
+                        ).filter_by(idpaciente=self.idpaciente).first()
+            if paciente:
+                for rel in paciente.encargados:
+                    enc = rel.encargado
+                    r = self.table_encargados.rowCount()
+                    self.table_encargados.insertRow(r)
+                    self.table_encargados.setItem(r, 0, QTableWidgetItem(enc.nombre or ""))
+                    self.table_encargados.setItem(r, 1, QTableWidgetItem(enc.ci or ""))
+                    self.table_encargados.setItem(r, 2, QTableWidgetItem(str(enc.edad or "")))
+                    self.table_encargados.setItem(r, 3, QTableWidgetItem(enc.ocupacion or ""))
+                    self.table_encargados.setItem(r, 4, QTableWidgetItem(enc.telefono or ""))
+            self.table_encargados.resizeColumnsToContents()
 
     def guardar_todo(self):
         ci_ingresado = self.txt_ci.text().strip()
@@ -1300,8 +1393,7 @@ class FichaClinicaForm(QDialog):
         event.accept()
 
     def eliminar_control(self, cid):
-        """Eliminar un control. En modo solo_control no hace nada."""
-        if getattr(self, "solo_control", False):
+        if self.solo_control:
             return
 
         reply = QMessageBox.question(

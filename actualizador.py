@@ -5,42 +5,79 @@ import sys
 from filecmp import cmp
 import ctypes
 
-from PyQt5.QtWidgets import QApplication, QMessageBox, QProgressDialog
+from PyQt5.QtWidgets import QApplication, QProgressDialog
 from PyQt5.QtCore import Qt
 
 RUTA_LOCAL = r'C:\consultorio'
 RUTA_SERVIDOR = r'\\192.168.1.32\consultorio'
 
-def version_mayor(v1, v2):
-    def normalizar(v): return list(map(int, v.strip().split('.')))
-    return normalizar(v1) > normalizar(v2)
+# ===================== Util =====================
+
+def _parse_version(v: str) -> list[int]:
+    try:
+        parts = [int(p) for p in v.strip().split('.')]
+        return parts
+    except Exception:
+        return []
+
+def version_mayor(v1: str, v2: str) -> bool:
+    """True si v1 > v2 (soporta longitudes distintas)."""
+    a, b = _parse_version(v1), _parse_version(v2)
+    n = max(len(a), len(b))
+    a += [0] * (n - len(a))
+    b += [0] * (n - len(b))
+    return a > b
 
 def leer_version(ruta):
     try:
-        with open(ruta, 'r') as f:
+        with open(ruta, 'r', encoding='utf-8') as f:
             return f.read().strip()
     except Exception as e:
-        print(f"No se pudo leer el archivo de versión: {ruta} - {e}")
+        print(f"[WARN] No se pudo leer versión en {ruta}: {e}")
         return None
 
 def sincronizar_imagenes(origen, destino):
-    if not os.path.exists(origen):
-        print(f"No se encontró la carpeta de imágenes en el servidor: {origen}")
-        return
-    if not os.path.exists(destino):
-        os.makedirs(destino)
-    for archivo in os.listdir(origen):
-        ruta_origen = os.path.join(origen, archivo)
-        ruta_destino = os.path.join(destino, archivo)
-        if not os.path.exists(ruta_destino) or not cmp(ruta_origen, ruta_destino, shallow=False):
-            shutil.copy2(ruta_origen, ruta_destino)
-            print(f"Copiado: {archivo}")
+    try:
+        if not os.path.isdir(origen):
+            print(f"[WARN] Carpeta imágenes en servidor no disponible: {origen}")
+            return
+        os.makedirs(destino, exist_ok=True)
+        for archivo in os.listdir(origen):
+            src = os.path.join(origen, archivo)
+            dst = os.path.join(destino, archivo)
+            try:
+                if not os.path.exists(dst) or not cmp(src, dst, shallow=False):
+                    shutil.copy2(src, dst)
+                    print(f"[INFO] Copiado: {archivo}")
+            except Exception as e:
+                print(f"[WARN] No se pudo copiar {archivo}: {e}")
+    except Exception as e:
+        print(f"[WARN] Error al sincronizar imágenes: {e}")
 
-def mensaje_error(msg):
-    ctypes.windll.user32.MessageBoxW(0, msg, "Error de Actualización", 0)
+def message_box(title: str, msg: str):
+    try:
+        ctypes.windll.user32.MessageBoxW(0, msg, title, 0)
+    except Exception:
+        # En última instancia, imprime a consola.
+        print(f"{title}: {msg}")
+
+def lanzar_local(exe_path: str):
+    if not os.path.isfile(exe_path):
+        message_box("Error", f"No se encontró el ejecutable local:\n{exe_path}")
+        sys.exit(1)
+    try:
+        subprocess.Popen([exe_path])
+    except Exception as e:
+        message_box("Error", f"No se pudo iniciar la aplicación local:\n{e}")
+        sys.exit(1)
+    sys.exit(0)
+
+# ===================== Update =====================
 
 def actualizar_con_progreso():
-    app = QApplication(sys.argv)
+    """Devuelve True si la actualización terminó bien, False si hubo error."""
+    # Creamos la app solo para el diálogo de progreso
+    app = QApplication.instance() or QApplication(sys.argv)
 
     dialog = QProgressDialog("Actualizando aplicación...", None, 0, 0)
     dialog.setWindowTitle("Actualización en progreso")
@@ -50,37 +87,57 @@ def actualizar_con_progreso():
     app.processEvents()
 
     try:
-        shutil.copy2(os.path.join(RUTA_SERVIDOR, 'main.exe'), os.path.join(RUTA_LOCAL, 'main.exe'))
-        print("main.exe actualizado.")
-        shutil.copy2(os.path.join(RUTA_SERVIDOR, 'version.txt'), os.path.join(RUTA_LOCAL, 'version.txt'))
-        print("version.txt actualizado.")
-        sincronizar_imagenes(os.path.join(RUTA_SERVIDOR, 'imagenes'), os.path.join(RUTA_LOCAL, 'imagenes'))
-        print("Carpeta imágenes sincronizada.")
-    except Exception as e:
-        print(f"Error durante la actualización: {e}")
-        dialog.close()
-        mensaje_error(f"Ocurrió un error durante la actualización:\n{e}")
-        sys.exit(1)
+        os.makedirs(RUTA_LOCAL, exist_ok=True)
 
-    dialog.close()
+        # Copiamos binario y version.txt
+        shutil.copy2(os.path.join(RUTA_SERVIDOR, 'main.exe'),
+                     os.path.join(RUTA_LOCAL, 'main.exe'))
+        print("[INFO] main.exe actualizado.")
+
+        shutil.copy2(os.path.join(RUTA_SERVIDOR, 'version.txt'),
+                     os.path.join(RUTA_LOCAL, 'version.txt'))
+        print("[INFO] version.txt actualizado.")
+
+        # Sincronizamos imágenes, pero si falla no abortamos la actualización
+        sincronizar_imagenes(os.path.join(RUTA_SERVIDOR, 'imagenes'),
+                             os.path.join(RUTA_LOCAL, 'imagenes'))
+
+    except Exception as e:
+        print(f"[WARN] Error durante la actualización: {e}")
+        dialog.close()
+        return False
+    finally:
+        dialog.close()
+
+    return True
+
+# ===================== Main =====================
 
 def main():
+    exe_path = os.path.join(RUTA_LOCAL, 'main.exe')
+    os.makedirs(RUTA_LOCAL, exist_ok=True)
+
     version_local = leer_version(os.path.join(RUTA_LOCAL, 'version.txt'))
     version_remota = leer_version(os.path.join(RUTA_SERVIDOR, 'version.txt'))
-    exe_path = os.path.join(RUTA_LOCAL, 'main.exe')
 
+    # Si NO hay versión remota (share caído o falta version.txt): abrir local
     if not version_remota:
-        mensaje_error("No se pudo obtener la versión del servidor. Cancelando.")
-        sys.exit(1)
+        print("[INFO] No hay versión remota disponible; iniciando versión local.")
+        lanzar_local(exe_path)
 
-    if not version_local or version_mayor(version_remota, version_local):
-        actualizar_con_progreso()
-        subprocess.Popen([exe_path])
-        sys.exit(0)
+    # Si no hay versión local o la remota es mayor: intentar actualizar
+    if (not version_local) or version_mayor(version_remota, version_local):
+        print(f"[INFO] Actualizando de {version_local or 'N/A'} a {version_remota}...")
+        ok = actualizar_con_progreso()
+        if not ok:
+            print("[WARN] Falló la actualización; iniciando versión local.")
+            lanzar_local(exe_path)
+        # Si se actualizó, ejecutamos la nueva versión local
+        lanzar_local(exe_path)
     else:
-        # Si está actualizado, entra directo sin mostrar mensaje
-        subprocess.Popen([exe_path])
-        sys.exit(0)
+        # Ya está actualizado: ejecutar directo
+        print("[INFO] Versión local al día; iniciando aplicación.")
+        lanzar_local(exe_path)
 
 if __name__ == "__main__":
     main()

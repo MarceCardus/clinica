@@ -1,6 +1,5 @@
-# models/item.py
 from sqlalchemy import (
-    Column, Integer, String, Boolean, Numeric, Date, Text,
+    Column, Integer, String, Boolean, Numeric, Text,
     ForeignKey, DateTime, func
 )
 from sqlalchemy.orm import relationship
@@ -9,7 +8,7 @@ from .base import Base
 class ItemTipo(Base):
     __tablename__ = "item_tipo"
     iditemtipo = Column(Integer, primary_key=True, autoincrement=True)
-    # Ejemplos de filas: PRODUCTO / INSUMO / AMBOS
+    # Ejemplos: PRODUCTO / INSUMO / AMBOS
     nombre = Column(String(20), unique=True, nullable=False)
 
     items = relationship(
@@ -35,43 +34,35 @@ class Item(Base):
     iditemtipo = Column(Integer, ForeignKey("item_tipo.iditemtipo", ondelete="RESTRICT"), nullable=False)
     tipo = relationship("ItemTipo", back_populates="items")
 
-    # --- Campos heredados de PRODUCTO ---
+    # Si los usabas antes (producto/insumo) — opcionales
     precio_venta = Column(Numeric(14, 2))
     idtipoproducto = Column(Integer, ForeignKey("tipoproducto.idtipoproducto", ondelete="RESTRICT"))
     idespecialidad = Column(Integer, ForeignKey("especialidad.idespecialidad", ondelete="RESTRICT"))
     requiere_recordatorio = Column(Boolean, default=False, nullable=False)
     dias_recordatorio = Column(Integer)
     mensaje_recordatorio = Column(String(160))
-    # para compatibilidad con tu schema actual
-    tipo_producto = Column(String(30))   # opcional (si lo usabas como etiqueta)
+    tipo_producto = Column(String(30))      # etiqueta libre si te sirve
 
-    # --- Campos heredados de INSUMO ---
     unidad = Column(String(20))
-    categoria = Column(String(50))        # 'CONSUMO_INTERNO' / 'USO_PROCEDIMIENTO'
-    tipo_insumo = Column(String(50))      # 'MEDICAMENTO', 'DESCARTABLE', etc.
+    categoria = Column(String(50))          # 'CONSUMO_INTERNO' / 'USO_PROCEDIMIENTO'
+    tipo_insumo = Column(String(50))        # 'MEDICAMENTO', 'DESCARTABLE', etc.
     stock_minimo = Column(Numeric(14, 2))
-    
-    # Flags de uso (según tu captura: uso_interno / uso_procedimiento)
+
     uso_interno = Column(Boolean, nullable=False, default=False)
     uso_procedimiento = Column(Boolean, nullable=False, default=False)
 
-    # Relaciones de negocio
+    # Relaciones de negocio (si existen esas tablas)
     tipoproducto = relationship("TipoProducto", back_populates="items", foreign_keys=[idtipoproducto])
     especialidad  = relationship("Especialidad", back_populates="items", foreign_keys=[idespecialidad])
-    
+
     # Detalles
     compra_detalles = relationship("CompraDetalle", back_populates="item", passive_deletes=True)
     venta_detalles  = relationship("VentaDetalle",  back_populates="item", passive_deletes=True)
 
-# --- Shims de compatibilidad mientras migras usos antiguos ---
-class ProductoMap(Base):
-    __tablename__ = "producto_map"
-    idproducto = Column(Integer, primary_key=True, autoincrement=True)
-    iditem = Column(Integer, ForeignKey("item.iditem", ondelete="RESTRICT"), nullable=False, unique=True)
-    item = relationship("Item")
+    # Inversas con los modelos unificados
+    indicaciones = relationship("Indicacion", back_populates="item", passive_deletes=True)
+    procedimientos = relationship("Procedimiento", back_populates="item", passive_deletes=True)
 
-class InsumoMap(Base):
-    __tablename__ = "insumo_map"
-    idinsumo = Column(Integer, primary_key=True, autoincrement=True)
-    iditem = Column(Integer, ForeignKey("item.iditem", ondelete="RESTRICT"), nullable=False, unique=True)
-    item = relationship("Item")
+    def __repr__(self):
+        return f"<Item id={self.iditem} nombre={self.nombre!r}>"
+
