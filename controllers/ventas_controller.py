@@ -18,7 +18,8 @@ class VentasController:
             idclinica=venta_data.get("idclinica"),
             estadoventa="Cerrada",
             observaciones=venta_data.get("observaciones"),
-            items=venta_data.get("items", [])
+            items=venta_data.get("items", []),
+            nro_factura=venta_data.get("nro_factura"),   # ← agregar
         )
         return v.idventa
 

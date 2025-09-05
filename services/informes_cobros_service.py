@@ -280,6 +280,28 @@ def _norm_forma(s: str | None) -> str:
     return s
 
 
+def _es_anulada(obj) -> bool:
+    """True si el estado (estado/estadoventa/status) contiene 'ANUL'."""
+    for n in ("estadoventa", "estado", "status"):
+        est = _get(obj, n, "")
+        if isinstance(est, str) and "ANUL" in est.upper():
+            return True
+    return False
+
+
+def _calc_total_venta(v: Venta, session: Session | None = None) -> Decimal:
+    """Total de la venta: usa montototal si existe; si no, suma subtotales de detalles."""
+    if hasattr(v, "montototal") and _get(v, "montototal") not in (None, ""):
+        return _num(_get(v, "montototal"))
+    # Fallback: sumar detalles
+    dets = _iter_detalles_posibles(v)
+    st = Decimal(0)
+    for d in dets:
+        _, _, _, _, sub = _detalle_to_row(d, session=session)
+        st += _num(sub)
+    return st
+
+
 # =========================== Informe RESUMEN (tabla en pantalla) ===========================
 
 def obtener_informe_cobros(session: Session, fecha_desde: date, fecha_hasta: date) -> Dict[str, Any]:
@@ -356,7 +378,7 @@ def obtener_informe_cobros(session: Session, fecha_desde: date, fecha_hasta: dat
 
         for idx, imp in enumerate(imputaciones):
             venta: Venta | None = getattr(imp, "venta", None)
-            if not venta:
+            if (not venta) or _es_anulada(venta):
                 continue
 
             # ---- TOTAL VENTA/FACTURA ----
@@ -490,7 +512,7 @@ def obtener_informe_cobros_detallado(session: Session, fecha_desde: date, fecha_
         "T. Débito": Decimal(0),
     }
 
-    # NUEVO: acumuladores Venta/Saldo del período
+    # Acumuladores Venta/Saldo del período (se recalculan más abajo)
     total_ventas_periodo_num = Decimal(0)
     total_saldo_periodo_num = Decimal(0)
 
@@ -513,7 +535,7 @@ def obtener_informe_cobros_detallado(session: Session, fecha_desde: date, fecha_
 
         for idx, imp in enumerate(imputaciones):
             v = getattr(imp, "venta", None)
-            if not v:
+            if not v or _es_anulada(v):
                 continue
             vid = getattr(v, "idventa", None)
             if vid is None:
@@ -541,7 +563,7 @@ def obtener_informe_cobros_detallado(session: Session, fecha_desde: date, fecha_
             ventas_ids.add(vid)
             sumatorias_forma_num[forma] += _num(monto)
 
-    # Pagado histórico por venta (para saldo actual)
+    # Pagado histórico por venta (para saldo actual si no hay v.saldo)
     amount_col = None
     for n in ["monto", "importe", "valor", "monto_imputado", "montoimputado",
               "monto_aplicado", "montoaplicado", "monto_pago", "monto_pagado"]:
@@ -564,10 +586,12 @@ def obtener_informe_cobros_detallado(session: Session, fecha_desde: date, fecha_
         )
         pagado_hist = {int(r[0]): _num(r[1]) for r in rows}
 
-    # Armar estructura por venta
+    # Armar estructura por venta (solo las que tienen cobros en el período)
     if ventas_ids:
         q = session.query(Venta).filter(getattr(Venta, "idventa").in_(list(ventas_ids)))
         for v in q.all():
+            if _es_anulada(v):
+                continue
             vid = int(getattr(v, "idventa"))
             fventa = _fmt_fecha(getattr(v, "fecha", getattr(v, "fechaventa", None)))
             factura = _factura_str(v)
@@ -575,12 +599,7 @@ def obtener_informe_cobros_detallado(session: Session, fecha_desde: date, fecha_
 
             # Detalles
             items = []
-            total_venta_num = _pick_amount(v, [
-                "montototal",
-                "total", "total_final", "totalventa", "total_venta",
-                "monto_total", "total_factura", "importe_total",
-                "totalgeneral", "total_general", "totalconiva", "total_con_iva",
-            ]) or Decimal(0)
+            total_venta_num = _calc_total_venta(v, session=session)
 
             dets = _iter_detalles_posibles(v)
             st_suma = Decimal(0)
@@ -603,10 +622,6 @@ def obtener_informe_cobros_detallado(session: Session, fecha_desde: date, fecha_
             else:
                 saldo_num = max(Decimal(0), total_venta_num - pagado_hist.get(vid, Decimal(0)))
 
-            # Acumular totales del período
-            total_ventas_periodo_num += total_venta_num
-            total_saldo_periodo_num += saldo_num
-
             ventas.append({
                 "idventa": vid,
                 "fecha_venta": fventa,
@@ -618,9 +633,31 @@ def obtener_informe_cobros_detallado(session: Session, fecha_desde: date, fecha_
                 "saldo": _fmt_miles(saldo_num),
             })
 
+    # === Totales del PERÍODO por fecha de VENTA (NO por cobros) ===
+    # Usa SUM directo en SQL sobre montototal y saldo, excluyendo anuladas.
+    fecha_col = getattr(Venta, "fecha", None)
+    estado_col = getattr(Venta, "estadoventa", None) or getattr(Venta, "estado", None)
+
+    # Base filter
+    filtros = []
+    if fecha_col is not None:
+        filtros += [fecha_col >= fecha_desde, fecha_col <= fecha_hasta]
+    if estado_col is not None:
+        filtros += [~func.upper(estado_col).like("%ANUL%")]
+
+    # Suma de venta (montototal) — existe en tu modelo
+    total_ventas_periodo_num = _num(
+        session.query(func.coalesce(func.sum(Venta.montototal), 0)).filter(*filtros).scalar() or 0
+    )
+
+    # Suma de saldo — también existe en tu modelo
+    total_saldo_periodo_num = _num(
+        session.query(func.coalesce(func.sum(Venta.saldo), 0)).filter(*filtros).scalar() or 0
+    )
+
     total_cobrado_num = sum(sumatorias_forma_num.values())
     return {
-        "ventas": ventas,
+        "ventas": ventas,  # ventas que tuvieron cobros en el período (para el detalle)
         "sumatorias_forma": {k: _fmt_miles(v) for k, v in sumatorias_forma_num.items()},
         "total_cobrado": _fmt_miles(total_cobrado_num),
         "cant_ventas": len(ventas),

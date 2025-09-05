@@ -269,14 +269,7 @@ def exportar_pdf_informe_stock_mensual(session: Session, *, year: int, month: in
 
     story = []
     titulo = Paragraph("<b>Informe de Stock Mensual</b>", styles["Title"])
-    leyenda = Paragraph(
-        f"Período: {SPANISH_MONTHS[month]} {year} — "
-        f"Inicial = stock al {info.corte_inicial.strftime('%d/%m/%Y')} • "
-        f"Ingreso = compras de {SPANISH_MONTHS[month]} {year} • "
-        f"Ventas = ventas de {SPANISH_MONTHS[month]} {year} • "
-        f"Insumo = salidas no-venta de {SPANISH_MONTHS[month]} {year}",
-        styles["Normal"]
-    )
+    leyenda = Paragraph(f"Período: {SPANISH_MONTHS[month]} {year}", styles["Normal"])
     story += [titulo, Spacer(1, 6*mm), leyenda, Spacer(1, 6*mm)]
 
     # Cabecera sin Unidad
@@ -346,7 +339,12 @@ def exportar_excel_informe_stock_mensual(session: Session, *, year: int, month: 
                 "Actual": int(r.actual),
             })
     with pd.ExcelWriter(ruta_xlsx, engine="openpyxl") as writer:
-        pd.DataFrame(rows).to_excel(writer, index=False, sheet_name=f"{SPANISH_MONTHS[month]} {year}")
+        sheet_name = f"{SPANISH_MONTHS[month]} {year}"
+        # Escribimos el período en A1 y la tabla desde la fila 3
+        pd.DataFrame({"Período:": [f"{SPANISH_MONTHS[month]} {year}"]}).to_excel(
+            writer, index=False, header=False, sheet_name=sheet_name, startrow=0, startcol=0
+        )
+        pd.DataFrame(rows).to_excel(writer, index=False, sheet_name=sheet_name, startrow=2)
     return ruta_xlsx
 
    

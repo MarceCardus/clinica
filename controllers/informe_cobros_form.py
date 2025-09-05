@@ -141,6 +141,7 @@ class InformeCobrosForm(QDialog):
         self.tabla.setSortingEnabled(True)
         self.tabla.horizontalHeader().setStretchLastSection(True)
 
+
     # ---------------- PDF (RESUMEN) ----------------
     def exportar_pdf_resumen(self):
         desde = self.date_desde.date().toPyDate()
@@ -190,8 +191,14 @@ def exportar_cobros_pdf_resumen(datos, sumatorias, desde, hasta,
                                 anulaciones_ventas, anulaciones_cobros,
                                 total_ingreso="0",
                                 path_pdf="informe_cobros.pdf"):
-    doc = SimpleDocTemplate(path_pdf, pagesize=landscape(A4),
-                            rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
+    # --- márgenes en mm ---
+    M = 12 * mm  # probá 8–15 mm a gusto
+    page_w, page_h = landscape(A4)
+    doc = SimpleDocTemplate(
+        path_pdf, pagesize=(page_w, page_h),
+        leftMargin=M, rightMargin=M, topMargin=M, bottomMargin=M
+    )
+    W = page_w - doc.leftMargin - doc.rightMargin
     elements = []
     styles = getSampleStyleSheet()
     styleN = styles["Normal"]
@@ -252,7 +259,19 @@ def exportar_cobros_pdf_resumen(datos, sumatorias, desde, hasta,
     totales = "  ".join(partes) + f"    T. Ingreso: {total_ingreso}" + f"    T. Saldo: {total_saldo}"
     data.append([""] * 7 + [f"Totales: {totales}"])
 
-    t = Table(data, colWidths=[60, 150, 70, 70, 80, 80, 80, 90])
+    t = Table(
+        data,
+        colWidths=[
+            W*0.09,  # Factura
+            W*0.26,  # Cliente
+            W*0.09,  # Fch Factura
+            W*0.09,  # Fch Cobro
+            W*0.12,  # Total
+            W*0.12,  # Pagado
+            W*0.11,  # Saldo
+            W*0.12,  # Forma
+        ]
+    )
     t.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#175ca4")),
         ('TEXTCOLOR', (0,0), (-1,0), colors.white),
@@ -318,8 +337,13 @@ def exportar_cobros_pdf_resumen(datos, sumatorias, desde, hasta,
 
 
 def exportar_cobros_pdf_detallado(res: dict, desde, hasta, path_pdf="informe_cobros_detallado.pdf"):
-    doc = SimpleDocTemplate(path_pdf, pagesize=A4,
-                            rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
+    M = 12 * mm
+    page_w, page_h = A4
+    doc = SimpleDocTemplate(
+        path_pdf, pagesize=(page_w, page_h),
+        leftMargin=M, rightMargin=M, topMargin=M, bottomMargin=M
+    )
+    W = page_w - doc.leftMargin - doc.rightMargin
     elements = []
     styles = getSampleStyleSheet()
     styleN = styles["Normal"]
@@ -335,7 +359,7 @@ def exportar_cobros_pdf_detallado(res: dict, desde, hasta, path_pdf="informe_cob
 
     # Helper separador delgado
     def _hr():
-        t = Table([[""]], colWidths=[540])
+        t = Table([[""]], colWidths=[W])
         t.setStyle(TableStyle([('LINEBELOW', (0,0), (-1,-1), 0.25, colors.HexColor("#d0d5dd"))]))
         return t
 
@@ -360,7 +384,11 @@ def exportar_cobros_pdf_detallado(res: dict, desde, hasta, path_pdf="informe_cob
         # Fila total
         data.append(["", "", "", Paragraph("<b>Total Venta</b>", styleN), Paragraph(f"<b>Gs {v.get('total_venta','')}</b>", styleN)])
 
-        t = Table(data, colWidths=[70, 300, 50, 90, 90])
+        t = Table(
+            data,
+            colWidths=[W*0.14, W*0.46, W*0.09, W*0.15, W*0.16]
+            #  cód      descr        cant     precio   subtotal
+        )
         t.setStyle(TableStyle([
             ('GRID', (0,0), (-1,-2), 0.5, colors.grey),
             ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#e9edf7")),
@@ -405,7 +433,7 @@ def exportar_cobros_pdf_detallado(res: dict, desde, hasta, path_pdf="informe_cob
         ["Venta",            f"Gs {res.get('total_ventas_periodo','0')}"],
         ["Saldo",            f"Gs {res.get('total_saldo_periodo','0')}"],
     ]
-    t_tot = Table(data_totales, colWidths=[240, 240])
+    t_tot = Table(data_totales, colWidths=[W*0.5, W*0.5])
     t_tot.setStyle(TableStyle([
         ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
         ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#e9edf7")),

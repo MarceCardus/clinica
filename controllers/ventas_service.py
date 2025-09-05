@@ -12,8 +12,14 @@ from models.item import Item
 from models.paquete import Paquete
 from models.paquete_producto import PaqueteProducto  # si prorrateás paquetes
 from models.StockMovimiento import StockMovimiento
-
+from models.plan_sesiones import PlanSesiones, PlanSesion, PlanEstado, SesionEstado
+from models.plan_tipo import PlanTipo
 MERGE_DETALLES_REPETIDOS = True
+
+#helper para calcular sesiones según item y cantidad
+def _total_sesiones_para_item(item, cantidad:int|Decimal) -> int:
+    base = int(item.sesiones_incluidas or (item.plan_tipo.sesiones_por_defecto if item.plan_tipo else 1) or 1)
+    return max(1, base * int(cantidad or 1))
 
 
 # ----------------- utilidades -----------------
@@ -82,6 +88,41 @@ def _agregar_detalle_item(
     )
     session.add(det)
     return det
+
+def _crear_planes_por_venta(session, venta):
+    from sqlalchemy import select
+    from models.venta_detalle import VentaDetalle
+    from models.item import Item
+    planes = []
+    rows = session.execute(
+        select(VentaDetalle, Item)
+        .join(Item, Item.iditem == VentaDetalle.iditem)
+        .where(VentaDetalle.idventa == venta.idventa, Item.idplantipo.isnot(None))
+    ).all()
+
+    for det, it in rows:
+        total = _total_sesiones_para_item(it, det.cantidad)
+        plan = PlanSesiones(
+            idpaciente=venta.idpaciente,
+            idventadet=det.idventadet,                 # ← tu PK en venta_detalle
+            iditem_procedimiento=it.iditem,            # ← ítem que origina el plan
+            idplantipo=it.idplantipo,
+            total_sesiones=total,
+            sesiones_completadas=0,
+            estado=PlanEstado.ACTIVO,
+            fecha_inicio=venta.fecha,
+            notas=None,
+        )
+        session.add(plan); session.flush()
+
+        for i in range(1, total + 1):
+            session.add(PlanSesion(
+                idplan=plan.idplan,
+                nro=i,
+                estado=SesionEstado.PROGRAMADA
+            ))
+        planes.append(plan)
+    return planes
 
 
 # ----------------- API principal -----------------
@@ -255,22 +296,10 @@ def registrar_venta(
 
     v.montototal = _money(total)
     v.saldo = _money(total)
+    _crear_planes_por_venta(session, v)
     session.commit()
     return v
-def crear_venta(self, venta_data: dict) -> int:
-        v = registrar_venta(
-            session=self.session,
-            fecha=venta_data.get("fecha"),
-            idpaciente=venta_data.get("idpaciente"),
-            idprofesional=venta_data.get("idprofesional"),
-            idclinica=venta_data.get("idclinica"),
-            estadoventa="Cerrada",
-            observaciones=venta_data.get("observaciones"),
-            items=venta_data.get("items", []),
-            nro_factura=venta_data.get("nro_factura"),
-            prorratear_paquetes=False,  # o True si querés “explotar” paquetes
-        )
-        return v.idventa
+
 def anular_venta(session, idventa):
     venta = session.query(Venta).get(idventa)
     if not venta:

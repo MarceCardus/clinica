@@ -71,7 +71,8 @@ from models.clinica import Clinica
 from models.producto import Producto
 from models.paquete import Paquete
 from utils.db import SessionLocal
-
+from controllers.abm_plan_tipo import ABMPlanTipo
+from controllers.abm_aparatos import ABMAparatos
 
 class MainWindow(QMainWindow):
     def __init__(self, usuario: Usuario, rol: str, session):
@@ -173,6 +174,14 @@ class MainWindow(QMainWindow):
         action_abm_item.triggered.connect(self.abrir_items)
         self.menu_mantenimiento.addAction(action_abm_item)
 
+        action_abm_planTipo = QAction("Tipos de Plan", self)
+        action_abm_planTipo.triggered.connect(self.abrir_plan_tipo)
+        self.menu_mantenimiento.addAction(action_abm_planTipo)
+
+        action_abm_aparato = QAction("Tipos de Aparatos", self)
+        action_abm_aparato.triggered.connect(self.abrir_aparato)
+        self.menu_mantenimiento.addAction(action_abm_aparato)
+
         action_cambiar = QAction("Cambiar contraseña", self)
         action_cambiar.triggered.connect(self.on_cambiar_password)
         self.menu_mantenimiento.addAction(action_cambiar) 
@@ -245,12 +254,20 @@ class MainWindow(QMainWindow):
         lbl_usuario.setStyleSheet("font-weight: bold; color: #175ca4; margin-right:20px;")
         status_bar.addPermanentWidget(lbl_usuario)
 
+    def abrir_plan_tipo(self):
+        dlg = ABMPlanTipo(self)
+        dlg.exec_()
+
     def abrir_informe_stock_mensual(self):
         dlg = InformeStockMensualForm(self) 
         dlg.exec_() 
 
     def abrir_informe_cobros(self):
         dlg = InformeCobrosForm(self.session, self)
+        dlg.exec_()
+
+    def abrir_aparato(self):
+        dlg = ABMAparatos(self)
         dlg.exec_()
 
     def on_cambiar_password(self):

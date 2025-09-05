@@ -63,7 +63,8 @@ class ABMVenta(QWidget):
         self.setWindowTitle("Ventas")
         self.resize(980, 540)        # <<< igual que Compras
 
-        self._setup_ui()  
+        self._setup_ui()
+        self.btn_planes.clicked.connect(self.abrir_planes_paciente)
         self.btn_buscar_venta.clicked.connect(self.abrir_buscador_venta)
         QShortcut(QKeySequence("Ctrl+F"), self, activated=self.abrir_buscador_venta)           # <<< crea los widgets
         QShortcut(QKeySequence("Ctrl+G"), self, activated=self._on_guardar_click)
@@ -88,7 +89,30 @@ class ABMVenta(QWidget):
         self.cbo_paciente.setFocus()
         self.cargar_ventas()
         self.modo_edicion = False
-    
+        self._update_buttons_state()
+        
+
+    def abrir_planes_paciente(self):
+        if not self.modo_edicion:
+            QMessageBox.information(self, "Planes",
+                "Para gestionar los planes, primero presioná Editar.")
+            return
+        if not self.idventa_actual:
+            QMessageBox.information(self, "Planes", "No hay una venta cargada.")
+            return
+
+        pid = self.cbo_paciente.currentData()
+        if not pid:
+            QMessageBox.information(self, "Planes", "Seleccione un paciente primero.")
+            return
+
+        try:
+            from controllers.planes_paciente import PlanesPaciente
+            dlg = PlanesPaciente(self, idpaciente=pid)
+            dlg.exec_()
+        except Exception as e:
+            QMessageBox.information(self, "Planes",
+                f"No se pudo abrir el panel de planes.\n{e}")
     # Localiza el QMdiSubWindow real (si existe)
     def _mdi_subwindow(self):
         w = self.parentWidget()
@@ -164,6 +188,14 @@ class ABMVenta(QWidget):
         self.cbo_clinica = QComboBox(); left_layout.addRow(QLabel("Clínica:"), self.cbo_clinica)
 
         self.observaciones = QTextEdit(); left_layout.addRow(QLabel("Observaciones:"), self.observaciones)
+        self.btn_planes = QPushButton("Planes…")
+        self.btn_planes.setStyleSheet("""
+        QPushButton { background-color: #276ef1; color: white; font-weight: bold;
+                    border-radius: 6px; padding: 4px 12px; }
+        QPushButton:hover:!disabled { background-color: #5181f3; }
+        QPushButton:disabled { background-color: #e9ecef; color: #6c757d; }
+        """)
+        left_layout.addRow(QLabel(""), self.btn_planes)
 
         self.lbl_estado = QLabel("Activo")
         self.lbl_estado.setStyleSheet("font-weight:bold; color: green; margin-bottom:6px;")
@@ -206,11 +238,10 @@ class ABMVenta(QWidget):
         pie_layout = QHBoxLayout()
         self.btn_buscar_venta = QPushButton(QIcon("imagenes/buscar.png"), "Buscar")
         self.btn_buscar_venta.setStyleSheet("""
-            QPushButton {
-                background-color: #0d6efd; color: white; font-weight: bold;
-                border-radius: 6px; padding: 4px 12px;
-            }
-            QPushButton:hover { background-color: #b6d4fe; color: #0d6efd; }
+            QPushButton { background-color: #0d6efd; color: white; font-weight: bold;
+                        border-radius: 6px; padding: 4px 12px; }
+            QPushButton:hover:!disabled { background-color: #b6d4fe; color: #0d6efd; }
+            QPushButton:disabled { background-color: #e9ecef; color: #6c757d; }
         """)
         pie_layout.addWidget(self.btn_buscar_venta)
         self.btn_primero   = QPushButton(QIcon("imagenes/primero.png"), "")
@@ -219,16 +250,12 @@ class ABMVenta(QWidget):
         self.btn_ultimo    = QPushButton(QIcon("imagenes/ultimo.png"), "")
         for btn in [self.btn_primero, self.btn_anterior, self.btn_siguiente, self.btn_ultimo]:
             btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #007bff;
-                    color: #007bff;
-                    border-radius: 6px;
-                    padding: 4px 10px;
-                }
-                QPushButton:hover {
-                    background-color: #b6d4fe;
-                }
+            QPushButton { background-color: #007bff; color: #007bff;
+                        border-radius: 6px; padding: 4px 10px; }
+            QPushButton:hover:!disabled { background-color: #b6d4fe; }
+            QPushButton:disabled { background-color: #e9ecef; color: #6c757d; }
             """)
+
         for b in [self.btn_primero, self.btn_anterior, self.btn_siguiente, self.btn_ultimo]:
             pie_layout.addWidget(b)
         self.btn_nuevo    = QPushButton(QIcon("imagenes/nuevo.png"), "Nuevo")
@@ -236,9 +263,10 @@ class ABMVenta(QWidget):
         self.btn_anular   = QPushButton(QIcon("imagenes/eliminar.png"), "Anular")
         self.btn_editar   = QPushButton(QIcon("imagenes/editar.png"), "Editar")
         self.btn_editar.setStyleSheet("""
-            QPushButton { background-color: #fd7e14; color: white; font-weight: bold;
-                        border-radius: 6px; padding: 4px 18px; }
-            QPushButton:hover { background-color: #ffb37a; }
+        QPushButton { background-color: #fd7e14; color: white; font-weight: bold;
+                    border-radius: 6px; padding: 4px 18px; }
+        QPushButton:hover:!disabled { background-color: #ffb37a; }
+        QPushButton:disabled { background-color: #e9ecef; color: #6c757d; }
         """)
         self.btn_editar.clicked.connect(self.editar_actual)
         botones = [
@@ -246,18 +274,19 @@ class ABMVenta(QWidget):
             (self.btn_guardar, "#28a745", "white"),
             (self.btn_anular, "#dc3545", "white"),
         ]
-        for btn, fondo, color in botones:
+        for btn, fondo in [(self.btn_nuevo, "#007bff"),
+                   (self.btn_guardar, "#28a745"),
+                   (self.btn_anular, "#dc3545")]:
             btn.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: {fondo};
-                    color: {color};
-                    font-weight: bold;
-                    border-radius: 6px;
-                    padding: 4px 18px;
-                }}
-                QPushButton:hover {{
-                    background-color: #b6d4fe;
-                }}
+            QPushButton {{
+                background-color: {fondo};
+                color: white;
+                font-weight: bold;
+                border-radius: 6px;
+                padding: 4px 18px;
+            }}
+            QPushButton:hover:!disabled {{ background-color: #b6d4fe; color: #0d6efd; }}
+            QPushButton:disabled {{ background-color: #e9ecef; color: #6c757d; }}
             """)
         for b in [self.btn_nuevo, self.btn_editar, self.btn_guardar, self.btn_anular]:
             pie_layout.addWidget(b)
@@ -283,7 +312,37 @@ class ABMVenta(QWidget):
             self.actualizar_total_pie()
             self.grilla.blockSignals(False)
 
+    def _update_buttons_state(self):
+        """Centraliza el estado de todos los botones."""
+        has_loaded = self.idventa_actual is not None
+        modo_ed = getattr(self, "modo_edicion", False)
+        modo_nuevo = getattr(self, "modo_nuevo", False)
 
+        self.btn_planes.setEnabled(modo_ed and has_loaded)
+
+        if modo_nuevo:
+            # Creando una venta
+            self.btn_guardar.setEnabled(True)
+            self.btn_nuevo.setEnabled(False)
+            self.btn_editar.setEnabled(False)
+            self.btn_anular.setEnabled(False)
+            self._toggle_nav(False)
+
+        elif modo_ed:
+            # Editando una venta ya guardada (edición mínima)
+            self.btn_guardar.setEnabled(True)
+            self.btn_nuevo.setEnabled(False)
+            self.btn_editar.setEnabled(False)
+            self.btn_anular.setEnabled(False)
+            self._toggle_nav(False)
+
+        else:
+            # Solo lectura (venta mostrada pero no en edición)
+            self.btn_guardar.setEnabled(False)
+            self.btn_nuevo.setEnabled(True)
+            self.btn_editar.setEnabled(has_loaded)
+            self.btn_anular.setEnabled(has_loaded)
+            self._toggle_nav(True)
 
     def agregar_item_a_grilla(self, it):
         tipo, _id, nombre, pv = it
@@ -392,6 +451,7 @@ class ABMVenta(QWidget):
         self.idx_actual = -1
         self.lbl_estado.setText("Activo")
         self.lbl_estado.setStyleSheet("font-weight:bold; color: green;")
+        self._update_buttons_state()
 
         # habilita/inhabilita campos y botones propios del modo
         self.set_campos_enabled(editable)
@@ -523,6 +583,7 @@ class ABMVenta(QWidget):
         self.set_modo_edicion_minima(False)
         self.actualizar_total_pie()
         self._pintar_estado(v)
+        self._update_buttons_state()
         self.grilla.blockSignals(False)
         
 
@@ -693,6 +754,7 @@ class ABMVenta(QWidget):
             self.modo_nuevo = False
             self.cargar_ventas()
             self.limpiar_formulario(editable=False)
+            self._update_buttons_state()
         except Exception as e:
             self.session.rollback()
             QMessageBox.critical(self, "Error", str(e))
@@ -710,6 +772,7 @@ class ABMVenta(QWidget):
             QMessageBox.information(self, "Éxito", "Venta anulada correctamente.")
             self.cargar_ventas()
             self.limpiar_formulario(editable=False)
+            self._update_buttons_state()
         except Exception as e:
             self.session.rollback()
             QMessageBox.critical(self, "Error", str(e))
@@ -773,6 +836,7 @@ class ABMVenta(QWidget):
 
         # Arrancar foco en N° Factura
         self.txt_nro_factura.setFocus()
+        self._update_buttons_state()
 
     def calcular_total_row(self, row: int):
         try:
@@ -902,26 +966,17 @@ class ABMVenta(QWidget):
     def set_modo_edicion_minima(self, on: bool):
         self.modo_edicion = on
         if on:
-            # Editar mínimo (sobre una venta existente)
+            # Edición mínima: campos de cabecera bloqueados salvo N° factura + observaciones
             self.set_campos_enabled(False)
             self.txt_nro_factura.setEnabled(True)
             self.observaciones.setEnabled(True)
             self.btn_guardar.setEnabled(True)
-
-            self.btn_editar.setEnabled(False)
-            self.btn_anular.setEnabled(False)
-            self.btn_nuevo.setEnabled(False)
-            self._toggle_nav(False)
         else:
-            # Restaurar según si estoy creando (modo_nuevo) o solo visualizando
+            # Restaurar según modo_nuevo o visualización
             self.set_campos_enabled(self.modo_nuevo)
             self.btn_guardar.setEnabled(self.modo_nuevo)
-            self.btn_nuevo.setEnabled(not self.modo_nuevo)
 
-            has_loaded = self.idventa_actual is not None
-            self.btn_editar.setEnabled((not self.modo_nuevo) and has_loaded)
-            self.btn_anular.setEnabled((not self.modo_nuevo) and has_loaded)
-            self._toggle_nav(not self.modo_nuevo)
+        self._update_buttons_state()
 
     def abrir_buscador_venta(self):
         dlg = BuscarVentaDialog(self.session, self)

@@ -18,7 +18,7 @@ from models.tipoproducto import TipoProducto
 from models.especialidad import Especialidad
 from models.compra_detalle import CompraDetalle
 from models.venta_detalle  import VentaDetalle
-
+from models.plan_tipo import PlanTipo
 
 # --- util rutas de icono (con fallback) ---
 def resource_path(*parts):
@@ -396,6 +396,7 @@ class ABMItems(QDialog):
 
 
 # ------------ FORM MODAL ------------
+# ------------ FORM MODAL ------------
 class FormularioItem(QDialog):
     TIPOS_INSUMO = ["Medicamento", "Descartable", "Reactivo", "Limpieza", "Cafetería","Varios"]
 
@@ -413,7 +414,15 @@ class FormularioItem(QDialog):
     def init_ui(self):
         layout = QVBoxLayout(self)
 
+        # --- Comunes (encabezado) ---
         self.txt_nombre = QLineEdit()
+
+        # NUEVO: código de barra
+        self.txt_codigo = QLineEdit()
+        self.txt_codigo.setPlaceholderText("Escaneá o escribí el código…")
+        self.txt_codigo.setClearButtonEnabled(True)
+        self.txt_codigo.setMaxLength(64)
+
         self.cbo_tipo_general = QComboBox()  # ItemTipo (PRODUCTO/INSUMO/AMBOS)
         self.txt_descripcion = QTextEdit()
         self.chk_activo = QCheckBox("Activo"); self.chk_activo.setChecked(True)
@@ -423,7 +432,6 @@ class FormularioItem(QDialog):
 
         # === Tab Producto ===
         tab_prod = QWidget(); lp = QVBoxLayout(tab_prod)
-        # PRECIO ENTERO con separador de miles
         self.sp_precio = QSpinBox()
         self.sp_precio.setLocale(self._locale)
         self.sp_precio.setGroupSeparatorShown(True)
@@ -463,9 +471,13 @@ class FormularioItem(QDialog):
         self.tabs.addTab(tab_prod, "Producto")
         self.tabs.addTab(tab_ins, "Insumo")
 
-        # Header comunes
+        # Header comunes (orden pedido: Nombre → Código → Tipo → Descripción → Activo)
         head = QVBoxLayout()
         head.addWidget(QLabel("Nombre")); head.addWidget(self.txt_nombre)
+
+        head.addWidget(QLabel("Código de barra"))   # ← NUEVO
+        head.addWidget(self.txt_codigo)             # ← NUEVO
+
         head.addWidget(QLabel("Tipo (GENERAL)")); head.addWidget(self.cbo_tipo_general)
         head.addWidget(QLabel("Descripción")); head.addWidget(self.txt_descripcion)
         head.addWidget(self.chk_activo)
@@ -485,7 +497,7 @@ class FormularioItem(QDialog):
 
         # lógica de UI
         self.cbo_tipo_general.currentIndexChanged.connect(self._toggle_tabs_by_tipo)
-        
+
     # Combos
     def load_combos(self):
         # ItemTipo
@@ -509,13 +521,13 @@ class FormularioItem(QDialog):
         txt = (self.cbo_tipo_general.currentText() or "").upper()
         self.tabs.setTabEnabled(0, txt in ("PRODUCTO", "AMBOS"))
         self.tabs.setTabEnabled(1, txt in ("INSUMO", "AMBOS"))
-        # por defecto para PRODUCTO: uso procedimiento en True
         if txt == "PRODUCTO" and not (self.chk_uso_interno.isChecked() or self.chk_uso_proc.isChecked()):
             self.chk_uso_proc.setChecked(True)
 
     def cargar_datos(self):
         it = self.item
         self.txt_nombre.setText(it.nombre or "")
+        self.txt_codigo.setText(it.codigo_barra or "")  # ← NUEVO
         self.txt_descripcion.setPlainText(it.descripcion or "")
         self.chk_activo.setChecked(bool(it.activo))
 
@@ -526,10 +538,10 @@ class FormularioItem(QDialog):
         # Producto
         if it.precio_venta is not None: self.sp_precio.setValue(int(it.precio_venta))
         if it.idtipoproducto:
-            ix = self.cbo_tipoproducto.findData(it.idtipoproducto);
+            ix = self.cbo_tipoproducto.findData(it.idtipoproducto)
             if ix != -1: self.cbo_tipoproducto.setCurrentIndex(ix)
         if it.idespecialidad:
-            ix = self.cbo_especialidad.findData(it.idespecialidad);
+            ix = self.cbo_especialidad.findData(it.idespecialidad)
             if ix != -1: self.cbo_especialidad.setCurrentIndex(ix)
         self.chk_requiere.setChecked(bool(it.requiere_recordatorio))
         self.sp_dias.setValue(int(it.dias_recordatorio or 0))
@@ -546,8 +558,6 @@ class FormularioItem(QDialog):
         self.chk_uso_proc.setChecked(bool(it.uso_procedimiento))
         self._toggle_tabs_by_tipo()
 
-    
-
     def guardar(self):
         nombre = (self.txt_nombre.text() or "").strip()
         if not nombre:
@@ -557,6 +567,16 @@ class FormularioItem(QDialog):
         if not iditemtipo:
             QMessageBox.warning(self, "Validación", "Debe seleccionar el tipo general.")
             return
+
+        # NUEVO: tomar código y validar unicidad si viene cargado
+        codigo = (self.txt_codigo.text() or "").strip() or None
+        if codigo:
+            q = self.session.query(Item).filter(Item.codigo_barra == codigo)
+            if self.item is not None:
+                q = q.filter(Item.iditem != self.item.iditem)
+            if self.session.query(q.exists()).scalar():
+                QMessageBox.warning(self, "Validación", "Ya existe otro ítem con ese código de barra.")
+                return
 
         # Producto (precio entero)
         precio = int(self.sp_precio.value())
@@ -574,7 +594,7 @@ class FormularioItem(QDialog):
         uso_int = self.chk_uso_interno.isChecked()
         uso_proc = self.chk_uso_proc.isChecked()
 
-        # Derivar categoría desde flags (opcional persistir como texto)
+        # Derivar categoría desde flags (opcional)
         categoria = None
         if uso_int and uso_proc: categoria = "AMBOS"
         elif uso_int:            categoria = "CONSUMO_INTERNO"
@@ -583,13 +603,13 @@ class FormularioItem(QDialog):
         tipo_general = (self.cbo_tipo_general.currentText() or "").upper()
         if tipo_general == "PRODUCTO":
             unidad = tin = None; stock_min = None
-            # si el usuario no marcó nada, fuerzo uso_proc
             if not (uso_int or uso_proc): uso_proc = True
         elif tipo_general == "INSUMO":
             precio = 0; idtp = None; idesp = None; req = False; dias = 0; msg = None
 
         data = dict(
             nombre=nombre,
+            codigo_barra=codigo,              # ← NUEVO
             descripcion=(self.txt_descripcion.toPlainText() or None),
             activo=self.chk_activo.isChecked(),
             iditemtipo=iditemtipo,
@@ -611,13 +631,18 @@ class FormularioItem(QDialog):
             uso_procedimiento=uso_proc,
         )
 
-        if self.item is None:
-            self.session.add(Item(**data))
-        else:
-            for k, v in data.items():
-                setattr(self.item, k, v)
+        try:
+            if self.item is None:
+                self.session.add(Item(**data))
+            else:
+                for k, v in data.items():
+                    setattr(self.item, k, v)
+            self.session.commit()
+        except IntegrityError:
+            self.session.rollback()
+            QMessageBox.warning(self, "Error", "No se pudo guardar. El código de barra ya existe.")
+            return
 
-        self.session.commit()
         self.accept()
 
     def closeEvent(self, e):
@@ -625,11 +650,3 @@ class FormularioItem(QDialog):
             self.session.close()
         finally:
             super().closeEvent(e)
-    
-
-
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    w = ABMItems()
-    w.show()
-    sys.exit(app.exec_())

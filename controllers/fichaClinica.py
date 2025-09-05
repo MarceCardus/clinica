@@ -166,7 +166,7 @@ class FichaClinicaForm(QDialog):
         self.btn_guardar = QPushButton("Guardar Cambios")
         self.btn_guardar.clicked.connect(self.guardar_todo)
         main_layout.addWidget(self.btn_guardar)
-        self.btn_guardar.setVisible(self.solo_control) if hasattr(self, 'solo_control') else self.btn_guardar.setVisible(True)
+        self.btn_guardar.setVisible(not self.solo_control)
 
 
     # ================== DATOS BÁSICOS ==================

@@ -21,7 +21,7 @@ class InformeStockMensualForm(QDialog):
         super().__init__(parent)
      
         
-        self.setWindowTitle("Informe de Stock Mensual (Agrupado por Tipo)")
+        self.setWindowTitle("Informe de Stock Mensual")
         self.resize(1100, 700)
 
         lay = QVBoxLayout(self)
@@ -60,15 +60,16 @@ class InformeStockMensualForm(QDialog):
 
         # -------- Tabla --------
         self.tbl = QTableWidget(0, 7)
-        self.tbl.setHorizontalHeaderLabels([
-            "#", "Tipo / Ítem", "Inicial", "Ingreso", "Ventas", "Insumo", "Actual"
-        ])
+        self.tbl.setHorizontalHeaderLabels(["#", "Ítem", "Inicial", "Ingreso", "Ventas", "Insumo", "Actual"])
         self.tbl.setColumnWidth(0, 50)
         self.tbl.setColumnWidth(1, 420)
         self.tbl.setColumnWidth(2, 90)
         for c in range(3, 7):
             self.tbl.setColumnWidth(c, 110)
-        lay.addWidget(self.tbl)
+        lay.addWidget(self.tbl, 1)  # <-- FALTABA: agrega la tabla al layout y que estire
+        self.lbl_totales = QLabel("")
+        self.lbl_totales.setStyleSheet("font-weight: bold; padding-top: 6px;")
+        lay.addWidget(self.lbl_totales)
         self.tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl.horizontalHeader().setStretchLastSection(True)
@@ -139,19 +140,21 @@ class InformeStockMensualForm(QDialog):
 
             self.lbl_leyenda.setText(
                 f"Inicial = stock al {info.corte_inicial.strftime('%d/%m/%Y')}   •   "
-                f"Ingreso = compras de {SPANISH_MONTHS[mes]} {anio}   •   "
-                f"Ventas = ventas de {SPANISH_MONTHS[mes]} {anio}   •   "
-                f"Insumo = salidas no-venta de {SPANISH_MONTHS[mes]} {anio}"
+               
             )
 
             self.tbl.setSortingEnabled(False)
             self.tbl.setUpdatesEnabled(False)
             self.tbl.setRowCount(0)
 
-            i = 1
-            grand_ini = grand_ing = grand_ven = grand_otr = grand_act = Decimal(0)
+            # inicializar acumuladores
+            grand_ini = Decimal(0)
+            grand_ing = Decimal(0)
+            grand_ven = Decimal(0)
+            grand_otr = Decimal(0)
+            grand_act = Decimal(0)
 
-            # info.grupos tiene un solo grupo con todos los ítems ordenados
+            i = 1
             for g in info.grupos:
                 for it in g.items:
                     r = self.tbl.rowCount()
@@ -165,27 +168,32 @@ class InformeStockMensualForm(QDialog):
                     self.tbl.setItem(r, 6, self._num(it.actual))
                     i += 1
 
+                    # acumular totales
                     grand_ini += it.inicial
                     grand_ing += it.ingreso
                     grand_ven += it.ventas
                     grand_otr += it.otros
                     grand_act += it.actual
 
-            # Total general
-            if i > 1:
-                r = self.tbl.rowCount()
-                self.tbl.insertRow(r)
-                lab = self._cell("TOTAL GENERAL")
-                f = lab.font(); f.setBold(True); lab.setFont(f)
-                self.tbl.setItem(r, 1, lab)
-                self.tbl.setItem(r, 0, self._cell(""))
-                self.tbl.setItem(r, 2, self._num(grand_ini))
-                self.tbl.setItem(r, 3, self._num(grand_ing))
-                self.tbl.setItem(r, 4, self._num(grand_ven))
-                self.tbl.setItem(r, 5, self._num(grand_otr))
-                self.tbl.setItem(r, 6, self._num(grand_act))
+            # Pie (footer) de totales fuera de la tabla
+            if i == 1:
+                self.lbl_totales.setText("TOTAL GENERAL — (sin datos)")
+            else:
+                self.lbl_totales.setText(
+                    f"TOTAL GENERAL — Inicial: {self._fmt(grand_ini)}   •   "
+                    f"Ingreso: {self._fmt(grand_ing)}   •   "
+                    f"Ventas: {self._fmt(grand_ven)}   •   "
+                    f"Insumo: {self._fmt(grand_otr)}   •   "
+                    f"Actual: {self._fmt(grand_act)}"
+                )
 
             self.tbl.resizeRowsToContents()
+            # mostrar y forzar orden por NOMBRE (columna 1)
+            self.tbl.setUpdatesEnabled(True)
+            self.tbl.setSortingEnabled(True)
+            self.tbl.horizontalHeader().setSortIndicatorShown(True)
+            self.tbl.horizontalHeader().setSortIndicator(1, Qt.AscendingOrder)
+            self.tbl.sortItems(1, Qt.AscendingOrder)
 
         except ValueError:
             QMessageBox.warning(self, "Validación", "Año inválido.")
@@ -196,7 +204,7 @@ class InformeStockMensualForm(QDialog):
             self.tbl.setSortingEnabled(True)
             self._busy(False)
 
-            
+
     # -------- Exportaciones --------
     def exportar_pdf(self):
         mes = self.cmb_mes.currentData()

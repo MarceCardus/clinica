@@ -1,14 +1,15 @@
+# models/item.py
 from sqlalchemy import (
     Column, Integer, String, Boolean, Numeric, Text,
     ForeignKey, DateTime, func
 )
 from sqlalchemy.orm import relationship
-from .base import Base
+from utils.db import Base  # ajustá el import según tu proyecto
 
 class ItemTipo(Base):
     __tablename__ = "item_tipo"
     iditemtipo = Column(Integer, primary_key=True, autoincrement=True)
-    # Ejemplos: PRODUCTO / INSUMO / AMBOS
+    # Ejemplos: PRODUCTO / INSUMO / APARATO / SERVICIO / etc.
     nombre = Column(String(20), unique=True, nullable=False)
 
     items = relationship(
@@ -30,9 +31,20 @@ class Item(Base):
     fecha_creacion = Column(DateTime, nullable=False, server_default=func.now())
     fecha_actualizacion = Column(DateTime)
 
+    # Código de barra
+    codigo_barra = Column(String(64), unique=True)  # EAN/UPC/QR (opcional, único si está presente)
+
     # Clasificación general
     iditemtipo = Column(Integer, ForeignKey("item_tipo.iditemtipo", ondelete="RESTRICT"), nullable=False)
     tipo = relationship("ItemTipo", back_populates="items")
+
+    # Metadatos para planes de sesiones (si el item genera un plan al vender)
+    idplantipo = Column(
+        Integer,
+        ForeignKey("plan_tipo.idplantipo", ondelete="RESTRICT"),  # ← agrega la FK (solo en el modelo)
+        nullable=True                                             # ← sigue siendo opcional
+    )
+    sesiones_incluidas = Column(Integer)
 
     # Si los usabas antes (producto/insumo) — opcionales
     precio_venta = Column(Numeric(14, 2))
@@ -62,7 +74,7 @@ class Item(Base):
     # Inversas con los modelos unificados
     indicaciones = relationship("Indicacion", back_populates="item", passive_deletes=True)
     procedimientos = relationship("Procedimiento", back_populates="item", passive_deletes=True)
+    plan_tipo = relationship("PlanTipo", back_populates="items")
 
     def __repr__(self):
         return f"<Item id={self.iditem} nombre={self.nombre!r}>"
-

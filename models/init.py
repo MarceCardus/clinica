@@ -21,12 +21,13 @@ from .antecEnfActual import AntecedenteEnfermedadActual
 from .antecFliar import AntecedenteFamiliar
 from .pacienteEncargado import PacienteEncargado
 from .recordatorio_paciente import RecordatorioPaciente
-
+from .plan_tipo import PlanTipo
 # --- Geografía ---
 from .departamento import Departamento
 from .ciudad import Ciudad
 from .barrio import Barrio
-
+from .plan_sesiones import PlanSesion
+from .aparato import Aparato
 # Si necesitás StockMovimiento en otros lados, lo importás directo:
 # from .StockMovimiento import StockMovimiento
 
@@ -72,5 +73,5 @@ __all__ = [
     "AntecedentePatologicoPersonal", "AntecedenteEnfermedadActual", "AntecedenteFamiliar",
     "PacienteEncargado", "RecordatorioPaciente",
     # Geografía
-    "Departamento", "Ciudad", "Barrio",
+    "Departamento", "Ciudad", "Barrio", "PlanTipo","Aparato", "PlanSesiones"
 ]
