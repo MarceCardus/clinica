@@ -1,0 +1,59 @@
+version: '3.9'
+services:
+  db:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: bet-db
+    environment:
+      ACCEPT_EULA: 'Y'
+      SA_PASSWORD: 'YourStrong!Passw0rd'
+      MSSQL_PID: 'Express'
+    ports:
+      - '1433:1433'
+    volumes:
+      - mssql-data:/var/opt/mssql
+  minio:
+    image: minio/minio:RELEASE.2023-08-29T23-07-35Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: betapp
+      MINIO_ROOT_PASSWORD: betappsecret
+    ports:
+      - '9000:9000'
+      - '9001:9001'
+    volumes:
+      - minio-data:/data
+  api:
+    build: ./backend
+    env_file: ./backend/.env.example
+    environment:
+      DATABASE_URL: mssql+pyodbc://sa:YourStrong!Passw0rd@db:1433/bets?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: betapp
+      MINIO_SECRET_KEY: betappsecret
+      MINIO_SECURE: 'false'
+    ports:
+      - '8000:8000'
+    depends_on:
+      - db
+      - minio
+  admin:
+    build: ./admin
+    environment:
+      VITE_API_URL: http://api:8000
+    ports:
+      - '5173:5173'
+    depends_on:
+      - api
+  mobile:
+    build: ./mobile
+    environment:
+      EXPO_PUBLIC_API_URL: http://api:8000
+    ports:
+      - '19000:19000'
+      - '19001:19001'
+      - '19002:19002'
+    depends_on:
+      - api
+volumes:
+  mssql-data:
+  minio-data:
