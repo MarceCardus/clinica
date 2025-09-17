@@ -1,0 +1,38 @@
+[tool.poetry]
+name = "bet-platform-backend"
+version = "0.1.0"
+description = "MVP backend for internal tournament betting"
+authors = ["Clinica Dev <dev@example.com>"]
+readme = "README.md"
+packages = [{ include = "app" }]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.103.0"
+uvicorn = { extras = ["standard"], version = "^0.23.2" }
+sqlalchemy = "^2.0.20"
+alembic = "^1.12.0"
+pyodbc = "^4.0.35"
+python-dotenv = "^1.0.0"
+passlib = { extras = ["bcrypt"], version = "^1.7.4" }
+python-jose = { extras = ["cryptography"], version = "^3.3.0" }
+email-validator = "^2.0.0"
+pydantic = "^2.3.0"
+pydantic-settings = "^2.0.3"
+minio = "^7.1.16"
+boto3 = "^1.28.30"
+httpx = "^0.24.1"
+structlog = "^23.1.0"
+slowapi = "^0.1.8"
+SQLAlchemy-Utils = "^0.41.1"
+types-python-jose = "^3.3.4"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+pytest-asyncio = "^0.21.1"
+httpx = "^0.24.1"
+pytest-cov = "^4.1.0"
+
+[build-system]
+requires = ["poetry-core>=1.5.0"]
+build-backend = "poetry.core.masonry.api"
