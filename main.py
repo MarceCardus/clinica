@@ -65,6 +65,7 @@ from controllers.cobro_dialog import CobroDialog
 from controllers.informe_cobros_form import InformeCobrosForm
 from controllers.cambiar_password_dialog import CambiarPasswordDialog
 from controllers.informe_stock_mensual_form import InformeStockMensualForm
+from controllers.informe_ventas_por_item_dialog import InformeVentasPorItemDialog
 from models.paciente import Paciente
 from models.profesional import Profesional
 from models.clinica import Clinica
@@ -73,6 +74,7 @@ from models.paquete import Paquete
 from utils.db import SessionLocal
 from controllers.abm_plan_tipo import ABMPlanTipo
 from controllers.abm_aparatos import ABMAparatos
+from controllers.informe_saldo_cliente import InformeSaldoClienteDialog
 
 class MainWindow(QMainWindow):
     def __init__(self, usuario: Usuario, rol: str, session):
@@ -234,6 +236,14 @@ class MainWindow(QMainWindow):
         self.action_informe_ventas = QAction("Ventas", self)
         self.action_informe_ventas.triggered.connect(self.abrir_informe_ventas)
         self.menu_informes.addAction(self.action_informe_ventas)
+        # Informes → Ventas pot tipo ITem
+        self.action_informe_ventas_item = QAction("Ventas por Ítem", self)
+        self.action_informe_ventas_item.triggered.connect(self.abrir_informe_ventas_por_item)
+        self.menu_informes.addAction(self.action_informe_ventas_item)
+        # Informes → Saldo de Clientes
+        self.action_informe_saldo_clientes = QAction("Saldo de Clientes", self)
+        self.action_informe_saldo_clientes.triggered.connect(self.on_informe_saldo_cliente)
+        self.menu_informes.addAction(self.action_informe_saldo_clientes)
 
         # Informes → Cobros
         self.action_informe_cobros = QAction("Cobros", self)
@@ -260,7 +270,19 @@ class MainWindow(QMainWindow):
 
     def abrir_informe_stock_mensual(self):
         dlg = InformeStockMensualForm(self) 
-        dlg.exec_() 
+        dlg.exec_()
+
+    def on_informe_saldo_cliente(self):
+        dlg = InformeSaldoClienteDialog(self.session, self)
+        dlg.resize(1100, 640)
+        dlg.exec_()
+
+    def abrir_informe_ventas_por_item(self):
+        try:
+            dlg = InformeVentasPorItemDialog(self)
+            dlg.exec_()
+        except Exception as e:
+            QMessageBox.critical(self, "Informes", f"Error al abrir el informe:\n{e}")
 
     def abrir_informe_cobros(self):
         dlg = InformeCobrosForm(self.session, self)

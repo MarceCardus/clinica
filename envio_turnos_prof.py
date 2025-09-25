@@ -232,7 +232,20 @@ def click_boton_enviar(driver) -> bool:
             return True
         except: pass
     return False
-
+def insertar_linea_js(driver, composer, linea: str):
+    """Inserta una línea de texto (con emojis) sin saltos."""
+    driver.execute_script("""
+        const el = arguments[0];
+        const s  = arguments[1];
+        el.focus();
+        try {
+          // no borres todo, solo inserta
+          if (!document.execCommand('insertText', false, s)) {
+            const esc = s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+            document.execCommand('insertHTML', false, esc);
+          }
+        } catch(e) {}
+    """, composer, linea)
 def insertar_texto_js(driver, composer, texto: str):
     """
     Inserta 'texto' respetando saltos y emojis.
@@ -277,25 +290,51 @@ def insertar_texto_js(driver, composer, texto: str):
 
 def enviar_mensaje_en_chat(driver, mensaje: str) -> bool:
     composer = esperar_caja_mensaje(driver)
+
     intento = 0
     while intento <= RETRY_SENDS:
         try:
-            composer.click()
-            insertar_texto_js(driver, composer, mensaje)
+            # limpiar editor
+            driver.execute_script("""
+                const el = arguments[0];
+                el.focus();
+                try {
+                  document.execCommand('selectAll', false, null);
+                  document.execCommand('delete', false, null);
+                } catch(e) {}
+            """, composer)
+
+            # --- construir el contenido línea a línea ---
+            paragraphs = mensaje.split("\n\n")   # doble salto = nuevo párrafo
+            for p_idx, para in enumerate(paragraphs):
+                lines = para.split("\n")
+                for l_idx, line in enumerate(lines):
+                    insertar_linea_js(driver, composer, line)     # texto (emojis OK)
+                    if l_idx < len(lines) - 1:
+                        # salto de línea dentro del mismo párrafo
+                        composer.send_keys(Keys.SHIFT, Keys.ENTER)
+                if p_idx < len(paragraphs) - 1:
+                    # línea EN BLANCO entre párrafos
+                    composer.send_keys(Keys.SHIFT, Keys.ENTER)
+                    composer.send_keys(Keys.SHIFT, Keys.ENTER)
+
             time.sleep(0.2)
 
             before = contar_salientes(driver)
 
+            # enviar
             if not click_boton_enviar(driver):
                 composer.send_keys(Keys.ENTER)
 
             WebDriverWait(driver, 12).until(lambda d: contar_salientes(d) > before)
-            logging.info("Mensaje confirmado como enviado.")
+            logging.info("Mensaje confirmado como enviado (línea por línea).")
             return True
+
         except Exception as e:
             logging.warning(f"Reintento {intento+1} falló: {e}")
             intento += 1
             time.sleep(1.0)
+
     logging.error("No se confirmó el envío tras reintentos.")
     return False
 
