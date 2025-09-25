@@ -17,7 +17,11 @@ from utils.db import SessionLocal
 
 from models.paciente import Paciente
 from models.venta import Venta
-from services.cobros_service import registrar_cobro
+from services.cobros_service import (
+    registrar_cobro,
+    imputar_credito_a_venta,
+    total_credito_disponible,
+)
 
 
 class CobroDialog(QDialog):
@@ -137,6 +141,9 @@ class CobroDialog(QDialog):
         left.addLayout(header)
         left.addLayout(fila_top)
 
+        # Mostrar crédito a favor del paciente
+        self.lblCredito = QLabel("Crédito a favor: 0")
+        left.addWidget(self.lblCredito)
         # Normalizar monto al salir del control
         self.txtMonto.editingFinished.connect(self._normalize_monto)
 
@@ -281,6 +288,18 @@ class CobroDialog(QDialog):
         self.txtPaciente.setFocus()
         self.txtPaciente.selectAll()
 
+    def _refresh_credito_label(self):
+        pid = getattr(self, "_selected_paciente_id", None)
+        if not pid:
+            self.lblCredito.setText("Crédito a favor: 0")
+            self.lblCredito.setStyleSheet("color:#666")
+            return
+        try:
+            credito = total_credito_disponible(self.session, int(pid))
+        except Exception:
+            credito = Decimal("0")
+        self.lblCredito.setText(f"Crédito a favor: {self._fmt0(credito)}")
+        self.lblCredito.setStyleSheet("color:#2e7d32" if credito > 0 else "color:#666")
     # ======================= Pacientes (completer) ==========================
 
     def _load_pacientes(self):
@@ -318,6 +337,7 @@ class CobroDialog(QDialog):
     def _on_paciente_elegido(self, text):
         self._selected_paciente_id = self._map_display_to_id.get(text)
         self._load_ventas_pendientes()
+        self._refresh_credito_label()
 
     def _guess_paciente_by_text(self):
         txt = self.txtPaciente.text().strip().lower()
@@ -413,6 +433,7 @@ class CobroDialog(QDialog):
 
             self._toggle_fifo_mode()
             self._recalc_restante()
+            self._refresh_credito_label()
         finally:
             self._updating = False
 
@@ -522,52 +543,172 @@ class CobroDialog(QDialog):
             if not pid:
                 QMessageBox.warning(self, "Cobro", "Seleccione un paciente.")
                 return
+            pid = int(pid)
 
-            monto = self._leer_monto()
-            if monto <= 0:
+            monto_ingresado = self._leer_monto()
+            if monto_ingresado < 0:
                 QMessageBox.warning(self, "Cobro", "Ingrese un monto válido.")
                 return
 
             auto_fifo = self.chkFIFO.isChecked()
 
-            # Construir imputaciones solo si NO es FIFO
-            imputaciones = None
+            # ------------------- Paso 1: CONSUMIR CRÉDITO PREVIO -------------------
+            # Si hay ventas seleccionadas manualmente (imputaciones) consumimos crédito contra cada una.
+            # Si es FIFO, consumimos crédito contra todas las ventas pendientes del paciente.
+            # Esto reduce saldos antes de crear cualquier cobro nuevo.
+
+            aplicado_credito_total = Decimal("0.00")
+            imputaciones_finales = []   # lo que realmente quedará para el nuevo cobro (si hace falta)
+
             if not auto_fifo:
-                imputaciones = []
-                suma = Decimal("0.00")
+                # 1) Construir 'pedidas' (imputaciones que el usuario marcó en la grilla)
+                pedidas = []
                 for _, idv, saldo, a in self._ventas_iter():
                     if a > 0:
-                        if a > saldo:
-                            QMessageBox.warning(self, "Cobro",
-                                                f"La imputación a la venta {idv} excede su saldo.")
-                            return
-                        imputaciones.append({"idventa": idv, "monto": a})
-                        suma += a
-                if suma > monto:
-                    QMessageBox.warning(self, "Cobro",
-                                        "La suma imputada supera el monto del cobro.")
+                        pedidas.append({"idventa": idv, "monto": a, "saldo": saldo})
+
+                # 2) VALIDACIÓN: nada que hacer (sin imputaciones, sin monto y sin crédito)
+                if not pedidas and monto_ingresado == 0:
+                    if total_credito_disponible(self.session, pid) <= 0:
+                        QMessageBox.information(
+                            self, "Cobro",
+                            "No hay nada que registrar: sin imputaciones, sin monto y sin crédito a favor."
+                        )
+                        return
+
+                # 3) Consumir crédito previo contra cada venta pedida (FIFO interno del service)
+                for ped in pedidas:
+                    aplicado = imputar_credito_a_venta(self.session, idpaciente=pid, idventa=ped["idventa"])
+                    aplicado_credito_total += aplicado
+                    # monto aún a cubrir con el cobro nuevo para esa venta:
+                    restante_esta = self._money(Decimal(ped["monto"]) - Decimal(aplicado))
+                    if restante_esta > 0:
+                        imputaciones_finales.append({"idventa": ped["idventa"], "monto": restante_esta})
+
+                # 1.b) decidir cuánto del monto ingresado usar para imputar y si hay excedente
+                total_a_cubrir = sum((i["monto"] for i in imputaciones_finales), Decimal("0"))
+                if total_a_cubrir == 0:
+                    # No queda nada por cubrir; si el usuario ingresó plata, queda como crédito nuevo
+                    if monto_ingresado > 0:
+                        registrar_cobro(
+                            session=self.session,
+                            fecha=date.today(),
+                            idpaciente=pid,
+                            monto=monto_ingresado,
+                            formapago=self.cboForma.currentText(),
+                            observaciones=(self.txtObs.toPlainText() or "") + " (anticipo a favor)",
+                            usuarioregistro=self.usuario_actual,
+                            imputaciones=None,
+                            auto_fifo=False,
+                        )
+                    # commit + UI
+                    self.session.commit()
+                    self.session.expire_all()
+                    self.msg_ok(f"Cobro registrado. Crédito aplicado: {self._fmt0(aplicado_credito_total)}.")
+                    self._reset_after_save()
                     return
 
-            # Registrar cobro
-            registrar_cobro(
-                session=self.session,
-                fecha=date.today(),   # o date.today()
-                idpaciente=int(pid),
-                monto=monto,
-                formapago=self.cboForma.currentText(),
-                observaciones=self.txtObs.toPlainText(),
-                usuarioregistro=self.usuario_actual,
-                imputaciones=imputaciones,
-                auto_fifo=auto_fifo,
-            )
+                # 🔧 NUEVO: si aún queda por cubrir pero no ingresó dinero, confirmamos crédito y salimos
+                if monto_ingresado == 0:
+                    self.session.commit()
+                    self.session.expire_all()
+                    self.msg_ok(f"Crédito aplicado: {self._fmt0(aplicado_credito_total)}. Aún quedan saldos pendientes.")
+                    self._reset_after_save()
+                    return
 
-            # Confirmar y refrescar datos visibles
-            self.session.commit()           # asegura que el saldo actualizado se vea
-            self.session.expire_all()       # fuerza recarga desde DB en próximas consultas
-            self.msg_ok("Cobro registrado.")
+                # 1.c) Si el monto ingresado es menor al total requerido, imputamos parcialmente
+                monto_restante = self._money(monto_ingresado)
+                if monto_restante > 0 and total_a_cubrir > 0:
+                    imputaciones_aplicar = []
+                    for imp in imputaciones_finales:
+                        if monto_restante <= 0:
+                            break
+                        aplicar = min(monto_restante, imp["monto"])
+                        if aplicar > 0:
+                            imputaciones_aplicar.append({"idventa": imp["idventa"], "monto": aplicar})
+                            monto_restante -= aplicar
 
-            # Mantener el diálogo abierto y listo para el siguiente cobro
-            self._reset_after_save()
+                    if imputaciones_aplicar:
+                        monto_imputado_nuevo = sum((x["monto"] for x in imputaciones_aplicar), Decimal("0"))
+                        # Cobro por lo que alcanzó para imputar
+                        registrar_cobro(
+                            session=self.session,
+                            fecha=date.today(),
+                            idpaciente=pid,
+                            monto=monto_imputado_nuevo,
+                            formapago=self.cboForma.currentText(),
+                            observaciones=self.txtObs.toPlainText(),
+                            usuarioregistro=self.usuario_actual,
+                            imputaciones=imputaciones_aplicar,
+                            auto_fifo=False,
+                        )
+                    else:
+                        monto_imputado_nuevo = Decimal("0")
+
+                    # Excedente (si quedó plata y ya no hay nada por cubrir → anticipo)
+                    excedente = self._money(monto_ingresado - monto_imputado_nuevo)
+                    if excedente > 0:
+                        registrar_cobro(
+                            session=self.session,
+                            fecha=date.today(),
+                            idpaciente=pid,
+                            monto=excedente,
+                            formapago=self.cboForma.currentText(),
+                            observaciones=(self.txtObs.toPlainText() or "") + " (excedente a favor)",
+                            usuarioregistro=self.usuario_actual,
+                            imputaciones=None,
+                            auto_fifo=False,
+                        )
+
+                    self.session.commit()
+                    self.session.expire_all()
+                    self.msg_ok(f"Cobro registrado. Crédito aplicado: {self._fmt0(aplicado_credito_total)}.")
+                    self._reset_after_save()
+                    return
+
+            else:
+                # VALIDACIÓN FIFO: si no hay monto y tampoco crédito a favor, no hay nada que aplicar
+                if monto_ingresado == 0 and total_credito_disponible(self.session, pid) <= 0:
+                    QMessageBox.information(
+                        self, "Cobro",
+                        "No hay nada que registrar: sin monto y sin crédito a favor."
+                    )
+                    return
+
+                # AUTO FIFO: consumimos crédito contra TODAS las ventas pendientes del paciente
+                # 1) Traer las ventas pendientes (como en _load_ventas_pendientes)
+                ventas = self.session.execute(
+                    select(Venta.idventa, Venta.saldo)
+                    .where(
+                        Venta.idpaciente == pid,
+                        func.upper(func.coalesce(Venta.estadoventa, "")) != "ANULADA",
+                        Venta.saldo > 0
+                    )
+                    .order_by(Venta.fecha.asc(), Venta.idventa.asc())
+                ).all()
+
+                for (idv, _sal) in ventas:
+                    aplicado_credito_total += imputar_credito_a_venta(self.session, idpaciente=pid, idventa=idv)
+
+                # 2) Si el usuario ingresó monto > 0, ahora sí creamos un cobro FIFO para lo que quede
+                if monto_ingresado > 0:
+                    registrar_cobro(
+                        session=self.session,
+                        fecha=date.today(),
+                        idpaciente=pid,
+                        monto=monto_ingresado,
+                        formapago=self.cboForma.currentText(),
+                        observaciones=self.txtObs.toPlainText(),
+                        usuarioregistro=self.usuario_actual,
+                        imputaciones=None,
+                        auto_fifo=True,   # esto aplicará el NUEVO cobro a las ventas con saldo restante
+                    )
+
+                self.session.commit()
+                self.session.expire_all()
+                self.msg_ok(f"Cobro registrado. Crédito aplicado: {self._fmt0(aplicado_credito_total)}.")
+                self._reset_after_save()
+                return
 
         except Exception as e:
             try:
@@ -575,6 +716,7 @@ class CobroDialog(QDialog):
             except Exception:
                 pass
             self.msg_error(f"Ocurrió un error al registrar el cobro:\n{e}")
+
 
 
     # ============================ Eventos varios ===========================
@@ -589,6 +731,7 @@ class CobroDialog(QDialog):
         self.txtObs.clear()
         self.tbl.setRowCount(0)
         self.lblRestante.setText(f"Restante: {self._fmt0(0)}")
+        self._refresh_credito_label()
 
         # Refrescar panel derecho (ventas del día/fecha seleccionada)
         self._load_ventas_por_fecha()

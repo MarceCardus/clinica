@@ -1,5 +1,6 @@
 # controllers/fichaClinica.py
 import sys
+
 from functools import partial
 
 from PyQt5.QtWidgets import (
@@ -33,7 +34,7 @@ from models.StockMovimiento import StockMovimiento
 from models.recordatorio_paciente import RecordatorioPaciente
 from models.item import Item          # ← único catálogo que usamos
 from models.procedimiento import Procedimiento
-
+from controllers.historial import get_historial_paciente,get_resumen_financiero_paciente
 from controllers.generador_recordatorios import (
     generar_recordatorios_medicamento,
     validar_indicacion_medicamento,
@@ -78,6 +79,8 @@ class NumericItem(QTableWidgetItem):
         self._val = f if f is not None else float("-inf")
         self.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
+    
+
     def __lt__(self, other):
         if isinstance(other, NumericItem):
             return self._val < other._val
@@ -86,7 +89,12 @@ class NumericItem(QTableWidgetItem):
         except Exception:
             return super().__lt__(other)
 
-
+def gs(n):
+        try:
+            return f"Gs {float(n):,.0f}".replace(",", ".")
+        except Exception:
+            return ""
+        
 class FichaClinicaForm(QDialog):
     def __init__(self, idpaciente, parent=None, solo_control=False):
         super().__init__(parent)
@@ -103,7 +111,7 @@ class FichaClinicaForm(QDialog):
 
         self.init_ui()
         self.cargar_todo()
-
+        self.tabs.currentChanged.connect(self._on_tab_changed)
     # ---------- util (autocompletar de combos) ----------
     def _setup_contains_completer(self, combo: QComboBox):
         combo.setEditable(True)
@@ -114,6 +122,12 @@ class FichaClinicaForm(QDialog):
         combo.setCompleter(compl)
         combo.setInsertPolicy(QComboBox.NoInsert)
     # ----------------------------------------------------
+    def _on_tab_changed(self, idx):
+        try:
+            if self.tabs.widget(idx) is self.tab_historial:
+                self.cargar_historial_tab()
+        except Exception as e:
+            print("Error al refrescar historial:", e)
 
     def init_ui(self):
         main_layout = QVBoxLayout(self)
@@ -128,12 +142,14 @@ class FichaClinicaForm(QDialog):
         self.tab_procedimientos = QWidget(); self.ui_tab_procedimientos()
         self.tab_recetas = QWidget();        self.ui_tab_recetas()
         self.tab_recordatorios = QWidget();  self.ui_tab_recordatorios()
+        self.tab_historial = QWidget();      self.ui_tab_historial()
 
         if hasattr(self, "cbo_departamento"):
             self._cargar_departamentos()
 
         if self.solo_control:
             self.tabs.addTab(self.tab_enfactual, "📈 Control de Estado")
+            self.tabs.addTab(self.tab_historial, "📜 Historial")
             self.tabs.addTab(self.tab_procedimientos, "💉 Procedimientos")
             self.tabs.addTab(self.tab_recetas, "📋 Indicaciones")
             self.tabs.addTab(self.tab_recordatorios, "🔔 Recordatorios")
@@ -143,6 +159,7 @@ class FichaClinicaForm(QDialog):
             self.tabs.addTab(self.tab_fliares, "👪 Antecedentes Familiares")
             self.tabs.addTab(self.tab_patologicos, "🩺 Antecedentes Patológicos")
             self.tabs.addTab(self.tab_enfactual, "📈 Control de Estado")
+            self.tabs.addTab(self.tab_historial, "📜 Historial")
             self.tabs.addTab(self.tab_procedimientos, "💉 Procedimientos")
             self.tabs.addTab(self.tab_recetas, "📋 Indicaciones/Recetas")
             self.tabs.addTab(self.tab_recordatorios, "🔔 Recordatorios")
@@ -530,6 +547,117 @@ class FichaClinicaForm(QDialog):
         hl.addWidget(self.btn_cancelar_procedimiento)
         hl.addStretch()
         layout.addLayout(hl)
+
+    def ui_tab_historial(self):
+        layout = QVBoxLayout(self.tab_historial)
+
+        # ----- Filtros -----
+        filtros = QHBoxLayout()
+        self.his_desde = QDateEdit(calendarPopup=True); self.his_desde.setDisplayFormat("dd/MM/yy")
+        self.his_hasta = QDateEdit(calendarPopup=True); self.his_hasta.setDisplayFormat("dd/MM/yy")
+        self.his_desde.setDate(QDate.currentDate().addMonths(-3))
+        self.his_hasta.setDate(QDate.currentDate())
+        self.his_chk_anuladas = QCheckBox("Ver anuladas"); self.his_chk_anuladas.setChecked(True)
+        self.btn_his_refrescar = QPushButton("Actualizar")
+
+        filtros.addWidget(QLabel("Desde:")); filtros.addWidget(self.his_desde)
+        filtros.addWidget(QLabel("Hasta:")); filtros.addWidget(self.his_hasta)
+        filtros.addWidget(self.his_chk_anuladas)
+        filtros.addStretch()
+        filtros.addWidget(self.btn_his_refrescar)
+        layout.addLayout(filtros)
+
+        # ----- Tabla -----
+        self.tblHistorial = QTableWidget(0, 8)
+        self.tblHistorial.setHorizontalHeaderLabels(
+        ["Fecha", "Tipo", "Ítem / Medio", "Cantidad", "Precio", "Subtotal", "Saldo", "Obs."]
+        )
+        self.tblHistorial.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tblHistorial.setAlternatingRowColors(True)
+        self.tblHistorial.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.tblHistorial.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tblHistorial.setSelectionMode(QAbstractItemView.SingleSelection)
+        layout.addWidget(self.tblHistorial)
+
+        # ----- Totales -----
+        self.lblHisTotales = QLabel("—")
+        layout.addWidget(self.lblHisTotales)
+
+        # eventos
+        self.btn_his_refrescar.clicked.connect(self.cargar_historial_tab)
+
+    def _set_hist_cell(self, row, col, text):
+        self.tblHistorial.setItem(row, col, QTableWidgetItem("" if text is None else str(text)))
+
+    def cargar_historial_tab(self):
+        if not hasattr(self, "idpaciente") or not self.idpaciente:
+            return
+
+        # Filtros opcionales
+        fecha_desde = self.his_desde.date().toPyDate() if self.his_desde.date() else None
+        fecha_hasta = self.his_hasta.date().toPyDate() if self.his_hasta.date() else None
+        incluir_anuladas = self.his_chk_anuladas.isChecked()
+
+        # === Opción A: vista básica (procedimientos + ventas)
+        # data = get_historial_paciente(self.session, self.idpaciente, fecha_desde, fecha_hasta, incluir_anuladas)
+
+        # === Opción B: si creaste la vista que incluye COBROS ===
+        # duplicamos el DAO aquí sin tocar tu archivo dao, solo cambiando el nombre de la vista:
+        from sqlalchemy import text
+        where_filtros = ["h.idpaciente = :idpaciente"]
+        params = {"idpaciente": self.idpaciente}
+        if fecha_desde:
+            where_filtros.append("h.fecha >= :desde"); params["desde"] = fecha_desde
+        if fecha_hasta:
+            where_filtros.append("h.fecha <= :hasta"); params["hasta"] = fecha_hasta
+        if not incluir_anuladas:
+            where_filtros.append("(h.estado IS NULL OR UPPER(h.estado) <> 'ANULADO')")
+
+        # 👉 Cambiá el nombre de la vista a la que “tiene cobros”.
+        # Si la llamaste 'vw_historial_paciente' y YA incluye cobros, dejá igual.
+        NOMBRE_VISTA = "vw_historial_paciente"
+
+        sql = text(f"""
+            SELECT h.fecha, h.tipo_evento, h.item_nombre, h.cantidad,
+                h.precio_unitario, h.subtotal, h.saldo, h.observacion
+            FROM {NOMBRE_VISTA} h
+            WHERE {" AND ".join(where_filtros)}
+            ORDER BY h.fecha ASC, h.tipo_evento ASC
+        """)
+        rows = self.session.execute(sql, params).mappings().all()
+        data = [dict(r) for r in rows]
+
+        # Poblado de la tabla
+        with _painting_suspended(self.tblHistorial):
+            self.tblHistorial.setRowCount(len(data))
+            for r, row in enumerate(data):
+                fecha_txt = ""
+                try:
+                    dt = row.get("fecha")
+                    fecha_txt = dt.strftime("%d/%m/%y") if hasattr(dt, "strftime") else (dt or "")
+                except Exception:
+                    fecha_txt = str(row.get("fecha") or "")
+                self._set_hist_cell(r, 0, fecha_txt)
+                self._set_hist_cell(r, 1, row.get("tipo_evento") or "")
+                self._set_hist_cell(r, 2, row.get("item_nombre") or "")
+                # Cantidad siempre numérica si hay
+                cant = row.get("cantidad")
+                self._set_hist_cell(r, 3, f"{cant:.2f}" if cant is not None else "")
+                # Monetarios
+                self._set_hist_cell(r, 4, gs(row.get("precio_unitario")) if row.get("precio_unitario") else "")
+                self._set_hist_cell(r, 5, gs(row.get("subtotal")) if row.get("subtotal") else "")
+                self._set_hist_cell(r, 6, gs(row.get("saldo")) if row.get("saldo") is not None else gs(0))
+                self._set_hist_cell(r, 7, row.get("observacion") or "")
+            self.tblHistorial.resizeColumnsToContents()
+
+        # Totales (ventas/cobros/saldo) desde tabla venta
+        resumen = get_resumen_financiero_paciente(self.session, self.idpaciente)
+        self.lblHisTotales.setText(
+            f"Ventas: {gs(resumen['total_ventas'])}    "
+            f"Cobrado: {gs(resumen['total_cobrado'])}    "
+            f"Saldo: {gs(resumen['saldo_pendiente'])}"
+        )
+
 
     def agregar_o_editar_procedimiento(self):
         iditem = self.proc_combo.currentData()
@@ -1115,7 +1243,7 @@ class FichaClinicaForm(QDialog):
             .filter_by(idpaciente=self.idpaciente).first()
         )
         self.paciente_db = paciente
-
+        
         # ---------- Procedimientos ----------
         if hasattr(self, "table_procedimientos"):
             with _painting_suspended(self.table_procedimientos):
@@ -1281,7 +1409,8 @@ class FichaClinicaForm(QDialog):
                         self.table_controles.setCellWidget(row, 13, btn_eliminar)
 
                 self.table_controles.resizeColumnsToContents()
-
+        if hasattr(self, "cargar_historial_tab"):
+            self.cargar_historial_tab()
         # ---------- Pestañas dependientes ----------
         self.cargar_recordatorios()
         self.cargar_indicaciones()
@@ -1307,82 +1436,82 @@ class FichaClinicaForm(QDialog):
             self.table_encargados.resizeColumnsToContents()
 
     def guardar_todo(self):
+        # --- validaciones que ya tenés (CI duplicado, ubicación, etc.) ---
         ci_ingresado = self.txt_ci.text().strip()
         if ci_ingresado:
-            paciente_existente = (
-                self.session.query(Paciente)
-                .filter(Paciente.ci_pasaporte == ci_ingresado)
-                .filter(Paciente.idpaciente != self.idpaciente)
-                .first()
-            )
-            if paciente_existente:
+            existe = (self.session.query(Paciente)
+                    .filter(Paciente.ci_pasaporte == ci_ingresado,
+                            Paciente.idpaciente != self.idpaciente)
+                    .first())
+            if existe:
                 QMessageBox.warning(self, "Error", "Ya existe un paciente con ese número de CI/Pasaporte.")
                 return
 
         if not self._validar_ubicacion():
             return
 
-        if self.paciente_db is None:
-            p = Paciente()
-            self.session.add(p)
-            self.paciente_db = p
-        else:
-            p = self.paciente_db
+        # --- datos a persistir ---
+        from sqlalchemy import update
 
+        valores = {
+            Paciente.nombre:        self.txt_nombre.text().strip(),
+            Paciente.apellido:      self.txt_apellido.text().strip(),
+            Paciente.ci_pasaporte:  self.txt_ci.text().strip(),
+            Paciente.tipo_documento:self.txt_tipo_doc.currentText(),
+            Paciente.fechanacimiento:self.date_nac.date().toPyDate(),
+            Paciente.sexo:          self.txt_sexo.currentText(),
+            Paciente.telefono:      self.txt_telefono.text().strip(),
+            Paciente.email:         self.txt_email.text().strip(),
+            Paciente.direccion:     self.txt_direccion.text().strip(),
+            Paciente.ruc:           self.txt_ruc.text().strip(),
+            Paciente.razon_social:  self.txt_razon_social.text().strip(),
+            Paciente.observaciones: self.txt_observaciones.toPlainText().strip(),
+        }
         if hasattr(self, "cbo_barrio"):
-            idbarrio_sel = self.cbo_barrio.currentData()
-            p.idbarrio = idbarrio_sel
+            valores[Paciente.idbarrio] = self.cbo_barrio.currentData()
 
-        p.nombre = self.txt_nombre.text().strip()
-        p.apellido = self.txt_apellido.text().strip()
-        p.ci_pasaporte = self.txt_ci.text().strip()
-        p.tipo_documento = self.txt_tipo_doc.currentText()
-        p.fechanacimiento = self.date_nac.date().toPyDate()
-        p.sexo = self.txt_sexo.currentText()
-        p.telefono = self.txt_telefono.text().strip()
-        p.email = self.txt_email.text().strip()
-        p.direccion = self.txt_direccion.text().strip()
-        p.ruc = self.txt_ruc.text().strip()
-        p.razon_social = self.txt_razon_social.text().strip()
-        p.observaciones = self.txt_observaciones.toPlainText().strip()
+        # ejecuta UPDATE directo (evita estados “detached” del ORM)
+        self.session.execute(
+            update(Paciente)
+            .where(Paciente.idpaciente == self.idpaciente)
+            .values(**{c.key: v for c, v in valores.items()})
+        )
 
         # Familiares
-        if p.antecedentes_familiares:
-            af = p.antecedentes_familiares[0]
-        else:
-            af = AntecedenteFamiliar()
+        if not self.paciente_db or not self.paciente_db.antecedentes_familiares:
+            af = AntecedenteFamiliar(idpaciente=self.idpaciente)
             self.session.add(af)
-            p.antecedentes_familiares.append(af)
-        af.aplica = self.chk_aplica.isChecked()
-        af.patologia_padre = self.txt_patologia_padre.text().strip()
-        af.patologia_madre = self.txt_patologia_madre.text().strip()
-        af.patologia_hermanos = self.txt_patologia_hermanos.text().strip()
-        af.patologia_hijos = self.txt_patologia_hijos.text().strip()
-        af.observaciones = self.txt_fliares_obs.toPlainText().strip()
+        else:
+            af = self.paciente_db.antecedentes_familiares[0]
+        af.aplica               = self.chk_aplica.isChecked()
+        af.patologia_padre      = self.txt_patologia_padre.text().strip()
+        af.patologia_madre      = self.txt_patologia_madre.text().strip()
+        af.patologia_hermanos   = self.txt_patologia_hermanos.text().strip()
+        af.patologia_hijos      = self.txt_patologia_hijos.text().strip()
+        af.observaciones        = self.txt_fliares_obs.toPlainText().strip()
 
         # Patológicos personales
-        if p.antecedentes_patologicos_personales:
-            ap = p.antecedentes_patologicos_personales[0]
-        else:
-            ap = AntecedentePatologicoPersonal()
+        if not self.paciente_db or not self.paciente_db.antecedentes_patologicos_personales:
+            ap = AntecedentePatologicoPersonal(idpaciente=self.idpaciente)
             self.session.add(ap)
-            p.antecedentes_patologicos_personales.append(ap)
-        ap.cardiovasculares = self.chk_cardiovasculares.isChecked()
-        ap.respiratorios = self.chk_respiratorios.isChecked()
-        ap.alergicos = self.chk_alergicos.isChecked()
-        ap.neoplasicos = self.chk_neoplasicos.isChecked()
-        ap.digestivos = self.chk_digestivos.isChecked()
-        ap.genitourinarios = self.chk_genitourinarios.isChecked()
-        ap.asmatico = self.chk_asmatico.isChecked()
-        ap.metabolicos = self.chk_metabolicos.isChecked()
-        ap.osteoarticulares = self.chk_osteoarticulares.isChecked()
+        else:
+            ap = self.paciente_db.antecedentes_patologicos_personales[0]
+        ap.cardiovasculares   = self.chk_cardiovasculares.isChecked()
+        ap.respiratorios      = self.chk_respiratorios.isChecked()
+        ap.alergicos          = self.chk_alergicos.isChecked()
+        ap.neoplasicos        = self.chk_neoplasicos.isChecked()
+        ap.digestivos         = self.chk_digestivos.isChecked()
+        ap.genitourinarios    = self.chk_genitourinarios.isChecked()
+        ap.asmatico           = self.chk_asmatico.isChecked()
+        ap.metabolicos        = self.chk_metabolicos.isChecked()
+        ap.osteoarticulares   = self.chk_osteoarticulares.isChecked()
         ap.neuropsiquiatricos = self.chk_neuropsiquiatricos.isChecked()
-        ap.internaciones = self.chk_internaciones.isChecked()
-        ap.cirugias = self.chk_cirugias.isChecked()
-        ap.psicologicos = self.chk_psicologicos.isChecked()
-        ap.audiovisuales = self.chk_audiovisuales.isChecked()
-        ap.transfusiones = self.chk_transfusiones.isChecked()
-        ap.otros = self.txt_otros_patologicos.toPlainText().strip()
+        ap.internaciones      = self.chk_internaciones.isChecked()
+        ap.cirugias           = self.chk_cirugias.isChecked()
+        ap.psicologicos       = self.chk_psicologicos.isChecked()
+        ap.audiovisuales      = self.chk_audiovisuales.isChecked()
+        ap.transfusiones      = self.chk_transfusiones.isChecked()
+        ap.otros              = self.txt_otros_patologicos.toPlainText().strip()
 
         self.session.commit()
         QMessageBox.information(self, "Guardado", "Datos actualizados correctamente.")

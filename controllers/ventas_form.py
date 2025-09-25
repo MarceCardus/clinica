@@ -91,11 +91,20 @@ class ABMVenta(QWidget):
         self.modo_edicion = False
         self._update_buttons_state()
         
-
+    def _detalle_id_seleccionado(self) -> int | None:
+        """Devuelve el idventadet de la fila seleccionada en el grid de detalle."""
+        r = self.tblDetalle.currentRow()  # o la API que uses (QTableWidget/QTableView)
+        if r < 0:
+            return None
+        try:
+            # si tenés una columna oculta con el idventadet:
+            return int(self.tblDetalle.item(r, self.COL_IDVENTADET).text())
+        except Exception:
+            return None
+        
     def abrir_planes_paciente(self):
         if not self.modo_edicion:
-            QMessageBox.information(self, "Planes",
-                "Para gestionar los planes, primero presioná Editar.")
+            QMessageBox.information(self, "Planes", "Para gestionar los planes, primero presioná Editar.")
             return
         if not self.idventa_actual:
             QMessageBox.information(self, "Planes", "No hay una venta cargada.")
@@ -106,19 +115,27 @@ class ABMVenta(QWidget):
             QMessageBox.information(self, "Planes", "Seleccione un paciente primero.")
             return
 
+        # --- tomar la línea de venta seleccionada
+        idvd = self._detalle_id_seleccionado()
+        if not idvd:
+            QMessageBox.information(self, "Planes", "Seleccioná una línea de la venta (el procedimiento).")
+            return
+
+        # --- buscar el item/procedimiento de esa línea
+        iditem_proc = self.session.execute(
+            select(VentaDetalle.iditem).where(VentaDetalle.idventadet == idvd)
+        ).scalar()
+
         try:
             from controllers.planes_paciente import PlanesPaciente
-            dlg = PlanesPaciente(self, idpaciente=pid)
+            dlg = PlanesPaciente(
+                self,
+                idpaciente=pid,
+                ctx_venta={"idventadet": idvd, "iditem_procedimiento": iditem_proc}
+            )
             dlg.exec_()
         except Exception as e:
-            QMessageBox.information(self, "Planes",
-                f"No se pudo abrir el panel de planes.\n{e}")
-    # Localiza el QMdiSubWindow real (si existe)
-    def _mdi_subwindow(self):
-        w = self.parentWidget()
-        while w and not isinstance(w, QMdiSubWindow):
-            w = w.parentWidget()
-        return w
+            QMessageBox.information(self, "Planes", f"No se pudo abrir el panel de planes.\n{e}")
 
    
     def _mask_vacia(self, txt: str) -> bool:

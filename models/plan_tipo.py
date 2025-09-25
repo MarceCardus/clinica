@@ -11,7 +11,7 @@ class PlanTipo(Base):
     nombre = Column(String(100), unique=True, nullable=False)
 
     # Mapea a la columna existente "sesiones_por_defecto"
-    sesiones_default = Column("sesiones_por_defecto", Integer, nullable=False, server_default="1")
+    sesiones_por_defecto = Column("sesiones_por_defecto", Integer, nullable=False, server_default="1")
 
     requiere_masaje  = Column(Boolean, nullable=False, server_default="false")
     requiere_aparato = Column(Boolean, nullable=False, server_default="false")

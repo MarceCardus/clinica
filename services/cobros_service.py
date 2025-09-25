@@ -301,7 +301,86 @@ def _imputar_fifo_por_paciente(session: Session, *, idcobro: int, idpaciente: in
     session.flush()
     return aplicado_total
 
+def _credito_disponible_por_cobro(session: Session, cobro_id: int) -> Decimal:
+    """Devuelve cuánto queda disponible en un cobro concreto (monto - imputado), solo si está ACTIVO."""
+    total_imp = session.execute(
+        select(func.coalesce(func.sum(CobroVenta.montoimputado), 0))
+        .where(CobroVenta.idcobro == cobro_id)
+    ).scalar_one()
+    c = session.execute(
+        select(Cobro).where(Cobro.idcobro == cobro_id).with_for_update()
+    ).scalar_one_or_none()
+    if not c:
+        return Decimal("0")
+    estado = (c.estado or "ACTIVO").strip().upper()
+    if estado != "ACTIVO":
+        return Decimal("0")
+    return _money(c.monto or 0) - _money(total_imp or 0)
 
+
+def total_credito_disponible(session: Session, idpaciente: int) -> Decimal:
+    """Suma del crédito a favor del paciente (todos los cobros activos sin imputar)."""
+    cobros_ids = session.execute(
+        select(Cobro.idcobro)
+        .where(Cobro.idpaciente == idpaciente,
+               (Cobro.estado == None) | (Cobro.estado == "ACTIVO"))
+        .order_by(Cobro.fecha.asc(), Cobro.idcobro.asc())
+    ).scalars().all()
+
+    tot = Decimal("0")
+    # No bloqueamos todos; cada cobro se bloquea al consultar su disponible
+    for cid in cobros_ids:
+        tot += _credito_disponible_por_cobro(session, cid)
+    return _money(tot)
+
+
+def imputar_credito_a_venta(session: Session, idpaciente: int, idventa: int) -> Decimal:
+    """
+    Usa crédito a favor del paciente (cobros previos con disponible) para cubrir
+    el saldo de la venta indicada, en orden FIFO. Devuelve lo aplicado.
+    """
+    # Bloqueo/validación de la venta
+    v = session.execute(
+        select(Venta).where(Venta.idventa == idventa).with_for_update()
+    ).scalar_one_or_none()
+    if not v:
+        return Decimal("0")
+    if v.idpaciente != idpaciente:
+        # si querés permitir cruce, quitá esta validación
+        return Decimal("0")
+    if (v.estadoventa or "").strip().upper() == "ANULADA":
+        return Decimal("0")
+
+    restante = _money(v.saldo or 0)
+    if restante <= 0:
+        return Decimal("0")
+
+    # Traer cobros del paciente en FIFO
+    cobros = session.execute(
+        select(Cobro.idcobro)
+        .where(Cobro.idpaciente == idpaciente,
+               (Cobro.estado == None) | (Cobro.estado == "ACTIVO"))
+        .order_by(Cobro.fecha.asc(), Cobro.idcobro.asc())
+    ).scalars().all()
+
+    aplicado_total = Decimal("0")
+    for cid in cobros:
+        if restante <= 0:
+            break
+        disp = _credito_disponible_por_cobro(session, cid)
+        if disp <= 0:
+            continue
+        aplicar = disp if disp <= restante else restante
+
+        # Crear imputación y descontar saldo
+        cv = CobroVenta(idcobro=cid, idventa=idventa, montoimputado=_money(aplicar))
+        session.add(cv)
+        v.saldo = _money(Decimal(v.saldo or 0) - aplicar)
+        aplicado_total += aplicar
+        restante -= aplicar
+
+    session.flush()
+    return _money(aplicado_total)
 def _auditar(session, *, usuario: int | str | None, accion: str, entidad: str,
              iddoc: int, motivo: str | None = None, extra: dict | None = None):
     """

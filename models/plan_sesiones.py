@@ -38,7 +38,7 @@ class PlanSesiones(Base):
     idventadet = Column(Integer, ForeignKey("venta_detalle.idventadet"))
 
     # Item vendido (procedimiento que origina el plan)
-    iditem_procedimiento = Column(Integer, ForeignKey("item.iditem"), nullable=False)
+    iditem_procedimiento = Column(Integer, ForeignKey("item.iditem"), nullable=True)
 
     idplantipo = Column(Integer, ForeignKey("plan_tipo.idplantipo"), nullable=False)
     total_sesiones = Column(Integer, nullable=False)

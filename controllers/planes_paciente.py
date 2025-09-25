@@ -25,11 +25,11 @@ except Exception:  # noqa
 # 1) Lista de planes del paciente
 # =========================
 class PlanesPaciente(QDialog):
-    def __init__(self, parent, idpaciente: int):
+    def __init__(self, parent, idpaciente: int, ctx_venta: dict | None = None):
         super().__init__(parent)
         self.session = parent.session   # usamos la misma sesión del formulario de ventas
         self.idpaciente = idpaciente
-
+        self.ctx_venta = ctx_venta or {}   # <-- guardar contexto
         self.setWindowTitle("Planes del Paciente")
         self.resize(820, 420)
 
@@ -57,6 +57,7 @@ class PlanesPaciente(QDialog):
         self.tbl.doubleClicked.connect(self.abrir_sesiones_seleccionado)
 
         self.cargar()
+    
 
     def cargar(self):
         self.tbl.setRowCount(0)
@@ -112,21 +113,21 @@ class PlanesPaciente(QDialog):
         if dlg.exec_():
             self.cargar()
 
+    
     def crear_plan(self):
-        dlg = CrearPlanDialog(self, idpaciente=self.idpaciente)
+        dlg = CrearPlanDialog(self, idpaciente=self.idpaciente, ctx_venta=self.ctx_venta)
         if dlg.exec_():
             self.cargar()
-
 
 # =========================
 # 2) Crear plan manualmente (con Fecha Lipo)
 # =========================
 class CrearPlanDialog(QDialog):
-    def __init__(self, parent, idpaciente: int):
+    def __init__(self, parent, idpaciente: int, ctx_venta: dict | None = None):
         super().__init__(parent)
         self.session = parent.session
         self.idpaciente = idpaciente
-
+        self.ctx_venta = ctx_venta or {}   # <-- guardar contexto
         self.setWindowTitle("Nuevo plan del paciente")
 
         layout = QVBoxLayout(self)
@@ -221,12 +222,13 @@ class CrearPlanDialog(QDialog):
 
         fecha_inicio = self.dt_inicio.date().toPyDate()
         fecha_lipo = self.dt_lipo.date().toPyDate()
-
+        idventadet = self.ctx_venta.get("idventadet")
+        iditem_proc = self.ctx_venta.get("iditem_procedimiento")
         # Crear plan (sin item_procedimiento, como pediste)
         plan = PlanSesiones(
             idpaciente=self.idpaciente,
-            idventadet=None,
-            iditem_procedimiento=None,
+            idventadet=idventadet,                   # <-- AHORA se guarda
+            iditem_procedimiento=iditem_proc,        # <-- AHORA se guarda
             idplantipo=int(idplantipo),
             total_sesiones=total,
             sesiones_completadas=0,
@@ -236,6 +238,7 @@ class CrearPlanDialog(QDialog):
         )
         self.session.add(plan)
         self.session.flush()
+        
 
         # Crear sesiones programadas (sin fecha por ahora)
         for i in range(1, total + 1):

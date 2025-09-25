@@ -1,7 +1,7 @@
 # ui_theme.py
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtGui import QPalette, QColor
-from PyQt5.QtCore import QLocale
+from PyQt5.QtCore import QLocale,Qt
 
 PRIMARY = "#4F46E5"   # índigo
 PRIMARY_D = "#4338CA"
@@ -65,7 +65,7 @@ QHeaderView::section {{
   padding: 6px; border: none; font-weight: 600;
 }}
 QTableView::item:selected {{
-  background: #E0E7FF;
+  background: #D15D0B;
 }}
 /* botones */
 QPushButton {{
@@ -95,8 +95,10 @@ def apply_theme(app: QApplication):
     QLocale.setDefault(QLocale(QLocale.Spanish, QLocale.Paraguay))
     # paleta leve
     pal = app.palette()
+    pal.setColor(QPalette.Highlight, QColor("#6e3102"))        # ← color de selección (fondo)
+    pal.setColor(QPalette.HighlightedText, Qt.white)           # ← color de texto seleccionado
     pal.setColor(QPalette.Window, QColor(BG))
     pal.setColor(QPalette.Base, QColor(CARD))
-    pal.setColor(QPalette.AlternateBase, QColor("#F6F8FC"))
+    pal.setColor(QPalette.AlternateBase, QColor("#FCF8F6"))
     app.setPalette(pal)
     app.setStyleSheet(QSS)
