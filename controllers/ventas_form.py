@@ -2,22 +2,19 @@
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QComboBox,
     QDateEdit, QTextEdit, QTableWidget, QTableWidgetItem, QSplitter, QGroupBox, QFormLayout,
-    QMessageBox, QListWidget, QDialog,QSizePolicy,QHeaderView,QCompleter ,QMdiSubWindow,QShortcut
+    QMessageBox, QListWidget, QDialog,QCompleter ,QShortcut,QAbstractItemView  
 )
-from PyQt5.QtGui import QIcon, QRegularExpressionValidator,QKeySequence
-from PyQt5.QtCore import Qt, QDate, QEvent, QRegularExpression,QSize,QTimer
+from PyQt5.QtGui import QIcon, QKeySequence
+from PyQt5.QtCore import Qt, QDate, QEvent, QTimer
 from decimal import Decimal
-from sqlalchemy import select, or_, func
+from sqlalchemy import select
 from utils.db import SessionLocal
 from controllers.ventas_controller import VentasController
 from models.paciente import Paciente
 from models.profesional import Profesional
 from models.clinica import Clinica
-from models.paquete import Paquete
 from models.venta_detalle import VentaDetalle
 from models.venta import Venta
-from models.item import Item
-from models.item import ItemTipo
 from controllers.buscar_venta_dialog import BuscarVentaDialog
 
 # --- Diálogo de selección genérico (producto o paquete)
@@ -54,7 +51,7 @@ class ABMVenta(QWidget):
         super().__init__(parent)
         self.usuario_id = usuario_id
         self.session = SessionLocal()
-
+        self._detalle_ids = []
         self.ventas = []
         self.modo_nuevo = False
         self.idventa_actual = None
@@ -92,13 +89,11 @@ class ABMVenta(QWidget):
         self._update_buttons_state()
         
     def _detalle_id_seleccionado(self) -> int | None:
-        """Devuelve el idventadet de la fila seleccionada en el grid de detalle."""
-        r = self.tblDetalle.currentRow()  # o la API que uses (QTableWidget/QTableView)
+        r = self.grilla.currentRow()
         if r < 0:
             return None
         try:
-            # si tenés una columna oculta con el idventadet:
-            return int(self.tblDetalle.item(r, self.COL_IDVENTADET).text())
+            return int(self._detalle_ids[r])  # toma el idventadet según la fila
         except Exception:
             return None
         
@@ -469,6 +464,7 @@ class ABMVenta(QWidget):
         self.lbl_estado.setText("Activo")
         self.lbl_estado.setStyleSheet("font-weight:bold; color: green;")
         self._update_buttons_state()
+        self._detalle_ids = []
 
         # habilita/inhabilita campos y botones propios del modo
         self.set_campos_enabled(editable)
@@ -537,6 +533,7 @@ class ABMVenta(QWidget):
         # ---- Detalle (solo columnas que EXISTEN) ----
         det_rows = self.session.execute(
             select(
+                VentaDetalle.idventadet,
                 VentaDetalle.iditem,
                 VentaDetalle.cantidad,
                 VentaDetalle.preciounitario,
@@ -545,7 +542,7 @@ class ABMVenta(QWidget):
         ).all()
 
         # Pre-cargar código + nombre de Item en un solo query
-        iditems = [r[0] for r in det_rows if r[0] is not None]
+        iditems = [r[1] for r in det_rows if r[1] is not None]
         items_map = {}
         if iditems:
             it_rows = self.session.execute(
@@ -556,8 +553,9 @@ class ABMVenta(QWidget):
 
         self.grilla.blockSignals(True)
         self.grilla.setRowCount(0)
+        self._detalle_ids = []
 
-        for (iditem, cant, pu, desc) in det_rows:
+        for (idventadet, iditem, cant, pu, desc) in det_rows:
             codigo, nombre = items_map.get(iditem, ("", ""))
 
             # Normalizaciones numéricas
@@ -583,13 +581,14 @@ class ABMVenta(QWidget):
 
             row = self.grilla.rowCount()
             self.grilla.insertRow(row)
-            # Índices para 6 columnas: 0 Código, 1 Nombre, 2 Cantidad, 3 Precio, 4 Total, 5 IVA
             self.grilla.setItem(row, 0, QTableWidgetItem(codigo))
             self.grilla.setItem(row, 1, QTableWidgetItem(nombre))
             self.grilla.setItem(row, 2, QTableWidgetItem(str(cant)))
             self.grilla.setItem(row, 3, QTableWidgetItem(f"{pu:,.0f}".replace(",", ".")))
             self.grilla.setItem(row, 4, QTableWidgetItem(f"{sub_i:,.0f}".replace(",", ".")))
             self.grilla.setItem(row, 5, QTableWidgetItem(f"{iva_i:,.0f}".replace(",", ".")))
+
+            self._detalle_ids.append(int(idventadet))   # <-- mapeo fila -> idventadet
 
         self.idx_actual = idx
         self.set_campos_enabled(False)
@@ -983,14 +982,21 @@ class ABMVenta(QWidget):
     def set_modo_edicion_minima(self, on: bool):
         self.modo_edicion = on
         if on:
-            # Edición mínima: campos de cabecera bloqueados salvo N° factura + observaciones
             self.set_campos_enabled(False)
+            # permitir SELECCIÓN de filas (solo-lectura)
+            self.grilla.setEnabled(True)
+            self.grilla.setEditTriggers(QAbstractItemView.NoEditTriggers)
+            self.grilla.setSelectionBehavior(QAbstractItemView.SelectRows)
+            self.grilla.setSelectionMode(QAbstractItemView.SingleSelection)
+
             self.txt_nro_factura.setEnabled(True)
             self.observaciones.setEnabled(True)
             self.btn_guardar.setEnabled(True)
         else:
-            # Restaurar según modo_nuevo o visualización
             self.set_campos_enabled(self.modo_nuevo)
+            self.grilla.setEditTriggers(
+                QAbstractItemView.AllEditTriggers if self.modo_nuevo else QAbstractItemView.NoEditTriggers
+            )
             self.btn_guardar.setEnabled(self.modo_nuevo)
 
         self._update_buttons_state()

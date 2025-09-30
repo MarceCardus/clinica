@@ -1,23 +1,34 @@
 import sys
+from datetime import datetime
+
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QPushButton, QLabel, QComboBox, QDateTimeEdit,
-    QSpinBox, QTextEdit, QMessageBox, QTabWidget, QCompleter, QInputDialog, QTimeEdit, QDialog, QDialogButtonBox
+    QSpinBox, QTextEdit, QMessageBox, QTabWidget, QInputDialog, QTimeEdit, QDialog, QDialogButtonBox
 )
 from PyQt5.QtCore import Qt, QDateTime, QEvent, QLocale, QTime
+from sqlalchemy import func
 from utils.db import SessionLocal
+
+# Modelos
 from models.agenda      import Cita
 from models.paciente    import Paciente
 from models.profesional import Profesional
-from models.producto    import Producto
-from models.paquete     import Paquete
+
+# Nuevo: usamos Item/ItemTipo y PlanTipo
+from models.item        import Item, ItemTipo
+from models.plan_tipo   import PlanTipo
+
+# Calendarios
 from controllers.week_calendar import WeekCalendar, DayCalendar, MonthCalendar
-from datetime import datetime
 from controllers.circular_time_picker import CircularTimePicker
+
+# Nuevo: buscador incremental de pacientes
+from services.patient_picker import PatientPicker
 
 COLORS = [
     "#66cdaa", "#f8d74e", "#d066d6", "#66b5f0", "#f06666",
-    "#042f42", "#FC0AF0", "#fcf9f9", "#09f81d"
+    "#3E697B", "#07DCFC", "#fcf9f9", "#09f81d"
 ]
 
 class CustomDateTimeEdit(QDateTimeEdit):
@@ -27,6 +38,7 @@ class CustomDateTimeEdit(QDateTimeEdit):
         self.setLocale(QLocale(QLocale.Spanish, QLocale.Spain))
         self.setDisplayFormat("dd-MM-yyyy HH:mm")
         self.setDateTime(QDateTime.currentDateTime())
+
 
 class ReagendarTurnoDialog(QDialog):
     def __init__(self, fecha_hora_actual, parent=None):
@@ -51,7 +63,7 @@ class ReagendarTurnoDialog(QDialog):
         self.time_edit.setMaximumTime(QTime(21, 0))
         layout.addWidget(self.time_edit)
 
-        # Forzamos minutos de a 10
+        # Forzar minutos de a 10
         self.time_edit.timeChanged.connect(self.ajustar_minutos_a_10)
 
         # Botones
@@ -60,9 +72,10 @@ class ReagendarTurnoDialog(QDialog):
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
 
+        
+
     def ajustar_minutos_a_10(self, qtime):
         minutos = (qtime.minute() // 10) * 10
-        # Previene loops infinitos:
         if qtime.minute() != minutos:
             self.time_edit.blockSignals(True)
             self.time_edit.setTime(QTime(qtime.hour(), minutos))
@@ -72,28 +85,14 @@ class ReagendarTurnoDialog(QDialog):
         fecha = self.date_edit.date()
         hora = self.time_edit.time()
         return QDateTime(fecha, hora).toPyDateTime()
-class ReagendarDialog(QDialog):
-    def __init__(self, fecha_actual, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Reagendar Turno")
-        layout = QVBoxLayout(self)
 
-        layout.addWidget(QLabel("Selecciona nueva fecha y hora para el turno:"))
-
-        self.dt_nueva = QDateTimeEdit(self)
-        self.dt_nueva.setCalendarPopup(True)
-        self.dt_nueva.setDateTime(QDateTime(fecha_actual))
-        layout.addWidget(self.dt_nueva)
-
-        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, self)
-        btns.accepted.connect(self.accept)
-        btns.rejected.connect(self.reject)
-        layout.addWidget(btns)
-
-    def get_datetime(self):
-        return self.dt_nueva.dateTime().toPyDateTime()
 
 class CitaForm(QMainWindow):
+    ENABLED_CSS  = ""  # dejar que el sistema dibuje normal (blanco)
+    DISABLED_CSS = (
+            "QComboBox{background:#a0a0a0; color:#202020; border:1px solid #707070;}"
+            "QComboBox::drop-down{background:#8c8c8c; border-left:1px solid #707070;}"
+        )
     def __init__(self, usuario_id):
         super().__init__()
         self.usuario_id = usuario_id
@@ -105,16 +104,14 @@ class CitaForm(QMainWindow):
         self.setCentralWidget(cw)
         main = QVBoxLayout(cw)
 
-        # Profesionales
+        # Profesionales activos
         s = SessionLocal()
         self.profes = [(p.idprofesional, f"{p.nombre} {p.apellido}")
-                for p in s.query(Profesional).filter_by(estado=True).order_by(Profesional.apellido)]
-        # Colores fijos
-        self.color_por_profesional = {
-            pid: COLORS[i % len(COLORS)] for i, (pid, _) in enumerate(self.profes)
-        }
+                       for p in s.query(Profesional).filter_by(estado=True).order_by(Profesional.apellido)]
+        self.color_por_profesional = {pid: COLORS[i % len(COLORS)] for i, (pid, _) in enumerate(self.profes)}
         s.close()
 
+        # Vistas
         self.tabs = QTabWidget()
         self.day_view   = DayCalendar(self.profes, self.color_por_profesional, parent=self, form_parent=self)
         self.week_view  = WeekCalendar(self.profes, self.color_por_profesional, parent=self, form_parent=self)
@@ -124,47 +121,61 @@ class CitaForm(QMainWindow):
         self.tabs.addTab(self.month_view, "Mes")
         main.addWidget(self.tabs)
 
-        # Cargar los formularios
+        # ---------- Formulario inferior ----------
         form = QGridLayout()
         r = 0
-        form.addWidget(QLabel("Paciente:"), r, 0)
-        self.cb_paciente = QComboBox()
-        self.cb_paciente.setEditable(True)  # Permite escribir y buscar
-        self.cb_paciente.addItem("Seleccionar Paciente", None)
-        form.addWidget(self.cb_paciente, r, 1)
 
+        # Paciente (nuevo buscador incremental)
+        form.addWidget(QLabel("Paciente:"), r, 0)
+        self.ppaciente = PatientPicker(SessionLocal(), placeholder="Buscar paciente (nombre, CI, tel)…")
+        form.addWidget(self.ppaciente, r, 1)
+
+        # Profesional
         form.addWidget(QLabel("Profesional:"), r, 2)
         self.cb_pro = QComboBox()
         for pid, nombre in self.profes:
             self.cb_pro.addItem(nombre, pid)
         form.addWidget(self.cb_pro, r, 3)
 
+        # Tipo: Item (Producto) | Plan
         r += 1
-        form.addWidget(QLabel("Producto:"), r, 0)
-        self.cb_prod = QComboBox()
-        form.addWidget(self.cb_prod, r, 1)
-        form.addWidget(QLabel("Paquete:"), r, 2)
-        self.cb_paquete = QComboBox()
-        form.addWidget(self.cb_paquete, r, 3)
+        form.addWidget(QLabel("Tipo:"), r, 0)
+        self.cb_tipo = QComboBox()
+        self.cb_tipo.addItems(["Item (Producto)", "Plan de sesiones"])
+        form.addWidget(self.cb_tipo, r, 1)
+
+        # Combos específicos
+        form.addWidget(QLabel("Item/Producto:"), r, 2)
+        self.cb_item = QComboBox()
+        self.cb_item.setObjectName("cb_item")
+        form.addWidget(self.cb_item, r, 3)
 
         r += 1
-        form.addWidget(QLabel("Fecha y Hora:"), r, 0)
+        form.addWidget(QLabel("Plan:"), r, 0)
+        self.cb_plan = QComboBox()
+        self.cb_plan.setObjectName("cb_plan")
+        form.addWidget(self.cb_plan, r, 1)
+
+        # Fecha & duración
+        form.addWidget(QLabel("Fecha y Hora:"), r, 2)
         self.dt_inicio = CustomDateTimeEdit()
-        form.addWidget(self.dt_inicio, r, 1)
-        form.addWidget(QLabel("Duración (min):"), r, 2)
+        form.addWidget(self.dt_inicio, r, 3)
+
+        r += 1
+        form.addWidget(QLabel("Duración (min):"), r, 0)
         self.sp_dur = QSpinBox()
         self.sp_dur.setRange(5, 480)
         self.sp_dur.setValue(30)
-        form.addWidget(self.sp_dur, r, 3)
+        form.addWidget(self.sp_dur, r, 1)
 
-        r += 1
-        form.addWidget(QLabel("Observaciones:"), r, 0)
+        form.addWidget(QLabel("Observaciones:"), r, 2)
         self.txt_obs = QTextEdit()
         self.txt_obs.setMaximumHeight(60)
-        form.addWidget(self.txt_obs, r, 1, 1, 3)
+        form.addWidget(self.txt_obs, r, 3)
+
         main.addLayout(form)
 
-        # Botones de acción
+        # Botones
         btns = QHBoxLayout()
         self.btn_save  = QPushButton("Guardar")
         self.btn_edit  = QPushButton("Editar")
@@ -174,58 +185,139 @@ class CitaForm(QMainWindow):
             btns.addWidget(b)
         main.addLayout(btns)
 
+        # Señales
         self.btn_save.clicked.connect(self.guardar_cita)
         self.btn_edit.clicked.connect(self.editar_cita)
         self.btn_del.clicked.connect(self.eliminar_cita)
         self.btn_clear.clicked.connect(self.limpiar_formulario)
+        self.cb_tipo.currentIndexChanged.connect(self._toggle_tipo)
 
+        # Cargar combos y grillas
         self._cargar_combos()
+        self._toggle_tipo()   # aplica estado inicial de combos
         self._cargar_citas()
 
-        for w in (
-            self.cb_paciente, self.cb_pro, self.cb_prod, self.cb_paquete,
-            self.dt_inicio, self.sp_dur, self.txt_obs,
-            self.btn_save, self.btn_edit, self.btn_del, self.btn_clear
-        ):
+        # Navegación con Enter/arriba/abajo
+        for w in (self.cb_pro, self.cb_tipo, self.cb_item, self.cb_plan,
+                  self.dt_inicio, self.sp_dur, self.txt_obs,
+                  self.btn_save, self.btn_edit, self.btn_del, self.btn_clear):
             w.installEventFilter(self)
 
+        
+    # ---------------- Utilidades ----------------
+
+    def _toggle_tipo(self):
+        es_item = (self.cb_tipo.currentIndex() == 0)
+
+        # Item
+        self.cb_item.setEnabled(es_item)
+        self.cb_item.setCursor(Qt.ArrowCursor if es_item else Qt.ForbiddenCursor)
+        self.cb_item.setStyleSheet(self.ENABLED_CSS if es_item else self.DISABLED_CSS)
+
+        # Plan
+        self.cb_plan.setEnabled(not es_item)
+        self.cb_plan.setCursor(Qt.ArrowCursor if not es_item else Qt.ForbiddenCursor)
+        self.cb_plan.setStyleSheet(self.ENABLED_CSS if not es_item else self.DISABLED_CSS)
+
+        # limpiar el que no se usa
+        if es_item:
+            if self.cb_plan.currentIndex() != 0:
+                self.cb_plan.setCurrentIndex(0)
+        else:
+            if self.cb_item.currentIndex() != 0:
+                self.cb_item.setCurrentIndex(0)
+    def _cargar_combos(self):
+        s = SessionLocal()
+        try:
+            # -------- Items (solo tipo PRODUCTO y activos) --------
+            self.cb_item.blockSignals(True)
+            self.cb_item.clear()
+            self.cb_item.addItem("Seleccionar Item", None)
+
+            it_producto = (s.query(ItemTipo)
+                            .filter(func.lower(ItemTipo.nombre) == func.lower("PRODUCTO"))
+                            .first())
+
+            q_items = s.query(Item).filter(Item.activo.is_(True))
+            if it_producto:
+                q_items = q_items.filter(Item.iditemtipo == it_producto.iditemtipo)
+
+            for it in q_items.order_by(Item.nombre.asc()).all():
+                self.cb_item.addItem(it.nombre, it.iditem)
+            self.cb_item.blockSignals(False)
+
+            # -------- Planes activos --------
+            self.cb_plan.blockSignals(True)
+            self.cb_plan.clear()
+            self.cb_plan.addItem("Seleccionar Plan", None)
+
+            for pl in (s.query(PlanTipo)
+                        .filter(PlanTipo.activo.is_(True))
+                        .order_by(PlanTipo.nombre.asc())
+                        .all()):
+                self.cb_plan.addItem(pl.nombre, pl.idplantipo)
+            self.cb_plan.blockSignals(False)
+        finally:
+            s.close()
+
+    def _cargar_citas(self):
+        self.day_view.clear_events()
+        self.week_view.clear_events()
+        s = SessionLocal()
+        citas = s.query(Cita).all()
+        # Los add_eventos_batch de tus calendarios ya aceptan la lista completa
+        self.day_view.add_eventos_batch(citas)
+        self.week_view.add_eventos_batch(citas)
+        s.close()
+        self.month_view._on_date_changed()
+
+    def _selected_paciente_id(self):
+        """ID actual del PatientPicker (o None)."""
+        return self.ppaciente.current_id()
+
+    def _set_cita_refs(self, c, item_id=None, plan_id=None):
+        """
+        Setea SOLO los campos nuevos. No tocar idproducto (histórico).
+        """
+        # limpiar campos nuevos
+        if hasattr(c, "iditem"):
+            c.iditem = None
+        if hasattr(c, "idplantipo"):
+            c.idplantipo = None
+
+        # asignar según corresponda
+        if item_id and hasattr(c, "iditem"):
+            c.iditem = item_id
+        if plan_id and hasattr(c, "idplantipo"):
+            c.idplantipo = plan_id
+
+    # ---------------- Acciones ----------------
+
     def seleccionar_cita_por_id(self, cita_id):
-        # Si viene una lista, mostrar para elegir, o agarrar el primero
         if isinstance(cita_id, list):
             if len(cita_id) == 1:
                 cita_id = cita_id[0]
             elif len(cita_id) > 1:
-                # Mostrar un diálogo para elegir cuál cita, con datos claros
                 s = SessionLocal()
-                opciones = []
-                id_map = []
+                opciones, id_map = [], []
                 for cid in cita_id:
                     c = s.query(Cita).get(cid)
                     if c and c.paciente:
                         opciones.append(f"{c.paciente.nombre} {c.paciente.apellido} - {c.fecha_inicio.strftime('%d/%m %H:%M')} (ID {cid})")
-                        id_map.append(cid)
                     else:
                         opciones.append(f"ID {cid}")
-                        id_map.append(cid)
+                    id_map.append(cid)
                 s.close()
-                idx, ok = QInputDialog.getItem(
-                    self, 
-                    "Turnos en este horario", 
-                    "Seleccione el turno:",
-                    opciones, 
-                    0, 
-                    False
-                )
+                idx, ok = QInputDialog.getItem(self, "Turnos en este horario", "Seleccione el turno:", opciones, 0, False)
                 if ok and idx:
-                    # Buscar el ID elegido por el texto
                     for op, cid in zip(opciones, id_map):
                         if op == idx:
                             cita_id = cid
                             break
                 else:
-                    return  # El usuario canceló
+                    return
             else:
-                return  # Lista vacía, no hace nada
+                return
 
         if cita_id is None:
             return
@@ -238,59 +330,41 @@ class CitaForm(QMainWindow):
             return
 
         self.cita_seleccionada = cita_id
-        idx_pac = self.cb_paciente.findData(c.idpaciente)
-        idx_pro = self.cb_pro.findData(c.idprofesional)
-        idx_prod = self.cb_prod.findData(c.idproducto)
-        idx_pack = self.cb_paquete.findData(c.idpaquete)
-        if idx_pac >= 0: self.cb_paciente.setCurrentIndex(idx_pac)
-        if idx_pro >= 0: self.cb_pro.setCurrentIndex(idx_pro)
-        if idx_prod >= 0: self.cb_prod.setCurrentIndex(idx_prod)
-        if idx_pack >= 0: self.cb_paquete.setCurrentIndex(idx_pack)
+
+        # Paciente -> mostramos en el picker
+        if c.paciente:
+            display = f"{c.paciente.apellido or ''}, {c.paciente.nombre or ''}".strip(", ")
+            try:
+                self.ppaciente.set_current(int(c.idpaciente), display_text=display)
+            except Exception:
+                pass
+
+        # Profesional
+        if c.idprofesional:
+            idx_pro = self.cb_pro.findData(c.idprofesional)
+            if idx_pro >= 0:
+                self.cb_pro.setCurrentIndex(idx_pro)
+
+        # Item / Plan (buscamos en ambos por compatibilidad)
+        item_id = getattr(c, "iditem", None) or getattr(c, "idproducto", None)
+        plan_id = getattr(c, "idplantipo", None)  # <-- sin idpaquete
+
+        if item_id:
+            self.cb_tipo.setCurrentIndex(0)
+            self._toggle_tipo()
+            idx_it = self.cb_item.findData(item_id)
+            if idx_it >= 0:
+                self.cb_item.setCurrentIndex(idx_it)
+        elif plan_id:
+            self.cb_tipo.setCurrentIndex(1)
+            self._toggle_tipo()
+            idx_pl = self.cb_plan.findData(plan_id)
+            if idx_pl >= 0:
+                self.cb_plan.setCurrentIndex(idx_pl)
+
         self.dt_inicio.setDateTime(QDateTime(c.fecha_inicio))
-        self.sp_dur.setValue(c.duracion)
+        self.sp_dur.setValue(c.duracion or 30)
         self.txt_obs.setPlainText(c.observaciones or "")
-
-    def _cargar_combos(self):
-        s = SessionLocal()
-        self.cb_paciente.blockSignals(True)
-        self.cb_paciente.clear()
-        self.cb_paciente.addItem("Seleccionar Paciente", None)
-        pacientes_lista = []
-
-        for p in s.query(Paciente).order_by(Paciente.apellido):
-            nombre_completo = f"{p.nombre} {p.apellido}"
-            self.cb_paciente.addItem(nombre_completo, p.idpaciente)
-            pacientes_lista.append(nombre_completo)
-
-        self.cb_paciente.blockSignals(False)
-        self.cb_paciente.setEditable(True)
-        completer = QCompleter(pacientes_lista)
-        completer.setCaseSensitivity(False)
-        self.cb_paciente.setCompleter(completer)
-        self.cb_prod.clear()
-        # PRODUCTOS
-        self.cb_prod.clear()
-        self.cb_prod.addItem("Seleccionar Producto", None)  # <<< AGREGADO
-        for prod in s.query(Producto).order_by(Producto.nombre):
-            self.cb_prod.addItem(prod.nombre, prod.idproducto)
-        # PAQUETES
-        self.cb_paquete.clear()
-        self.cb_paquete.addItem("Seleccionar Paquete", None)  # <<< AGREGADO
-        for pkg in s.query(Paquete).order_by(Paquete.nombre):
-            self.cb_paquete.addItem(pkg.nombre, pkg.idpaquete)
-        s.close()
-
-    def _cargar_citas(self):
-        self.day_view.clear_events()
-        self.week_view.clear_events()
-        s = SessionLocal()
-        citas = s.query(Cita).all()
-        for c in citas:
-            texto = f"{c.paciente.nombre}\n{c.duracion} min"
-            self.day_view.add_eventos_batch(citas)
-            self.week_view.add_eventos_batch(citas)
-        s.close()
-        self.month_view._on_date_changed()
 
     def editar_cita(self):
         if not self.cita_seleccionada:
@@ -304,25 +378,42 @@ class CitaForm(QMainWindow):
             QMessageBox.warning(self, "Error", "No se encontró la cita.")
             return
 
-        # Diálogo de reagendamiento único
+        # Reagendar fecha/hora
         dlg = ReagendarTurnoDialog(QDateTime(c.fecha_inicio), self)
-        if dlg.exec_() == QDialog.Accepted:
-            nueva_fecha_hora = dlg.get_datetime()
+        if dlg.exec_() != QDialog.Accepted:
+            s.close()
+            return
+        nueva_fecha_hora = dlg.get_datetime()
 
-            c.idpaciente    = self.cb_paciente.currentData()
-            c.idprofesional = self.cb_pro.currentData()
-            c.idproducto    = self.cb_prod.currentData()
-            c.idpaquete     = self.cb_paquete.currentData()
-            c.fecha_inicio  = nueva_fecha_hora
-            c.duracion      = self.sp_dur.value()
-            c.observaciones = self.txt_obs.toPlainText().strip()
-            s.commit()
+        # Validaciones
+        pid = self._selected_paciente_id()
+        if not pid:
             s.close()
-            self.limpiar_formulario()
-            self._cargar_citas()
-            QMessageBox.information(self, "Ok", "Turno reagendado con éxito.")
-        else:
+            QMessageBox.warning(self, "Error", "Debes seleccionar un paciente.")
+            return
+
+        es_item = (self.cb_tipo.currentIndex() == 0)
+        item_id = self.cb_item.currentData() if es_item else None
+        plan_id = self.cb_plan.currentData() if not es_item else None
+
+        if (es_item and not item_id) or ((not es_item) and not plan_id):
             s.close()
+            QMessageBox.warning(self, "Error", "Selecciona un Item o un Plan (según el tipo).")
+            return
+
+        # Persistir
+        c.idpaciente    = int(pid)
+        c.idprofesional = self.cb_pro.currentData()
+        self._set_cita_refs(c, item_id=item_id, plan_id=plan_id)
+        c.fecha_inicio  = nueva_fecha_hora
+        c.duracion      = self.sp_dur.value()
+        c.observaciones = self.txt_obs.toPlainText().strip()
+        s.commit()
+        s.close()
+
+        self.limpiar_formulario()
+        self._cargar_citas()
+        QMessageBox.information(self, "Ok", "Turno actualizado.")
 
     def eliminar_cita(self):
         if not self.cita_seleccionada:
@@ -342,10 +433,16 @@ class CitaForm(QMainWindow):
 
     def limpiar_formulario(self):
         self.cita_seleccionada = None
-        self.cb_paciente.setCurrentIndex(0)
-        self.cb_pro.setCurrentIndex(0)
-        self.cb_prod.setCurrentIndex(0)
-        self.cb_paquete.setCurrentIndex(0)
+        try:
+            self.ppaciente.set_current(None, "")
+        except Exception:
+            pass
+        if self.cb_pro.count():
+            self.cb_pro.setCurrentIndex(0)
+        self.cb_tipo.setCurrentIndex(0)
+        self._toggle_tipo()
+        self.cb_item.setCurrentIndex(0)
+        self.cb_plan.setCurrentIndex(0)
         self.dt_inicio.setDateTime(QDateTime.currentDateTime())
         self.sp_dur.setValue(30)
         self.txt_obs.clear()
@@ -361,35 +458,46 @@ class CitaForm(QMainWindow):
         return super().eventFilter(obj, event)
 
     def guardar_cita(self):
-        if self.cb_paciente.currentData() is None:
+        pid = self._selected_paciente_id()
+        if not pid:
             QMessageBox.warning(self, "Error", "Debes seleccionar un paciente.")
             return
-        if self.cb_prod.currentData() and self.cb_paquete.currentData():
-            QMessageBox.warning(self, "Error", "Elige producto O paquete, no ambos.")
+
+        es_item = (self.cb_tipo.currentIndex() == 0)
+        item_id = self.cb_item.currentData() if es_item else None
+        plan_id = self.cb_plan.currentData() if not es_item else None
+
+        if (es_item and not item_id) or ((not es_item) and not plan_id):
+            QMessageBox.warning(self, "Error", "Selecciona un Item o un Plan (según el tipo).")
             return
-        if not (self.cb_prod.currentData() or self.cb_paquete.currentData()):
-            QMessageBox.warning(self, "Error", "Debes elegir producto o paquete.")
-            return
+
         fecha = self.dt_inicio.dateTime().toPyDateTime()
-        paciente = self.cb_paciente.currentText()
-        if QMessageBox.question(self, "Confirmar", f"¿Desea agendar a {paciente} para {fecha.strftime('%d/%m/%Y %H:%M')}?") != QMessageBox.Yes:
+        nombre_paciente = self.ppaciente.input.text().strip() or "el paciente seleccionado"
+        if QMessageBox.question(
+            self, "Confirmar",
+            f"¿Desea agendar a {nombre_paciente} para {fecha.strftime('%d/%m/%Y %H:%M')}?"
+        ) != QMessageBox.Yes:
             return
+
         s = SessionLocal()
         nueva = Cita(
-            idpaciente    = self.cb_paciente.currentData(),
+            idpaciente    = int(pid),
             idprofesional = self.cb_pro.currentData(),
-            idproducto    = self.cb_prod.currentData(),
-            idpaquete     = self.cb_paquete.currentData(),
             fecha_inicio  = fecha,
             duracion      = self.sp_dur.value(),
             observaciones = self.txt_obs.toPlainText().strip()
         )
+        # set refs compatible
+        self._set_cita_refs(nueva, item_id=item_id, plan_id=plan_id)
+
         s.add(nueva)
         s.commit()
         s.close()
+
         self.limpiar_formulario()
         self._cargar_citas()
         QMessageBox.information(self, "Ok", "Turno agendado.")
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

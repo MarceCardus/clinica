@@ -101,7 +101,7 @@ class ABMPlanTipo(QDialog):
                 id_fijo = pt.idplantipo
                 self.table.setItem(r, 0, QTableWidgetItem(str(pt.idplantipo)))
                 self.table.setItem(r, 1, QTableWidgetItem(pt.nombre or ""))
-                self.table.setItem(r, 2, QTableWidgetItem(str(pt.sesiones_default or 0)))
+                self.table.setItem(r, 2, QTableWidgetItem(str(pt.sesiones_por_defecto or 0)))
 
                 def yn(v):
                     it = QTableWidgetItem("Sí" if v else "No")
@@ -245,7 +245,7 @@ class FormPlanTipo(QDialog):
     def _cargar(self):
         pt = self.plan_tipo
         self.txt_nombre.setText(pt.nombre or "")
-        self.sp_sesiones.setValue(int(pt.sesiones_default or 1))
+        self.sp_sesiones.setValue(int(pt.sesiones_por_defecto or 1))
         self.chk_masaje.setChecked(bool(pt.requiere_masaje))
         self.chk_aparato.setChecked(bool(pt.requiere_aparato))
         self.chk_activo.setChecked(bool(pt.activo))
@@ -265,7 +265,7 @@ class FormPlanTipo(QDialog):
 
         data = dict(
             nombre=nombre,
-            sesiones_default=int(self.sp_sesiones.value()),
+            sesiones_por_defecto=int(self.sp_sesiones.value()),
             requiere_masaje=self.chk_masaje.isChecked(),
             requiere_aparato=self.chk_aparato.isChecked(),
             activo=self.chk_activo.isChecked(),

@@ -1,5 +1,5 @@
 # models/paciente.py
-from sqlalchemy import Column, Integer, String, Date, Boolean, ForeignKey
+from sqlalchemy import Column, Integer, String, Date, Boolean, ForeignKey, text
 from sqlalchemy.orm import relationship
 from .base import Base
 from .antecPatologico import AntecedentePatologicoPersonal
@@ -30,11 +30,18 @@ class Paciente(Base):
     razon_social = Column(String(160))
     ruta_foto = Column(String(200))
     fecha_alta = Column(Date)
-    estado = Column(Boolean, default=True)
+
+    # 🔒 Estado robusto: default en Python + default en DB + NOT NULL
+    estado = Column(Boolean, nullable=False, default=True, server_default=text("true"))
+
     observaciones = Column(String)
+
+    # Si realmente siempre es requerido, dejalo NOT NULL.
+    # Si tu formulario permite guardar sin barrio todavía, cambiá a nullable=True.
     idbarrio = Column(Integer, ForeignKey('barrio.idbarrio'), nullable=False)
 
     barrio = relationship("Barrio", back_populates="pacientes")
+
     antecedentes_patologicos_personales = relationship(
         "AntecedentePatologicoPersonal", back_populates="paciente", cascade="all, delete-orphan"
     )
@@ -52,6 +59,4 @@ class Paciente(Base):
     )
     indicaciones = relationship(
         "Indicacion", back_populates="paciente", cascade="all, delete-orphan"
-        # sin order_by aquí para evitar el error
     )
-   

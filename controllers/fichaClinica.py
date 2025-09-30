@@ -1436,86 +1436,119 @@ class FichaClinicaForm(QDialog):
             self.table_encargados.resizeColumnsToContents()
 
     def guardar_todo(self):
-        # --- validaciones que ya tenés (CI duplicado, ubicación, etc.) ---
-        ci_ingresado = self.txt_ci.text().strip()
-        if ci_ingresado:
-            existe = (self.session.query(Paciente)
-                    .filter(Paciente.ci_pasaporte == ci_ingresado,
-                            Paciente.idpaciente != self.idpaciente)
-                    .first())
-            if existe:
-                QMessageBox.warning(self, "Error", "Ya existe un paciente con ese número de CI/Pasaporte.")
-                return
+        # --- validaciones básicas ---
+        nombre   = self.txt_nombre.text().strip()
+        apellido = self.txt_apellido.text().strip()
+        ci       = self.txt_ci.text().strip()
 
-        if not self._validar_ubicacion():
+        if not nombre or not apellido or not ci:
+            QMessageBox.warning(self, "Campos requeridos", "Nombre, Apellido y CI son obligatorios.")
+            self.tabs.setCurrentWidget(self.tab_basicos)
             return
 
-        # --- datos a persistir ---
-        from sqlalchemy import update
+        # CI duplicado (excluyendo el propio id si es edición)
+        existe = (self.session.query(Paciente)
+                .filter(Paciente.ci_pasaporte == ci,
+                        Paciente.idpaciente != (self.idpaciente or 0))
+                .first())
+        if existe:
+            QMessageBox.warning(self, "Error", "Ya existe un paciente con ese número de CI/Pasaporte.")
+            self.tabs.setCurrentWidget(self.tab_basicos)
+            return
 
-        valores = {
-            Paciente.nombre:        self.txt_nombre.text().strip(),
-            Paciente.apellido:      self.txt_apellido.text().strip(),
-            Paciente.ci_pasaporte:  self.txt_ci.text().strip(),
-            Paciente.tipo_documento:self.txt_tipo_doc.currentText(),
-            Paciente.fechanacimiento:self.date_nac.date().toPyDate(),
-            Paciente.sexo:          self.txt_sexo.currentText(),
-            Paciente.telefono:      self.txt_telefono.text().strip(),
-            Paciente.email:         self.txt_email.text().strip(),
-            Paciente.direccion:     self.txt_direccion.text().strip(),
-            Paciente.ruc:           self.txt_ruc.text().strip(),
-            Paciente.razon_social:  self.txt_razon_social.text().strip(),
-            Paciente.observaciones: self.txt_observaciones.toPlainText().strip(),
-        }
+        # Ubicación obligatoria (idbarrio desde currentData)
+        idbarrio = None
         if hasattr(self, "cbo_barrio"):
-            valores[Paciente.idbarrio] = self.cbo_barrio.currentData()
+            idbarrio = self.cbo_barrio.currentData()
+        if not idbarrio:
+            self.tabs.setCurrentWidget(self.tab_basicos)
+            QMessageBox.warning(self, "Falta barrio", "Seleccioná Departamento, Ciudad y Barrio antes de guardar.")
+            return
 
-        # ejecuta UPDATE directo (evita estados “detached” del ORM)
-        self.session.execute(
-            update(Paciente)
-            .where(Paciente.idpaciente == self.idpaciente)
-            .values(**{c.key: v for c, v in valores.items()})
+        # Armar valores comunes
+        fecha_nac = self.date_nac.date().toPyDate() if self.date_nac.date() else None
+        valores_dict = dict(
+            nombre=nombre,
+            apellido=apellido,
+            ci_pasaporte=ci,
+            tipo_documento=self.txt_tipo_doc.currentText(),
+            fechanacimiento=fecha_nac,
+            sexo=self.txt_sexo.currentText(),
+            telefono=self.txt_telefono.text().strip(),
+            email=self.txt_email.text().strip(),
+            direccion=self.txt_direccion.text().strip(),
+            ruc=self.txt_ruc.text().strip(),
+            razon_social=self.txt_razon_social.text().strip(),
+            observaciones=self.txt_observaciones.toPlainText().strip(),
+            idbarrio=idbarrio,
         )
 
-        # Familiares
-        if not self.paciente_db or not self.paciente_db.antecedentes_familiares:
-            af = AntecedenteFamiliar(idpaciente=self.idpaciente)
-            self.session.add(af)
-        else:
-            af = self.paciente_db.antecedentes_familiares[0]
-        af.aplica               = self.chk_aplica.isChecked()
-        af.patologia_padre      = self.txt_patologia_padre.text().strip()
-        af.patologia_madre      = self.txt_patologia_madre.text().strip()
-        af.patologia_hermanos   = self.txt_patologia_hermanos.text().strip()
-        af.patologia_hijos      = self.txt_patologia_hijos.text().strip()
-        af.observaciones        = self.txt_fliares_obs.toPlainText().strip()
+        try:
+            if not self.idpaciente:
+                # ============== INSERT (nuevo paciente) ==============
+                nuevo = Paciente(estado=True, **valores_dict)
+                self.session.add(nuevo)
+                self.session.flush()          # obtener nuevo.idpaciente
+                self.idpaciente = nuevo.idpaciente
 
-        # Patológicos personales
-        if not self.paciente_db or not self.paciente_db.antecedentes_patologicos_personales:
-            ap = AntecedentePatologicoPersonal(idpaciente=self.idpaciente)
-            self.session.add(ap)
-        else:
-            ap = self.paciente_db.antecedentes_patologicos_personales[0]
-        ap.cardiovasculares   = self.chk_cardiovasculares.isChecked()
-        ap.respiratorios      = self.chk_respiratorios.isChecked()
-        ap.alergicos          = self.chk_alergicos.isChecked()
-        ap.neoplasicos        = self.chk_neoplasicos.isChecked()
-        ap.digestivos         = self.chk_digestivos.isChecked()
-        ap.genitourinarios    = self.chk_genitourinarios.isChecked()
-        ap.asmatico           = self.chk_asmatico.isChecked()
-        ap.metabolicos        = self.chk_metabolicos.isChecked()
-        ap.osteoarticulares   = self.chk_osteoarticulares.isChecked()
-        ap.neuropsiquiatricos = self.chk_neuropsiquiatricos.isChecked()
-        ap.internaciones      = self.chk_internaciones.isChecked()
-        ap.cirugias           = self.chk_cirugias.isChecked()
-        ap.psicologicos       = self.chk_psicologicos.isChecked()
-        ap.audiovisuales      = self.chk_audiovisuales.isChecked()
-        ap.transfusiones      = self.chk_transfusiones.isChecked()
-        ap.otros              = self.txt_otros_patologicos.toPlainText().strip()
+                # Crear contenedores mínimos si los usás luego
+                af = AntecedenteFamiliar(idpaciente=self.idpaciente)
+                ap = AntecedentePatologicoPersonal(idpaciente=self.idpaciente)
+                self.session.add_all([af, ap])
 
-        self.session.commit()
-        QMessageBox.information(self, "Guardado", "Datos actualizados correctamente.")
-        self.accept()
+            else:
+                # ============== UPDATE (paciente existente) ==============
+                pac = self.session.query(Paciente).get(self.idpaciente)
+                if not pac:
+                    QMessageBox.critical(self, "Error", "Paciente no encontrado para actualizar.")
+                    return
+                for k, v in valores_dict.items():
+                    setattr(pac, k, v)
+
+                # Familiares
+                if not pac.antecedentes_familiares:
+                    af = AntecedenteFamiliar(idpaciente=self.idpaciente)
+                    self.session.add(af)
+                else:
+                    af = pac.antecedentes_familiares[0]
+                af.aplica               = self.chk_aplica.isChecked()
+                af.patologia_padre      = self.txt_patologia_padre.text().strip()
+                af.patologia_madre      = self.txt_patologia_madre.text().strip()
+                af.patologia_hermanos   = self.txt_patologia_hermanos.text().strip()
+                af.patologia_hijos      = self.txt_patologia_hijos.text().strip()
+                af.observaciones        = self.txt_fliares_obs.toPlainText().strip()
+
+                # Patológicos personales
+                if not pac.antecedentes_patologicos_personales:
+                    ap = AntecedentePatologicoPersonal(idpaciente=self.idpaciente)
+                    self.session.add(ap)
+                else:
+                    ap = pac.antecedentes_patologicos_personales[0]
+                ap.cardiovasculares   = self.chk_cardiovasculares.isChecked()
+                ap.respiratorios      = self.chk_respiratorios.isChecked()
+                ap.alergicos          = self.chk_alergicos.isChecked()
+                ap.neoplasicos        = self.chk_neoplasicos.isChecked()
+                ap.digestivos         = self.chk_digestivos.isChecked()
+                ap.genitourinarios    = self.chk_genitourinarios.isChecked()
+                ap.asmatico           = self.chk_asmatico.isChecked()
+                ap.metabolicos        = self.chk_metabolicos.isChecked()
+                ap.osteoarticulares   = self.chk_osteoarticulares.isChecked()
+                ap.neuropsiquiatricos = self.chk_neuropsiquiatricos.isChecked()
+                ap.internaciones      = self.chk_internaciones.isChecked()
+                ap.cirugias           = self.chk_cirugias.isChecked()
+                ap.psicologicos       = self.chk_psicologicos.isChecked()
+                ap.audiovisuales      = self.chk_audiovisuales.isChecked()
+                ap.transfusiones      = self.chk_transfusiones.isChecked()
+                ap.otros              = self.txt_otros_patologicos.toPlainText().strip()
+
+            self.session.commit()
+            QMessageBox.information(self, "Guardado", "Datos guardados correctamente.")
+            self.accept()  # hace que el ABM refresque
+
+        except Exception as e:
+            self.session.rollback()
+            QMessageBox.critical(self, "Error", f"Ocurrió un error guardando el paciente:\n{e}")
+
 
     def closeEvent(self, event):
         self.session.close()

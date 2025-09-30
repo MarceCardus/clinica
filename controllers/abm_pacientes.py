@@ -11,6 +11,7 @@ from models.barrio import Barrio
 from models.ciudad import Ciudad
 from models.departamento import Departamento
 from sqlalchemy.orm import joinedload
+from sqlalchemy import or_
 
 class PacienteForm(QMainWindow):
     def __init__(self, usuario_id):
@@ -55,13 +56,13 @@ class PacienteForm(QMainWindow):
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         layout.addWidget(self.table)
 
-        # OPCIONAL RECOMENDADO: ajuste de columnas
+        # Ajuste de columnas
         hdr = self.table.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.Stretch)
         for col in (8, 9, 10, 11):  # columnas de acción
             hdr.setSectionResizeMode(col, QHeaderView.ResizeToContents)
 
-        # --- Botón "Agregar" abajo a la derecha ---
+        # --- Botón "Agregar" ---
         footer = QHBoxLayout()
         footer.addStretch()
         self.btn_agregar = QPushButton("Agregar Paciente")
@@ -99,7 +100,7 @@ class PacienteForm(QMainWindow):
         tbl.setSortingEnabled(False)
         tbl.setUpdatesEnabled(False)
 
-        # No borres headers (clear borra encabezados). Solo contenido:
+        # Solo contenido, no headers
         tbl.clearContents()
         tbl.setRowCount(len(pacientes))
 
@@ -114,9 +115,9 @@ class PacienteForm(QMainWindow):
 
             ciudad = pac.barrio.ciudad.nombre if pac.barrio and pac.barrio.ciudad else ""
             tbl.setItem(i, 6, QTableWidgetItem(ciudad))
-            tbl.setItem(i, 7, QTableWidgetItem("Activo" if pac.estado else "Inactivo"))
+            tbl.setItem(i, 7, QTableWidgetItem("Activo" if (pac.estado is None or pac.estado) else "Inactivo"))
 
-            # 8..11: botones (siempre en las mismas columnas)
+            # 8..11: botones
             btn_editar = QPushButton()
             btn_editar.setIcon(QIcon("imagenes/editar.png"))
             btn_editar.setToolTip("Editar paciente")
@@ -147,25 +148,27 @@ class PacienteForm(QMainWindow):
     def cargar_pacientes(self):
         """Carga lista completa (según estado) y vuelve a la primera página."""
         session = SessionLocal()
-        query = (
-            session.query(Paciente)
-            .options(joinedload(Paciente.barrio).joinedload(Barrio.ciudad))
-        )
+        try:
+            query = (
+                session.query(Paciente)
+                .options(joinedload(Paciente.barrio).joinedload(Barrio.ciudad))
+            )
 
-        # Filtrar por estado
-        estado = self.combo_estado.currentText()
-        if estado == "Activo":
-            query = query.filter(Paciente.estado == True)
-        elif estado == "Inactivo":
-            query = query.filter(Paciente.estado == False)
-        # "Todos" no filtra
+            # Filtrar por estado
+            estado = self.combo_estado.currentText()
+            if estado == "Activo":
+                # Incluimos NULL como “activo” para no perder inserts sin estado explícito
+                query = query.filter(or_(Paciente.estado == True, Paciente.estado.is_(None)))
+            elif estado == "Inactivo":
+                query = query.filter(Paciente.estado == False)
+            # "Todos" no filtra
 
-        query = query.order_by(Paciente.apellido.asc(), Paciente.nombre.asc()).all()
-        session.close()
-
-        self.pacientes = query
-        self.current_page = 0
-        self.mostrar_pacientes_pagina()
+            result = query.order_by(Paciente.apellido.asc(), Paciente.nombre.asc()).all()
+            self.pacientes = result
+            self.current_page = 0
+            self.mostrar_pacientes_pagina()
+        finally:
+            session.close()
 
     def mostrar_pacientes_pagina(self):
         """Muestra solo la página actual usando poblar_tabla."""
@@ -184,7 +187,6 @@ class PacienteForm(QMainWindow):
         """Filtra sobre self.pacientes (ya filtrado por estado) sin tocar columnas."""
         texto = (self.input_buscar.text() or "").strip().lower()
         if not texto:
-            # Volver a vista paginada normal
             self.mostrar_pacientes_pagina()
             return
 
@@ -201,10 +203,7 @@ class PacienteForm(QMainWindow):
             if any(texto in c for c in campos):
                 filtrados.append(pac)
 
-        # Mostrar filtrados usando exactamente las mismas columnas
         self.poblar_tabla(filtrados)
-
-        # Desactivar paginación en modo filtro (opcional)
         self.lbl_pagina.setText(f"{len(filtrados)} resultado(s)")
         self.btn_prev.setEnabled(False)
         self.btn_next.setEnabled(False)
@@ -227,6 +226,9 @@ class PacienteForm(QMainWindow):
         from controllers.fichaClinica import FichaClinicaForm
         dlg = FichaClinicaForm(idpaciente=None, parent=self)
         if dlg.exec_():
+            # Limpio filtro y muestro TODO para no ocultar el recién creado por error de estado/filtro
+            self.input_buscar.clear()
+            self.combo_estado.setCurrentText("Todos")
             self.cargar_pacientes()
 
     def editar_paciente(self, idpaciente):
@@ -240,11 +242,13 @@ class PacienteForm(QMainWindow):
         if reply == QMessageBox.No:
             return
         session = SessionLocal()
-        pac = session.query(Paciente).filter_by(idpaciente=idpaciente).first()
-        if pac:
-            pac.estado = False
-            session.commit()
-        session.close()
+        try:
+            pac = session.query(Paciente).filter_by(idpaciente=idpaciente).first()
+            if pac:
+                pac.estado = False
+                session.commit()
+        finally:
+            session.close()
         self.cargar_pacientes()
 
     def ver_historial(self, idpaciente):

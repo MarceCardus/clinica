@@ -354,20 +354,33 @@ def main():
 
         # Sumamos el tratamiento (producto.descripcion)
         query = text("""
+            WITH rango AS (
+            SELECT
+                (TIMESTAMP :manana AT TIME ZONE 'America/Asuncion') AS d0_utc,
+                ((TIMESTAMP :manana + INTERVAL '1 day') AT TIME ZONE 'America/Asuncion') AS d1_utc
+            )
             SELECT pr.idprofesional,
-                   pr.nombre   AS nombre_prof,
-                   pr.apellido AS apellido_prof,
-                   pr.telefono AS telefono_prof,
-                   pa.nombre   AS nombre_pac,
-                   pa.apellido AS apellido_pac,
-                   COALESCE(pa.sexo,'') AS sexo,
-                   c.fecha_inicio,
-                   COALESCE(prod.descripcion, '') AS tratamiento
+                pr.nombre   AS nombre_prof,
+                pr.apellido AS apellido_prof,
+                pr.telefono AS telefono_prof,
+                pa.nombre   AS nombre_pac,
+                pa.apellido AS apellido_pac,
+                COALESCE(pa.sexo,'') AS sexo,
+                c.fecha_inicio,
+                CASE 
+                    WHEN c.iditem IS NOT NULL THEN 'ITEM'
+                    WHEN c.idplantipo IS NOT NULL THEN 'PLAN'
+                    ELSE 'PROD'
+                END AS origen,
+                COALESCE(NULLIF(i.nombre, ''), NULLIF(pt.nombre, ''), NULLIF(prod.descripcion, '')) AS tratamiento
             FROM cita c
+            JOIN rango r ON TRUE
             JOIN profesional pr ON c.idprofesional = pr.idprofesional
             JOIN paciente    pa ON c.idpaciente     = pa.idpaciente
-            LEFT JOIN producto prod ON prod.idproducto = c.idproducto
-            WHERE CAST(c.fecha_inicio AS date) = :manana
+            LEFT JOIN item       i   ON i.iditem      = c.iditem
+            LEFT JOIN plan_tipo  pt  ON pt.idplantipo = c.idplantipo
+            LEFT JOIN producto   prod ON prod.idproducto = c.idproducto
+            WHERE c.fecha_inicio >= r.d0_utc AND c.fecha_inicio < r.d1_utc
             ORDER BY pr.idprofesional, c.fecha_inicio
         """)
         rows = session.execute(query, {'manana': manana}).fetchall()
@@ -376,7 +389,8 @@ def main():
         profesionales = {}
         for r in rows:
             (idprof, nprof, aprof, tel_prof,
-             npac, apac, sexo, f_ini, tratamiento) = r
+            npac, apac, sexo, f_ini, origen, tratamiento) = r
+
             d = profesionales.setdefault(idprof, {
                 'nombre': (nprof or "").strip(),
                 'apellido': (aprof or "").strip(),
@@ -389,6 +403,7 @@ def main():
                 'apellido': apac,
                 'sexo': (sexo or "").lower(),
                 'hora': hora,
+                'origen': origen,                           # <- nuevo (ITEM/PLAN/PROD)
                 'tratamiento': (tratamiento or "").strip()
             })
 
@@ -414,13 +429,16 @@ def main():
                 continue
 
             # ===== Mensaje con TRATAMIENTO y línea en blanco entre pacientes =====
-            header = f"{nombre_prof} {apellido_prof}, mañana tenés los siguientes pacientes:"
+            header = f"{HEADER_PREFIX}{nombre_prof} {apellido_prof}, mañana tenés los siguientes pacientes:"
             pac_lines = []
             for pac in datos['pacientes']:
                 emoji = "👨" if pac['sexo'].startswith("m") else "👩‍🦰"
-                tto   = pac['tratamiento'] if pac['tratamiento'] else "—"
+                # etiqueta “Plan: …” si viene de plan
+                if pac['origen'] == 'PLAN' and pac['tratamiento']:
+                    tto = f"Plan: {pac['tratamiento']}"
+                else:
+                    tto = pac['tratamiento'] if pac['tratamiento'] else "—"
                 pac_lines.append(f"{emoji} {pac['nombre']} {pac['apellido']}: {tto} a las {pac['hora']}")
-            # usamos doble salto: el JS lo convertirá en <div><br></div>
             sep = "\n\n" if INSERT_BLANK_LINE_BETWEEN else "\n"
             mensaje = header + "\n" + sep.join(pac_lines)
             # ====================================================================
