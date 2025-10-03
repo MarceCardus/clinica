@@ -14,7 +14,7 @@ from models.plan_sesiones import PlanSesiones, PlanSesion, PlanEstado, SesionEst
 from models.plan_tipo import PlanTipo
 from models.item import Item  # (queda por compatibilidad; ya no se usa en "Nuevo plan…")
 from models.profesional import Profesional
-
+from utils.db import SessionLocal
 # Aparato es opcional: si no existe el modelo, lo ignoramos silenciosamente
 try:
     from models.aparato import Aparato
@@ -26,9 +26,10 @@ except Exception:  # noqa
 # 1) Lista de planes del paciente
 # =========================
 class PlanesPaciente(QDialog):
-    def __init__(self, parent, idpaciente: int, ctx_venta: dict | None = None):
+    def __init__(self, parent, idpaciente: int, ctx_venta: dict | None = None, session=None):
         super().__init__(parent)
-        self.session = parent.session   # usamos la misma sesión del formulario de ventas
+        self.session = session or getattr(parent, "session", None) or SessionLocal()
+        self._own_session = (session is None and not hasattr(parent, "session"))
         self.idpaciente = idpaciente
         self.ctx_venta = ctx_venta or {}   # <-- guardar contexto
         self.setWindowTitle("Planes del Paciente")
@@ -159,7 +160,12 @@ class PlanesPaciente(QDialog):
         if dlg.exec_():
             self.cargar()
 
-
+    def closeEvent(self, e):
+        try:
+            if self._own_session and self.session:
+                self.session.close()
+        finally:
+            super().closeEvent(e)
 # =========================
 # 2) Crear plan manualmente (con Fecha Lipo)
 # =========================

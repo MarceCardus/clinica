@@ -4,12 +4,12 @@ from datetime import datetime
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QPushButton, QLabel, QComboBox, QDateTimeEdit,
-    QSpinBox, QTextEdit, QMessageBox, QTabWidget, QInputDialog, QTimeEdit, QDialog, QDialogButtonBox
+    QSpinBox, QTextEdit, QMessageBox, QTabWidget, QInputDialog, QTimeEdit, QDialog, QDialogButtonBox, QAction,QSizePolicy
 )
 from PyQt5.QtCore import Qt, QDateTime, QEvent, QLocale, QTime
 from sqlalchemy import func
 from utils.db import SessionLocal
-
+from controllers.planes_paciente import PlanesPaciente
 # Modelos
 from models.agenda      import Cita
 from models.paciente    import Paciente
@@ -110,7 +110,32 @@ class CitaForm(QMainWindow):
                        for p in s.query(Profesional).filter_by(estado=True).order_by(Profesional.apellido)]
         self.color_por_profesional = {pid: COLORS[i % len(COLORS)] for i, (pid, _) in enumerate(self.profes)}
         s.close()
-
+        
+        def _style_button(btn, base="#1976D2", hover="#1565C0", pressed="#0D47A1",
+                    text="#FFFFFF", radius=10, pad_v=10, pad_h=16):
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setMinimumHeight(38)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background-color: {base};
+                    color: {text};
+                    border: none;
+                    border-radius: {radius}px;
+                    padding: {pad_v}px {pad_h}px;
+                    font-weight: 600;
+                }}
+                QPushButton:hover {{
+                    background-color: {hover};
+                }}
+                QPushButton:pressed {{
+                    background-color: {pressed};
+                }}
+                QPushButton:disabled {{
+                    background-color: #BDBDBD;
+                    color: #EEEEEE;
+                }}
+            """)
         # Vistas
         self.tabs = QTabWidget()
         self.day_view   = DayCalendar(self.profes, self.color_por_profesional, parent=self, form_parent=self)
@@ -181,9 +206,24 @@ class CitaForm(QMainWindow):
         self.btn_edit  = QPushButton("Editar")
         self.btn_del   = QPushButton("Eliminar")
         self.btn_clear = QPushButton("Limpiar")
-        for b in (self.btn_save, self.btn_edit, self.btn_del, self.btn_clear):
+        self.btn_planes = QPushButton("Planes")
+        for b in (self.btn_save, self.btn_edit, self.btn_del, self.btn_clear,self.btn_planes):
             btns.addWidget(b)
         main.addLayout(btns)
+
+        # ⬇️ Colores estilo “Ventas”
+        AZUL_BASE   = ("#1976D2", "#1565C0", "#0D47A1")  # Guardar
+        NARANJA     = ("#FB8C00", "#F57C00", "#EF6C00") # Editar
+        ROJO        = ("#D32F2F", "#C62828", "#B71C1C") # Eliminar
+        GRIS_OSCURO = ("#455A64", "#37474F", "#263238") # Limpiar
+        VERDE       = ("#2E7D32", "#1B5E20", "#1B5E20") # Planes
+
+        btns.setSpacing(12)
+        _style_button(self.btn_save,   *AZUL_BASE)
+        _style_button(self.btn_edit,   *NARANJA)
+        _style_button(self.btn_del,    *ROJO)
+        _style_button(self.btn_clear,  *GRIS_OSCURO)
+        _style_button(self.btn_planes, *VERDE)
 
         # Señales
         self.btn_save.clicked.connect(self.guardar_cita)
@@ -191,6 +231,7 @@ class CitaForm(QMainWindow):
         self.btn_del.clicked.connect(self.eliminar_cita)
         self.btn_clear.clicked.connect(self.limpiar_formulario)
         self.cb_tipo.currentIndexChanged.connect(self._toggle_tipo)
+        self.btn_planes.clicked.connect(self._abrir_planes_paciente)
 
         # Cargar combos y grillas
         self._cargar_combos()
@@ -205,7 +246,7 @@ class CitaForm(QMainWindow):
 
         
     # ---------------- Utilidades ----------------
-
+    
     def _toggle_tipo(self):
         es_item = (self.cb_tipo.currentIndex() == 0)
 
@@ -498,6 +539,21 @@ class CitaForm(QMainWindow):
         self._cargar_citas()
         QMessageBox.information(self, "Ok", "Turno agendado.")
 
+    def _abrir_planes_paciente(self):
+        """
+        Abre el gestor de Planes/Sesiones del paciente actualmente seleccionado
+        en el PatientPicker. Si no hay paciente, muestra aviso.
+        """
+        pid = self._selected_paciente_id()
+        if not pid:
+            QMessageBox.information(self, "Planes del paciente", "Seleccioná un paciente primero.")
+            return
+
+        try:
+            dlg = PlanesPaciente(self, idpaciente=int(pid))
+            dlg.exec_()
+        except Exception as e:
+            QMessageBox.critical(self, "Planes del paciente", f"No se pudo abrir el gestor de planes.\n{e}")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

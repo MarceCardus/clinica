@@ -75,6 +75,10 @@ from utils.db import SessionLocal
 from controllers.abm_plan_tipo import ABMPlanTipo
 from controllers.abm_aparatos import ABMAparatos
 from controllers.informe_saldo_cliente import InformeSaldoClienteDialog
+from controllers.informe_cobros_paciente import InformeCobrosPorPacienteDlg
+from controllers.informe_ranking import InformeRankingDlg
+from controllers.informe_atencion_prof import InformeAtencionProfesionalDlg
+from controllers.buscar_paciente_planes import BuscarPacientePlanesDlg
 
 class MainWindow(QMainWindow):
     def __init__(self, usuario: Usuario, rol: str, session):
@@ -194,6 +198,10 @@ class MainWindow(QMainWindow):
         action_abm_agendar = QAction("Agendar Pacientes", self)
         action_abm_agendar.triggered.connect(self.abrir_agenda)
         self.menu_agendar.addAction(action_abm_agendar)
+
+        act_planes = QAction("Planes y Sesiones", self)
+        act_planes.triggered.connect(self.abrir_buscar_paciente_planes)
+        self.menu_agendar.addAction(act_planes)     # o el menú que prefieras
         
 
         # Menú Compras
@@ -250,6 +258,21 @@ class MainWindow(QMainWindow):
         self.action_informe_cobros.triggered.connect(self.abrir_informe_cobros)
         self.menu_informes.addAction(self.action_informe_cobros)
 
+         # Informes → Cobros Pacientes
+        self.action_informe_cobros_pac = QAction("Cobros por Paciente", self)
+        self.action_informe_cobros_pac.triggered.connect(self.on_informe_cobros_por_paciente)
+        self.menu_informes.addAction(self.action_informe_cobros_pac)
+
+        # Informes → Ranking
+        self.action_informe_ranking = QAction("Ranking", self)
+        self.action_informe_ranking.triggered.connect(self.abrir_informe_ranking)
+        self.menu_informes.addAction(self.action_informe_ranking)
+
+         # Informes → ATP
+        self.action_informe_atp = QAction("ATP", self)
+        self.action_informe_atp.triggered.connect(self.abrir_informe_atencion_prof)
+        self.menu_informes.addAction(self.action_informe_atp)
+
 
         # --- BLOQUEO DE MENÚ SEGÚN ROL ---
         if self.rol != "superusuario":
@@ -264,12 +287,28 @@ class MainWindow(QMainWindow):
         lbl_usuario.setStyleSheet("font-weight: bold; color: #175ca4; margin-right:20px;")
         status_bar.addPermanentWidget(lbl_usuario)
 
+    def abrir_buscar_paciente_planes(self):
+        dlg = BuscarPacientePlanesDlg(self)
+        dlg.exec_()
+
+    def abrir_informe_atencion_prof(self):
+        dlg = InformeAtencionProfesionalDlg(self)
+        dlg.exec_()
+
+    def abrir_informe_ranking(self):
+        dlg = InformeRankingDlg(self)
+        dlg.exec_()
+    
     def abrir_plan_tipo(self):
         dlg = ABMPlanTipo(self)
         dlg.exec_()
 
     def abrir_informe_stock_mensual(self):
         dlg = InformeStockMensualForm(self) 
+        dlg.exec_()
+
+    def on_informe_cobros_por_paciente(self):
+        dlg = InformeCobrosPorPacienteDlg(self)
         dlg.exec_()
 
     def on_informe_saldo_cliente(self):
