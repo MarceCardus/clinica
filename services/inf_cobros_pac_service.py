@@ -1,7 +1,7 @@
 # services/inf_cobros_pac_service.py
 from datetime import date, datetime
 from decimal import Decimal
-from sqlalchemy import select, func, asc
+from sqlalchemy import select, func, asc,or_
 from sqlalchemy.orm import Session
 
 from models.venta import Venta
@@ -40,7 +40,10 @@ def get_cobros_por_paciente(session: Session, idpaciente: int, fecha_desde: date
             Paciente.apellido,
             Paciente.nombre
         ).join(Paciente, Paciente.idpaciente == Venta.idpaciente)
-         .where(Venta.idpaciente == idpaciente)
+         .where(
+            Venta.idpaciente == idpaciente,
+            or_(Venta.estadoventa.is_(None), Venta.estadoventa != "Anulada")  # <<--- filtro clave
+        )
          .order_by(asc(Venta.fecha), asc(Venta.idventa))
     ).all()
 

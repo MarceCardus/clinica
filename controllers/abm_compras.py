@@ -6,6 +6,7 @@ from models.compra import Compra
 from models.compra_detalle import CompraDetalle
 from models.StockMovimiento import StockMovimiento
 from models.proveedor import Proveedor
+from models.item import Item   # ← agregá este import
 
 class CompraController:
     def __init__(self, session: Session, usuario_id: int):
@@ -13,7 +14,7 @@ class CompraController:
         self.usuario_id = usuario_id
 
     def crear_compra(self, compra_data: dict):
-        """Guarda una nueva compra y suma stock."""
+        """Guarda una nueva compra y suma stock (solo si genera_stock = True)."""
         try:
             compra = Compra(
                 fecha=compra_data["fecha"],
@@ -45,15 +46,18 @@ class CompraController:
                 )
                 self.session.add(compra_det)
 
-                self.session.add(StockMovimiento(
-                    fecha=compra_data["fecha"],
-                    iditem=det["iditem"],
-                    cantidad=det["cantidad"],
-                    tipo="INGRESO",
-                    motivo="Compra",
-                    idorigen=compra.idcompra,
-                    observacion=f"Compra ID {compra.idcompra}, Lote: {det.get('lote', '')}, Obs: {det.get('observaciones', '')}"
-                ))
+                # 🔍 solo si el ítem genera stock
+                item = self.session.get(Item, det["iditem"])
+                if item and getattr(item, "genera_stock", True):
+                    self.session.add(StockMovimiento(
+                        fecha=compra_data["fecha"],
+                        iditem=det["iditem"],
+                        cantidad=det["cantidad"],
+                        tipo="INGRESO",
+                        motivo="Compra",
+                        idorigen=compra.idcompra,
+                        observacion=f"Compra ID {compra.idcompra}, Lote: {det.get('lote', '')}, Obs: {det.get('observaciones', '')}"
+                    ))
 
             compra.montototal = monto_total
             self.session.commit()
@@ -64,7 +68,7 @@ class CompraController:
             raise
 
     def anular_compra(self, idcompra: int):
-        """Anula una compra, registra EGRESO en stock."""
+        """Anula una compra, registra EGRESO en stock solo si genera_stock = True."""
         try:
             compra = self.session.query(Compra).filter_by(idcompra=idcompra).first()
             if not compra:
@@ -74,21 +78,21 @@ class CompraController:
 
             detalles = self.session.query(CompraDetalle).filter_by(idcompra=idcompra).all()
             for det in detalles:
-                self.session.add(StockMovimiento(
-                    fecha=datetime.now(),
-                    iditem=det.iditem,
-                    cantidad=det.cantidad,
-                    tipo="EGRESO",
-                    motivo="Anulación de compra",
-                    idorigen=compra.idcompra,
-                    observacion=f"Anulación compra ID {compra.idcompra}, Lote: {getattr(det, 'lote', '')}, Obs: {getattr(det, 'observaciones', '')}"
-                ))
+                item = self.session.get(Item, det.iditem)
+                if item and getattr(item, "genera_stock", True):
+                    self.session.add(StockMovimiento(
+                        fecha=datetime.now(),
+                        iditem=det.iditem,
+                        cantidad=det.cantidad,
+                        tipo="EGRESO",
+                        motivo="Anulación de compra",
+                        idorigen=compra.idcompra,
+                        observacion=f"Anulación compra ID {compra.idcompra}, Lote: {getattr(det, 'lote', '')}, Obs: {getattr(det, 'observaciones', '')}"
+                    ))
 
             compra.anulada = True
             self.session.commit()
             return True
-
-            # (Si tenés tabla auditoría, acá es buen lugar para insertar el registro.)
 
         except Exception:
             self.session.rollback()

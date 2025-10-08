@@ -15,7 +15,6 @@ from .plan_tipo   import PlanTipo          # nuevo
 class Cita(Base):
     __tablename__ = 'cita'
 
-    # EXACTAMENTE UNO: iditem OR idplantipo OR idproducto (histórico)
     __table_args__ = (
         CheckConstraint(
             "((iditem IS NOT NULL)::int + (idplantipo IS NOT NULL)::int + (idproducto IS NOT NULL)::int) = 1",
@@ -31,8 +30,11 @@ class Cita(Base):
     iditem        = Column(Integer, ForeignKey('item.iditem'), nullable=True)
     idplantipo    = Column(Integer, ForeignKey('plan_tipo.idplantipo'), nullable=True)
 
-    # Legacy (se mantiene para datos históricos)
+    # Legacy
     idproducto    = Column(Integer, ForeignKey('producto.idproducto'), nullable=True)
+
+    # 🔗 Enlace 1–1 con una sesión del plan
+    idsesion      = Column(Integer, ForeignKey('plan_sesion.idsesion'), nullable=True, unique=True)
 
     fecha_inicio  = Column(DateTime, nullable=False)
     duracion      = Column(Integer, nullable=False)
@@ -41,12 +43,15 @@ class Cita(Base):
     creado_en     = Column(DateTime, nullable=False, server_default=func.now())
     modificado_en = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
 
-    # --- Relationships útiles (joined para que cargue junto y no haga N+1) ---
-    paciente      = relationship(Paciente,   lazy='joined')
+    # --- Relaciones ---
+    paciente      = relationship(Paciente,    lazy='joined')
     profesional   = relationship(Profesional, lazy='joined')
-    item          = relationship(Item,       lazy='joined')
-    plan_tipo     = relationship(PlanTipo,   lazy='joined')
-    producto      = relationship(Producto,   lazy='joined')   # legacy
+    item          = relationship(Item,        lazy='joined')
+    plan_tipo     = relationship(PlanTipo,    lazy='joined')
+    producto      = relationship(Producto,    lazy='joined')   # legacy
+
+    # relación inversa a PlanSesion
+    sesion        = relationship("PlanSesion", back_populates="cita", uselist=False, lazy='joined')
 
 
 class BloqueoHorario(Base):

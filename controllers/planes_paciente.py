@@ -1,5 +1,5 @@
 # controllers/planes_paciente.py
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 
 from PyQt5.QtCore import Qt, QDate, QDateTime
 from PyQt5.QtWidgets import (
@@ -7,15 +7,18 @@ from PyQt5.QtWidgets import (
     QFormLayout, QComboBox, QSpinBox, QDateEdit, QMessageBox
 )
 
-from sqlalchemy import select, func, text, asc, delete, update
+from sqlalchemy import select, func, asc, delete, update, and_, or_, text
 from models.venta_detalle import VentaDetalle
 from models.venta import Venta
 from models.plan_sesiones import PlanSesiones, PlanSesion, PlanEstado, SesionEstado
 from models.plan_tipo import PlanTipo
-from models.item import Item  # (queda por compatibilidad; ya no se usa en "Nuevo plan…")
+from models.item import Item  # compatibilidad
 from models.profesional import Profesional
+from models.agenda import Cita  # para crear/eliminar turnos
+from services.agenda_plan_linker import AgendaPlanLinker
 from utils.db import SessionLocal
-# Aparato es opcional: si no existe el modelo, lo ignoramos silenciosamente
+
+# Aparato opcional
 try:
     from models.aparato import Aparato
 except Exception:  # noqa
@@ -31,7 +34,7 @@ class PlanesPaciente(QDialog):
         self.session = session or getattr(parent, "session", None) or SessionLocal()
         self._own_session = (session is None and not hasattr(parent, "session"))
         self.idpaciente = idpaciente
-        self.ctx_venta = ctx_venta or {}   # <-- guardar contexto
+        self.ctx_venta = ctx_venta or {}
         self.setWindowTitle("Planes del Paciente")
         self.resize(820, 420)
 
@@ -51,7 +54,8 @@ class PlanesPaciente(QDialog):
         self.btn_cerrar   = QPushButton("Cerrar")
         for b in (self.btn_nuevo, self.btn_editar, self.btn_anular, self.btn_sesiones):
             btns.addWidget(b)
-        btns.addStretch(); btns.addWidget(self.btn_cerrar)
+        btns.addStretch()
+        btns.addWidget(self.btn_cerrar)
         layout.addLayout(btns)
 
         self.btn_nuevo.clicked.connect(self.crear_plan)
@@ -76,61 +80,90 @@ class PlanesPaciente(QDialog):
         if not pid:
             QMessageBox.information(self, "Planes", "Seleccioná un plan.")
             return
+
         plan = self.session.get(PlanSesiones, pid)
         if not plan:
             return
-        if QMessageBox.question(self, "Anular plan",
-                                "¿Seguro que querés anular este plan?") != QMessageBox.Yes:
+
+        if QMessageBox.question(
+            self, "Anular plan",
+            "¿Seguro que querés ANULAR este plan?\n"
+            "Se eliminarán los turnos pendientes y se marcarán las sesiones no completadas."
+        ) != QMessageBox.Yes:
             return
 
-        plan.estado = PlanEstado.CANCELADO     # <-- enum correcto
-        plan.fecha_fin = None
+        # 1) Cambiar estado del plan
+        plan.estado = PlanEstado.CANCELADO
+        plan.fecha_fin = None  # mantenemos nulo (histórico: plan cancelado sin fecha fin)
 
-        # limpiar fechas programadas de sesiones PROGRAMADA
-        self.session.execute(
-            update(PlanSesion)
-            .where(PlanSesion.idplan == plan.idplan, PlanSesion.estado == SesionEstado.PROGRAMADA)
-            .values(fecha_programada=None)
-        )
+        # 2) Marcar/limpiar sesiones NO completadas
+        sesiones = self.session.execute(
+            select(PlanSesion).where(
+                PlanSesion.idplan == plan.idplan,
+                PlanSesion.estado != SesionEstado.COMPLETADA
+            )
+        ).scalars().all()
+
+        tiene_cancelada = hasattr(SesionEstado, "CANCELADA") or hasattr(SesionEstado, "ANULADA")
+        for s in sesiones:
+            # set estado cancelado si existe; si no, limpiar como "no programada"
+            if tiene_cancelada:
+                try:
+                    s.estado = getattr(SesionEstado, "CANCELADA")
+                except Exception:
+                    s.estado = getattr(SesionEstado, "ANULADA")
+            s.fecha_programada = None
+            s.idterapeuta = None
+
+        self.session.flush()
+
+        # 3) Eliminar Citas vinculadas a sesiones NO completadas
+        #    a) Primero por el linker (si existe relación persistida)
+        try:
+            # método hipotético: que cancele/desenlace en cascada
+            AgendaPlanLinker.on_plan_cancelado(self.session, plan.idplan)
+        except Exception:
+            #    b) Fallback: borrar por convención de observaciones
+            #       Observaciones generadas: "Plan #<id> - Sesión <n>"
+            like_pat = f"Plan #{plan.idplan} - Sesión %"
+            self.session.query(Cita).filter(
+                Cita.idpaciente == plan.idpaciente,
+                Cita.observaciones.ilike(like_pat)
+            ).delete(synchronize_session=False)
 
         self.session.commit()
         self.cargar()
+        QMessageBox.information(self, "Listo", "Plan anulado. Citas pendientes eliminadas.")
 
     def cargar(self):
         self.tbl.clearSelection()
         self.tbl.setRowCount(0)
+
         rows = self.session.execute(
-            select(
-                PlanSesiones.idplan,
-                PlanTipo.nombre,
-                PlanSesiones.total_sesiones,
-                PlanSesiones.sesiones_completadas,
-                PlanSesiones.estado,
-                PlanSesiones.fecha_inicio,
-                PlanSesiones.fecha_fin,
-                Venta.idventa    # <-- solo mostrar
-            )
-            .join(PlanTipo, PlanTipo.idplantipo == PlanSesiones.idplantipo)
-            .join(VentaDetalle, VentaDetalle.idventadet == PlanSesiones.idventadet, isouter=True)
-            .join(Venta, Venta.idventa == VentaDetalle.idventa, isouter=True)
-            .where(PlanSesiones.idpaciente == self.idpaciente)
-            .order_by(PlanSesiones.idplan.desc())
+            text("""
+                SELECT idplan, plan_tipo, total, hechas, restan, estado, fecha_inicio, fecha_fin, idventa
+                FROM vw_planes_por_paciente
+                WHERE idplan IN (
+                    SELECT idplan FROM plan_sesiones WHERE idpaciente = :pid
+                )
+                ORDER BY idplan DESC
+            """),
+            {"pid": self.idpaciente}
         ).all()
 
-        for (idplan, tnom, total, hechas, est, f_ini, f_fin, idventa) in rows:
+        for (idplan, tnom, total, hechas, rest, est, f_ini, f_fin, idventa) in rows:
             r = self.tbl.rowCount()
             self.tbl.insertRow(r)
-            rest = (total or 0) - (hechas or 0)
             data = [
                 idplan,
                 tnom or "",
-                total or 0,
-                hechas or 0,
-                max(0, rest),
-                getattr(est, "value", est) if est else "",
+                int(total or 0),
+                int(hechas or 0),
+                int(rest or 0),
+                str(getattr(est, "value", est) or ""),
                 f_ini.isoformat() if f_ini else "",
                 f_fin.isoformat() if f_fin else "",
-                idventa or ""   # <-- mostramos acá
+                idventa or "",
             ]
             for c, val in enumerate(data):
                 self.tbl.setItem(r, c, QTableWidgetItem(str(val)))
@@ -166,21 +199,23 @@ class PlanesPaciente(QDialog):
                 self.session.close()
         finally:
             super().closeEvent(e)
+
+
 # =========================
-# 2) Crear plan manualmente (con Fecha Lipo)
+# 2) Crear plan (con Lipo) + agendado opcional
 # =========================
 class CrearPlanDialog(QDialog):
     def __init__(self, parent, idpaciente: int, ctx_venta: dict | None = None):
         super().__init__(parent)
         self.session = parent.session
         self.idpaciente = idpaciente
-        self.ctx_venta = ctx_venta or {}   # <-- guardar contexto
+        self.ctx_venta = ctx_venta or {}
         self.setWindowTitle("Nuevo plan del paciente")
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
 
-        # --- Tipo de plan: solo activos con sesiones_por_defecto > 0 ---
+        # Tipos activos con sesiones > 0
         self.cbo_tipo = QComboBox()
         tipos = self.session.execute(
             select(PlanTipo)
@@ -188,18 +223,13 @@ class CrearPlanDialog(QDialog):
             .order_by(PlanTipo.nombre)
         ).scalars().all()
         for pt in tipos:
-            # guardo también sesiones_por_defecto en los datos
             self.cbo_tipo.addItem(pt.nombre, (pt.idplantipo, int(pt.sesiones_por_defecto or 1)))
 
-        # --- Total de sesiones (se carga desde el tipo y se puede editar) ---
         self.sp_total = QSpinBox()
-        self.sp_total.setMinimum(1)
-        self.sp_total.setMaximum(200)
+        self.sp_total.setRange(1, 200)
 
-        # --- Fechas: inicio + lipo (ligadas por reglas) ---
         self.dt_inicio = QDateEdit(QDate.currentDate())
         self.dt_inicio.setCalendarPopup(True)
-
         self.dt_lipo = QDateEdit(QDate.currentDate().addDays(-1))
         self.dt_lipo.setCalendarPopup(True)
 
@@ -209,44 +239,31 @@ class CrearPlanDialog(QDialog):
         form.addRow("Fecha lipo:", self.dt_lipo)
         layout.addLayout(form)
 
-        btns = QHBoxLayout()
+        hb = QHBoxLayout()
         ok = QPushButton("Crear")
-        cancelar = QPushButton("Cancelar")
-        btns.addStretch()
-        btns.addWidget(ok)
-        btns.addWidget(cancelar)
-        layout.addLayout(btns)
-
-        cancelar.clicked.connect(self.reject)
+        ca = QPushButton("Cancelar")
+        hb.addStretch()
+        hb.addWidget(ok)
+        hb.addWidget(ca)
+        layout.addLayout(hb)
+        ca.clicked.connect(self.reject)
         ok.clicked.connect(self.crear)
 
-        # señales para sincronizar
+        # señales: SOLO Lipo → Inicio (cambiar inicio NO toca lipo)
         self.cbo_tipo.currentIndexChanged.connect(self._on_tipo_changed)
         self.dt_lipo.dateChanged.connect(self._on_lipo_changed)
-        self.dt_inicio.dateChanged.connect(self._on_inicio_changed)
 
-        # estado inicial
         self._on_tipo_changed()
         self._on_lipo_changed(self.dt_lipo.date())
 
-    # ---------- reglas de fechas ----------
     def _on_lipo_changed(self, d: QDate):
         # inicio = lipo + 1; si cae domingo, mover a lunes
         inicio = d.addDays(1)
-        if inicio.dayOfWeek() == 7:  # 7 = domingo
+        if inicio.dayOfWeek() == 7:  # domingo
             inicio = inicio.addDays(1)
         self.dt_inicio.blockSignals(True)
         self.dt_inicio.setDate(inicio)
         self.dt_inicio.blockSignals(False)
-
-    def _on_inicio_changed(self, d: QDate):
-        # lipo = inicio - 1; si da domingo, mover a sábado
-        lipo = d.addDays(-1)
-        if lipo.dayOfWeek() == 7:  # domingo
-            lipo = lipo.addDays(-1)
-        self.dt_lipo.blockSignals(True)
-        self.dt_lipo.setDate(lipo)
-        self.dt_lipo.blockSignals(False)
 
     def _on_tipo_changed(self):
         data = self.cbo_tipo.currentData()
@@ -255,13 +272,12 @@ class CrearPlanDialog(QDialog):
         _idplantipo, sesiones_def = data
         self.sp_total.setValue(max(1, int(sesiones_def or 1)))
 
-    # ---------- persistencia ----------
     def crear(self):
         data = self.cbo_tipo.currentData()
         if not data:
             QMessageBox.warning(self, "Tipo de plan", "Seleccioná un tipo de plan.")
             return
-        idplantipo, _sesdef = data
+        idplantipo, _ = data
         total = int(self.sp_total.value())
         if total <= 0:
             QMessageBox.warning(self, "Sesiones", "El total de sesiones debe ser mayor a 0.")
@@ -271,11 +287,11 @@ class CrearPlanDialog(QDialog):
         fecha_lipo = self.dt_lipo.date().toPyDate()
         idventadet = self.ctx_venta.get("idventadet")
         iditem_proc = self.ctx_venta.get("iditem_procedimiento")
-        # Crear plan (sin item_procedimiento, como pediste)
+
         plan = PlanSesiones(
             idpaciente=self.idpaciente,
-            idventadet=idventadet,                   # <-- AHORA se guarda
-            iditem_procedimiento=iditem_proc,        # <-- AHORA se guarda
+            idventadet=idventadet,
+            iditem_procedimiento=iditem_proc,
             idplantipo=int(idplantipo),
             total_sesiones=total,
             sesiones_completadas=0,
@@ -286,26 +302,133 @@ class CrearPlanDialog(QDialog):
         self.session.add(plan)
         self.session.flush()
 
-        # Crear sesiones programadas (sin fecha por ahora)
         for i in range(1, total + 1):
-            self.session.add(
-                PlanSesion(idplan=plan.idplan, nro=i, estado=SesionEstado.PROGRAMADA)
-            )
-
-        # --- Hook: generar turno de Lipo en agenda (lo conectamos cuando me pases el controlador)
-        # try:
-        #     from controllers.agenda_controller import crear_turno_lipo
-        #     crear_turno_lipo(
-        #         self.session,
-        #         paciente_id=self.idpaciente,
-        #         fecha=fecha_lipo,
-        #         plan_id=plan.idplan
-        #     )
-        # except Exception:
-        #     pass
+            self.session.add(PlanSesion(idplan=plan.idplan, nro=i, estado=SesionEstado.PROGRAMADA))
 
         self.session.commit()
-        QMessageBox.information(self, "Plan", f"Plan {plan.idplan} creado.")
+
+        # =========================
+        # Preguntar programación masiva (botones "Sí" / "No")
+        # =========================
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Plan creado")
+        msg.setText("Plan creado.\n\n¿Desea programar (agendar) las sesiones ahora?")
+        msg.setIcon(QMessageBox.Question)
+
+        btn_si = msg.addButton("Sí", QMessageBox.YesRole)
+        btn_no = msg.addButton("No", QMessageBox.NoRole)
+        msg.setDefaultButton(btn_no)
+        msg.setEscapeButton(btn_no)
+        msg.exec_()
+
+        if msg.clickedButton() is btn_si:
+            # =========================
+            # Diálogo para elegir profesional y horario
+            # =========================
+            from PyQt5.QtWidgets import QTimeEdit
+            dlg = QDialog(self)
+            dlg.setWindowTitle("Programar sesiones")
+            v = QVBoxLayout(dlg)
+            frm = QFormLayout()
+            v.addLayout(frm)
+
+            cb_prof = QComboBox()
+            pros = self.session.execute(
+                select(Profesional)
+                .where(Profesional.estado == True)
+                .order_by(Profesional.apellido)
+            ).scalars().all()
+            for p in pros:
+                cb_prof.addItem(f"{p.apellido}, {p.nombre}", p.idprofesional)
+            frm.addRow("Profesional:", cb_prof)
+
+            te = QTimeEdit()
+            te.setDisplayFormat("HH:mm")
+            te.setTime(te.time().fromString("09:00", "HH:mm"))
+            frm.addRow("Horario L-V:", te)
+
+            hb = QHBoxLayout()
+            o = QPushButton("Programar")
+            c = QPushButton("Cancelar")
+            hb.addStretch()
+            hb.addWidget(o)
+            hb.addWidget(c)
+            v.addLayout(hb)
+            c.clicked.connect(dlg.reject)
+            o.clicked.connect(dlg.accept)
+
+            if dlg.exec_() == QDialog.Accepted:
+                if cb_prof.currentData() is None:
+                    QMessageBox.warning(self, "Programar", "Elegí un profesional.")
+                else:
+                    prof_id = cb_prof.currentData()
+                    hora_lv = te.time()
+                    hh_lv, mm_lv = hora_lv.hour(), hora_lv.minute()
+                    if hh_lv < 7:
+                        hh_lv, mm_lv = 7, 0
+                    if hh_lv > 19 or (hh_lv == 19 and mm_lv > 0):
+                        hh_lv, mm_lv = 19, 0
+
+                    current = fecha_inicio
+                    sesiones = self.session.execute(
+                        select(PlanSesion)
+                        .where(PlanSesion.idplan == plan.idplan)
+                        .order_by(PlanSesion.nro)
+                    ).scalars().all()
+
+                    for s in sesiones:
+                        # Saltar domingos
+                        while current.weekday() == 6:
+                            current = current + timedelta(days=1)
+
+                        # Sábado 08:00 — L-V hora elegida
+                        if current.weekday() == 5:
+                            dt_prog = datetime.combine(current, time(8, 0))
+                        else:
+                            dt_prog = datetime.combine(current, time(hh_lv, mm_lv))
+
+                        # Programar sesión
+                        s.fecha_programada = dt_prog
+                        s.idterapeuta = prof_id
+
+                        # 🔧 Upsert por idsesion para no violar uq_cita_idsesion
+                        existing = self.session.execute(
+                            select(Cita).where(Cita.idsesion == s.idsesion)
+                        ).scalar_one_or_none()
+
+                        obs_txt = f"Plan #{plan.idplan} - Sesión {s.nro}"
+
+                        if existing:
+                            existing.idpaciente    = self.idpaciente
+                            existing.idprofesional = prof_id
+                            existing.fecha_inicio  = dt_prog
+                            existing.duracion      = 30
+                            existing.observaciones = obs_txt
+                            if hasattr(existing, "idplantipo"):
+                                existing.idplantipo = plan.idplantipo
+                        else:
+                            c = Cita(
+                                idpaciente=self.idpaciente,
+                                idprofesional=prof_id,
+                                fecha_inicio=dt_prog,
+                                duracion=30,
+                                observaciones=obs_txt
+                            )
+                            if hasattr(c, "idplantipo"):
+                                c.idplantipo = plan.idplantipo
+                            # Enlazar DIRECTO con la sesión
+                            c.idsesion = s.idsesion
+                            self.session.add(c)
+
+                        # siguiente día
+                        current = current + timedelta(days=1)
+
+                    self.session.commit()
+                    QMessageBox.information(
+                        self, "Listo", "Sesiones programadas y turnos creados en la agenda."
+                    )
+
+        QMessageBox.information(self, "Plan", f"Plan #{plan.idplan} creado.")
         self.accept()
 
 
@@ -327,7 +450,7 @@ class SesionesPlanDialog(QDialog):
         self.tbl.setHorizontalHeaderLabels(
             ["N°", "Estado", "Prog.", "Realizada", "Terapeuta", "Masaje", "Aparato", "Notas", "ID"]
         )
-        self.tbl.setColumnHidden(8, True)  # ids
+        self.tbl.setColumnHidden(8, True)
         self.tbl.setSelectionBehavior(QTableWidget.SelectRows)
         self.tbl.setSelectionMode(QTableWidget.SingleSelection)
         self.tbl.horizontalHeader().setStretchLastSection(True)
@@ -350,7 +473,6 @@ class SesionesPlanDialog(QDialog):
         self.btn_cerrar.clicked.connect(self.reject)
         self.btn_guardar.clicked.connect(self.guardar)
 
-        # conectar el cambio de selección DESPUÉS de crear los botones
         self.tbl.currentCellChanged.connect(self._on_row_change)
         self._on_row_change(0, 0, -1, -1)
 
@@ -361,7 +483,6 @@ class SesionesPlanDialog(QDialog):
             estado = self.tbl.item(cr, 1).text()
         except Exception:
             estado = ""
-        # asegurar que el botón exista (por si cambian el orden)
         if hasattr(self, "btn_completar"):
             self.btn_completar.setText("Deshacer completada" if estado == "COMPLETADA" else "Marcar completada")
 
@@ -372,8 +493,10 @@ class SesionesPlanDialog(QDialog):
             return
         s = self.session.get(PlanSesion, sid)
 
-        dlg = QDialog(self); dlg.setWindowTitle("Programar sesión")
-        lay = QVBoxLayout(dlg); form = QFormLayout()
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Programar sesión")
+        lay = QVBoxLayout(dlg)
+        form = QFormLayout()
         from PyQt5.QtWidgets import QDateTimeEdit
         dt = QDateTimeEdit()
         dt.setCalendarPopup(True)
@@ -382,7 +505,9 @@ class SesionesPlanDialog(QDialog):
         cbp = QComboBox()
         pros = [(None, "—")] + [
             (p.idprofesional, f"{p.apellido}, {p.nombre}")
-            for p in self.session.execute(select(Profesional) .where(Profesional.estado == True) .order_by(Profesional.apellido)).scalars()
+            for p in self.session.execute(
+                select(Profesional).where(Profesional.estado == True).order_by(Profesional.apellido)
+            ).scalars()
         ]
         for pid, txt in pros:
             cbp.addItem(txt, pid)
@@ -392,9 +517,15 @@ class SesionesPlanDialog(QDialog):
         form.addRow("Fecha y hora:", dt)
         form.addRow("Terapeuta:", cbp)
         lay.addLayout(form)
-        hb = QHBoxLayout(); ok = QPushButton("Guardar"); ca = QPushButton("Cancelar")
-        hb.addStretch(); hb.addWidget(ok); hb.addWidget(ca); lay.addLayout(hb)
-        ca.clicked.connect(dlg.reject); ok.clicked.connect(dlg.accept)
+        hb = QHBoxLayout()
+        ok = QPushButton("Guardar")
+        ca = QPushButton("Cancelar")
+        hb.addStretch()
+        hb.addWidget(ok)
+        hb.addWidget(ca)
+        lay.addLayout(hb)
+        ca.clicked.connect(dlg.reject)
+        ok.clicked.connect(dlg.accept)
 
         if dlg.exec_():
             if cbp.currentData() is None:
@@ -413,16 +544,14 @@ class SesionesPlanDialog(QDialog):
         s = self.session.get(PlanSesion, sid)
         plan = self.session.get(PlanSesiones, s.idplan)
 
-        if plan.estado == PlanEstado.CANCELADO:   # <-- enum correcto
+        if plan.estado == PlanEstado.CANCELADO:
             QMessageBox.warning(self, "Sesión", "No se puede completar: el plan está CANCELADO.")
             return
 
         if s.estado == SesionEstado.COMPLETADA:
-            # DESHACER
             s.estado = SesionEstado.PROGRAMADA
             s.fecha_realizada = None
         else:
-            # exigir terapeuta
             row = self.tbl.currentRow()
             cbp = self.tbl.cellWidget(row, 4)
             if not cbp or cbp.currentData() is None:
@@ -436,7 +565,7 @@ class SesionesPlanDialog(QDialog):
 
         self.session.flush()
 
-        # actualizar contadores/estado del plan
+        # Mantener contadores/estado (si usás trigger en DB, esto puede omitirse)
         hechas = self.session.execute(
             select(func.count()).where(
                 PlanSesion.idplan == s.idplan,
@@ -459,17 +588,25 @@ class SesionesPlanDialog(QDialog):
     def cargar(self):
         self.tbl.setRowCount(0)
 
-        sesiones = self.session.execute(
-            select(PlanSesion).where(PlanSesion.idplan == self.idplan).order_by(PlanSesion.nro)
-        ).scalars().all()
+        rows = self.session.execute(
+            text("""
+                SELECT
+                    s.idsesion, s.nro, s.estado, s.fecha_programada, s.fecha_realizada,
+                    s.idterapeuta, s.hizo_masaje, s.idaparato, s.notas
+                FROM plan_sesion s
+                WHERE s.idplan = :pid
+                ORDER BY s.nro
+            """),
+            {"pid": self.idplan}
+        ).all()
 
-        # Terapeutas
         pros = [(None, "—")] + [
             (p.idprofesional, f"{p.apellido}, {p.nombre}")
-            for p in self.session.execute(select(Profesional) .where(Profesional.estado == True) .order_by(Profesional.apellido)).scalars()
+            for p in self.session.execute(
+                select(Profesional).where(Profesional.estado == True).order_by(Profesional.apellido)
+            ).scalars()
         ]
 
-        # Aparatos
         aparatos = [(None, "—")]
         if Aparato is not None:
             aparatos += [
@@ -477,46 +614,38 @@ class SesionesPlanDialog(QDialog):
                 for a in self.session.execute(select(Aparato).order_by(Aparato.nombre)).scalars()
             ]
 
-        for s in sesiones:
+        for (idsesion, nro, estado, fprog, freal, idter, hizo_masaje, idap, notas) in rows:
             r = self.tbl.rowCount()
             self.tbl.insertRow(r)
-            self.tbl.setItem(r, 0, QTableWidgetItem(str(s.nro)))
-            self.tbl.setItem(r, 1, QTableWidgetItem(getattr(s.estado, "value", s.estado)))
-            self.tbl.setItem(r, 2, QTableWidgetItem(
-                s.fecha_programada.strftime("%Y-%m-%d %H:%M") if s.fecha_programada else ""
-            ))
-            self.tbl.setItem(
-                r, 3,
-                QTableWidgetItem(s.fecha_realizada.strftime("%Y-%m-%d %H:%M") if s.fecha_realizada else "")
-            )
+            self.tbl.setItem(r, 0, QTableWidgetItem(str(nro)))
+            self.tbl.setItem(r, 1, QTableWidgetItem(str(getattr(estado, "value", estado) or "")))
+            self.tbl.setItem(r, 2, QTableWidgetItem(fprog.strftime("%Y-%m-%d %H:%M") if fprog else ""))
+            self.tbl.setItem(r, 3, QTableWidgetItem(freal.strftime("%Y-%m-%d %H:%M") if freal else ""))
 
             # Terapeuta
             cbp = QComboBox()
             for pid, txt in pros:
                 cbp.addItem(txt, pid)
-            if s.idterapeuta:
-                cbp.setCurrentIndex(cbp.findData(s.idterapeuta))
+            if idter:
+                cbp.setCurrentIndex(cbp.findData(idter))
             self.tbl.setCellWidget(r, 4, cbp)
 
-            # Masaje (Sí/No)
+            # Masaje
             cmbM = QComboBox()
             cmbM.addItems(["No", "Sí"])
-            cmbM.setCurrentIndex(1 if s.hizo_masaje else 0)
+            cmbM.setCurrentIndex(1 if hizo_masaje else 0)
             self.tbl.setCellWidget(r, 5, cmbM)
 
             # Aparato
             cba = QComboBox()
             for aid, txt in aparatos:
                 cba.addItem(txt, aid)
-            if getattr(s, "idaparato", None):
-                cba.setCurrentIndex(cba.findData(s.idaparato))
+            if idap:
+                cba.setCurrentIndex(cba.findData(idap))
             self.tbl.setCellWidget(r, 6, cba)
 
-            # Notas
-            self.tbl.setItem(r, 7, QTableWidgetItem(s.notas or ""))
-
-            # ID oculto
-            self.tbl.setItem(r, 8, QTableWidgetItem(str(s.idsesion)))
+            self.tbl.setItem(r, 7, QTableWidgetItem(notas or ""))
+            self.tbl.setItem(r, 8, QTableWidgetItem(str(idsesion)))
 
         self.tbl.resizeColumnsToContents()
 
@@ -566,7 +695,8 @@ class EditarPlanDialog(QDialog):
         layout = QVBoxLayout(self)
         form = QFormLayout()
 
-        self.sp_total = QSpinBox(); self.sp_total.setRange(1, 200)
+        self.sp_total = QSpinBox()
+        self.sp_total.setRange(1, 200)
         self.sp_total.setValue(self.plan.total_sesiones or 1)
 
         self.dt_inicio = QDateEdit()
@@ -585,65 +715,72 @@ class EditarPlanDialog(QDialog):
         layout.addLayout(form)
 
         hb = QHBoxLayout()
-        ok = QPushButton("Guardar"); ca = QPushButton("Cancelar")
-        hb.addStretch(); hb.addWidget(ok); hb.addWidget(ca)
+        ok = QPushButton("Guardar")
+        ca = QPushButton("Cancelar")
+        hb.addStretch()
+        hb.addWidget(ok)
+        hb.addWidget(ca)
         layout.addLayout(hb)
         ca.clicked.connect(self.reject)
         ok.clicked.connect(self._guardar)
 
-    def _guardar(self):
-        try:
-            nuevo_total = int(self.sp_total.value())
-            hechas = int(self.plan.sesiones_completadas or 0)
-            if nuevo_total < hechas:
-                QMessageBox.warning(self, "Total de sesiones",
-                                    f"No se puede fijar el total ({nuevo_total}) por debajo de las completadas ({hechas}).")
-                return
-
-            # 1) Sincronizar sesiones (agregar/borrar)
-            actual = self.session.execute(
-                select(func.count()).where(PlanSesion.idplan == self.plan.idplan)
-            ).scalar() or 0
-
-            if nuevo_total > actual:
-                for nro in range(actual + 1, nuevo_total + 1):
-                    self.session.add(PlanSesion(idplan=self.plan.idplan, nro=nro, estado=SesionEstado.PROGRAMADA))
-            elif nuevo_total < actual:
-                sobrantes = self.session.execute(
-                    select(PlanSesion)
-                    .where(PlanSesion.idplan == self.plan.idplan, PlanSesion.nro > nuevo_total)
-                    .order_by(asc(PlanSesion.nro))
-                ).scalars().all()
-                if any(s.estado != SesionEstado.PROGRAMADA for s in sobrantes):
-                    QMessageBox.warning(self, "Total de sesiones",
-                                        "No se puede reducir: las sesiones que sobran no están PROGRAMADA.")
+        def _guardar(self):
+            try:
+                nuevo_total = int(self.sp_total.value())
+                hechas = int(self.plan.sesiones_completadas or 0)
+                if nuevo_total < hechas:
+                    QMessageBox.warning(
+                        self, "Total de sesiones",
+                        f"No se puede fijar el total ({nuevo_total}) por debajo de las completadas ({hechas})."
+                    )
                     return
-                self.session.execute(
-                    delete(PlanSesion).where(PlanSesion.idplan == self.plan.idplan, PlanSesion.nro > nuevo_total)
-                )
 
-            self.plan.total_sesiones = nuevo_total
-            self.plan.fecha_inicio = self.dt_inicio.date().toPyDate()
+                # 1) Sincronizar sesiones (agregar/borrar)
+                actual = self.session.execute(
+                    select(func.count()).where(PlanSesion.idplan == self.plan.idplan)
+                ).scalar() or 0
 
-            # 2) Estado/fecha_fin en base a totales ya sincronizados
-            est_txt = self.cbo_estado.currentText()
-            for e in PlanEstado:
-                if e.value == est_txt:
-                    self.plan.estado = e
-                    break
+                if nuevo_total > actual:
+                    for nro in range(actual + 1, nuevo_total + 1):
+                        self.session.add(PlanSesion(idplan=self.plan.idplan, nro=nro, estado=SesionEstado.PROGRAMADA))
+                elif nuevo_total < actual:
+                    sobrantes = self.session.execute(
+                        select(PlanSesion)
+                        .where(PlanSesion.idplan == self.plan.idplan, PlanSesion.nro > nuevo_total)
+                        .order_by(asc(PlanSesion.nro))
+                    ).scalars().all()
+                    if any(s.estado != SesionEstado.PROGRAMADA for s in sobrantes):
+                        QMessageBox.warning(
+                            self, "Total de sesiones",
+                            "No se puede reducir: las sesiones que sobran no están PROGRAMADA."
+                        )
+                        return
+                    self.session.execute(
+                        delete(PlanSesion).where(PlanSesion.idplan == self.plan.idplan, PlanSesion.nro > nuevo_total)
+                    )
 
-            if self.plan.estado == PlanEstado.FINALIZADO:
-                if (self.plan.sesiones_completadas or 0) >= (self.plan.total_sesiones or 0):
-                    if not self.plan.fecha_fin:
-                        self.plan.fecha_fin = date.today()
-                else:
-                    self.plan.estado = PlanEstado.ACTIVO
+                self.plan.total_sesiones = nuevo_total
+                self.plan.fecha_inicio = self.dt_inicio.date().toPyDate()
+
+                # 2) Estado/fecha_fin en base a totales ya sincronizados
+                est_txt = self.cbo_estado.currentText()
+                for e in PlanEstado:
+                    if e.value == est_txt:
+                        self.plan.estado = e
+                        break
+
+                if self.plan.estado == PlanEstado.FINALIZADO:
+                    if (self.plan.sesiones_completadas or 0) >= (self.plan.total_sesiones or 0):
+                        if not self.plan.fecha_fin:
+                            self.plan.fecha_fin = date.today()
+                    else:
+                        self.plan.estado = PlanEstado.ACTIVO
+                        self.plan.fecha_fin = None
+                elif self.plan.estado == PlanEstado.CANCELADO:
                     self.plan.fecha_fin = None
-            elif self.plan.estado == PlanEstado.CANCELADO:   # <-- enum correcto
-                self.plan.fecha_fin = None
 
-            self.session.commit()
-            self.accept()
-        except Exception as e:
-            self.session.rollback()
-            QMessageBox.critical(self, "Editar plan", f"Ocurrió un error al guardar:\n{e}")
+                self.session.commit()
+                self.accept()
+            except Exception as e:
+                self.session.rollback()
+                QMessageBox.critical(self, "Editar plan", f"Ocurrió un error al guardar:\n{e}")

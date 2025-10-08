@@ -80,6 +80,8 @@ from controllers.informe_ranking import InformeRankingDlg
 from controllers.informe_atencion_prof import InformeAtencionProfesionalDlg
 from controllers.buscar_paciente_planes import BuscarPacientePlanesDlg
 
+from controllers.visor_graficos import VisorGraficosDlg
+
 class MainWindow(QMainWindow):
     def __init__(self, usuario: Usuario, rol: str, session):
         super().__init__()
@@ -273,6 +275,11 @@ class MainWindow(QMainWindow):
         self.action_informe_atp.triggered.connect(self.abrir_informe_atencion_prof)
         self.menu_informes.addAction(self.action_informe_atp)
 
+        # Informes → Gráficos
+        actionInformeGeneral = QAction("Gráficos", self)
+        actionInformeGeneral.triggered.connect(self.abrir_visor_graficos)
+        self.menu_informes.addAction(actionInformeGeneral)
+
 
         # --- BLOQUEO DE MENÚ SEGÚN ROL ---
         if self.rol != "superusuario":
@@ -289,6 +296,14 @@ class MainWindow(QMainWindow):
 
     def abrir_buscar_paciente_planes(self):
         dlg = BuscarPacientePlanesDlg(self)
+        dlg.exec_()
+
+    def abrir_visor_graficos(self):
+        dlg = VisorGraficosDlg(self)
+        dlg.exec_()
+
+    def abrir_informe_general(self):
+        dlg = InformeGeneralDlg(self)
         dlg.exec_()
 
     def abrir_informe_atencion_prof(self):

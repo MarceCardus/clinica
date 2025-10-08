@@ -489,19 +489,21 @@ class ABMCompra(QWidget):
 
     def ir_primero(self):
         if self.compras:
-            self.mostrar_compra(0)
+            self.mostrar_compra(len(self.compras) - 1)
 
     def ir_anterior(self):
-        if self.compras and self.idx_actual > 0:
-            self.mostrar_compra(self.idx_actual - 1)
-
-    def ir_siguiente(self):
+        # Anterior en el tiempo (más antiguo que el actual)
         if self.compras and self.idx_actual < len(self.compras) - 1:
             self.mostrar_compra(self.idx_actual + 1)
 
+    def ir_siguiente(self):
+        # Siguiente en el tiempo (más reciente que el actual)
+        if self.compras and self.idx_actual > 0:
+            self.mostrar_compra(self.idx_actual - 1)
+
     def ir_ultimo(self):
         if self.compras:
-            self.mostrar_compra(len(self.compras) - 1)
+            self.mostrar_compra(0)
 
     # ---------- acciones ----------
     def eliminar_fila_grilla(self):
@@ -551,13 +553,21 @@ class ABMCompra(QWidget):
     # ---------- búsqueda/agregado de insumos ----------
     def buscar_insumos(self, texto):
         session = SessionLocal()
-        items = session.query(Item).join(ItemTipo).filter(
-            Item.activo == True,
-            Item.nombre.ilike(f"%{texto}%"),
-            ItemTipo.nombre.in_(["INSUMO", "AMBOS"])
-        ).all()
-        session.close()
-        return items
+        try:
+            items = (
+                session.query(Item)
+                .join(ItemTipo)
+                .filter(
+                    Item.activo == True,
+                    Item.nombre.ilike(f"%{texto}%")
+                )
+                .order_by(ItemTipo.nombre.desc(), Item.nombre.asc())  # ← AQUÍ
+                .all()
+            )
+            return items
+        finally:
+            session.close()
+
 
     def buscar_y_agregar_insumo(self):
         texto = self.busca_insumo.text().strip()
@@ -575,10 +585,13 @@ class ABMCompra(QWidget):
         self.busca_insumo.clear()
 
     def agregar_insumo_a_grilla(self, insumo):
-        # Evitar duplicados: buscá si ya está el código
+        # Etiqueta opcional: marcar si no genera stock
+        etiqueta = " (no genera stock)" if not getattr(insumo, "genera_stock", True) else ""
+        nombre_mostrado = f"{insumo.nombre}{etiqueta}"
+
+        # Evitar duplicados
         for row in range(self.grilla.rowCount()):
             if self.grilla.item(row, 0) and self.grilla.item(row, 0).text() == str(insumo.iditem):
-                # Si ya existe, sumar cantidad
                 cant_item = self.grilla.item(row, 2)
                 cant_actual = _num(cant_item.text()) if cant_item and cant_item.text() else Decimal(0)
                 cant_item.setText(str(int(cant_actual) + 1))
@@ -588,13 +601,15 @@ class ABMCompra(QWidget):
         row = self.grilla.rowCount()
         self.grilla.insertRow(row)
         self.grilla.setItem(row, 0, _item_ro(str(insumo.iditem)))
-        self.grilla.setItem(row, 1, _item_ro(insumo.nombre))
+        it_nombre = _item_ro(nombre_mostrado)
+        if not getattr(insumo, "genera_stock", True):
+            it_nombre.setToolTip("Este ítem no genera movimientos de stock")
+        self.grilla.setItem(row, 1, it_nombre)
         self.grilla.setItem(row, 2, _item_editable("1"))
         self.grilla.setItem(row, 3, _item_editable("0"))
         self.grilla.setItem(row, 4, _item_ro("0", Qt.AlignRight | Qt.AlignVCenter))
         self.grilla.setItem(row, 5, _item_ro("0", Qt.AlignRight | Qt.AlignVCenter))
 
-        # Focus y selección total en cantidad
         self.grilla.setCurrentCell(row, 2)
         self.grilla.editItem(self.grilla.item(row, 2))
         self.grilla.setFocus()

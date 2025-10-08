@@ -1,14 +1,21 @@
 # controllers/informe_stock_mensual_form.py
 from __future__ import annotations
+import os
 from datetime import datetime
+from decimal import Decimal
+
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QLineEdit,
-    QPushButton, QTableWidget, QTableWidgetItem, QMessageBox, QWidget, QFileDialog,QAbstractItemView,QHeaderView
+    QPushButton, QTableWidget, QTableWidgetItem, QMessageBox, QWidget,
+    QFileDialog, QAbstractItemView, QHeaderView, QCheckBox, QSpacerItem,
+    QSizePolicy
 )
 from PyQt5.QtCore import Qt, QDate
-from decimal import Decimal
+from PyQt5.QtGui import QColor, QBrush, QFont
+
 from utils.db import new_session
-from sqlalchemy.exc import OperationalError, InterfaceError,DisconnectionError
+from sqlalchemy.exc import OperationalError, InterfaceError, DisconnectionError
+
 from services.informe_stock_mensual_service import (
     obtener_informe_stock_mensual,
     exportar_pdf_informe_stock_mensual,
@@ -16,18 +23,30 @@ from services.informe_stock_mensual_service import (
     SPANISH_MONTHS,
 )
 
+
 class InformeStockMensualForm(QDialog):
+    """
+    Informe de stock mensual (UI)
+    BONUS:
+      - Filtro de texto por ítem.
+      - Checkbox “Ocultar sin movimiento”.
+      - Checkbox “Solo stock negativo”.
+      - Coloreado: stock negativo en rojo; filas sin movimiento en gris (si no se ocultan).
+      - Orden numérico correcto gracias a EditRole en celdas numéricas.
+      - Indicador de totales fuera de la grilla.
+      - Reintento de conexión si se cae el DB-connection.
+    """
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
-     
-        
+
         self.setWindowTitle("Informe de Stock Mensual")
-        self.resize(1100, 700)
+        self.resize(1150, 720)
 
         lay = QVBoxLayout(self)
 
         # -------- Filtros --------
         top = QHBoxLayout()
+
         top.addWidget(QLabel("Mes:"))
         self.cmb_mes = QComboBox()
         for i in range(1, 13):
@@ -38,19 +57,34 @@ class InformeStockMensualForm(QDialog):
 
         top.addWidget(QLabel("Año:"))
         self.txt_anio = QLineEdit(str(hoy.year()))
-        self.txt_anio.setFixedWidth(80)
+        self.txt_anio.setFixedWidth(90)
+        self.txt_anio.setAlignment(Qt.AlignCenter)
         top.addWidget(self.txt_anio)
+
+        # BONUS: filtro por texto y toggles
+        top.addSpacing(12)
+        self.txt_buscar = QLineEdit()
+        self.txt_buscar.setPlaceholderText("Buscar ítem...")
+        self.txt_buscar.setClearButtonEnabled(True)
+        self.txt_buscar.setFixedWidth(220)
+        top.addWidget(self.txt_buscar)
+
+        self.chk_ocultar_cero = QCheckBox("Ocultar sin movimiento")
+        self.chk_solo_neg = QCheckBox("Solo stock negativo")
+        top.addWidget(self.chk_ocultar_cero)
+        top.addWidget(self.chk_solo_neg)
+
+        top.addItem(QSpacerItem(20, 10, QSizePolicy.Expanding, QSizePolicy.Minimum))
 
         self.btn_generar = QPushButton("Generar")
         self.btn_excel = QPushButton("Exportar a Excel")
         self.btn_pdf = QPushButton("PDF")
         self.btn_cerrar = QPushButton("Cerrar")
-
-        top.addStretch()
         top.addWidget(self.btn_generar)
         top.addWidget(self.btn_excel)
         top.addWidget(self.btn_pdf)
         top.addWidget(self.btn_cerrar)
+
         lay.addLayout(top)
 
         # -------- Leyenda --------
@@ -61,55 +95,70 @@ class InformeStockMensualForm(QDialog):
         # -------- Tabla --------
         self.tbl = QTableWidget(0, 7)
         self.tbl.setHorizontalHeaderLabels(["#", "Ítem", "Inicial", "Ingreso", "Ventas", "Insumo", "Actual"])
-        self.tbl.setColumnWidth(0, 50)
-        self.tbl.setColumnWidth(1, 420)
-        self.tbl.setColumnWidth(2, 90)
+        self.tbl.setColumnWidth(0, 60)
+        self.tbl.setColumnWidth(1, 460)
+        self.tbl.setColumnWidth(2, 100)
         for c in range(3, 7):
-            self.tbl.setColumnWidth(c, 110)
-        lay.addWidget(self.tbl, 1)  # <-- FALTABA: agrega la tabla al layout y que estire
-        self.lbl_totales = QLabel("")
-        self.lbl_totales.setStyleSheet("font-weight: bold; padding-top: 6px;")
-        lay.addWidget(self.lbl_totales)
+            self.tbl.setColumnWidth(c, 120)
         self.tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl.horizontalHeader().setStretchLastSection(True)
         self.tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         self.tbl.setSortingEnabled(False)
         self.tbl.setAlternatingRowColors(True)
+        lay.addWidget(self.tbl, 1)
+
+        # -------- Totales --------
+        self.lbl_totales = QLabel("")
+        self.lbl_totales.setStyleSheet("font-weight: bold; padding-top: 6px;")
+        lay.addWidget(self.lbl_totales)
+
         # -------- Signals --------
         self.btn_generar.clicked.connect(self.buscar)
         self.btn_pdf.clicked.connect(self.exportar_pdf)
         self.btn_excel.clicked.connect(self.exportar_excel)
         self.btn_cerrar.clicked.connect(self.close)
 
+        # BONUS: filtros reactivos
+        self.txt_buscar.textChanged.connect(lambda _=None: self.buscar(redraw_only=True))
+        self.chk_ocultar_cero.stateChanged.connect(lambda _=None: self.buscar(redraw_only=True))
+        self.chk_solo_neg.stateChanged.connect(lambda _=None: self.buscar(redraw_only=True))
+
+        # Cache último resultado para filtrar sin ir a DB
+        self._last_info = None
+
         # Primera carga
         self.buscar()
 
-
-    def _num(self, x) -> QTableWidgetItem:
-        # texto formateado + dato crudo para ordenar numéricamente
-        it = QTableWidgetItem(self._fmt(x))
-        it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        try:
-            n = int(Decimal(str(x)).quantize(Decimal("1")))
-        except Exception:
-            n = 0
-        it.setData(Qt.EditRole, n)  # <- sorting numérico
-        return it
     # -------- Util --------
-    def _fmt(self, x) -> str:
+    @staticmethod
+    def _fmt(x) -> str:
         try:
             n = int(Decimal(str(x)).quantize(Decimal("1")))
         except Exception:
             n = int(x or 0)
         return f"{n:,}".replace(",", ".")
 
-    def _cell(self, text: str, right: bool = False) -> QTableWidgetItem:
-        it = QTableWidgetItem(text)
-        if right:
-            it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+    def _num_item(self, x) -> QTableWidgetItem:
+        """Texto formateado + dato crudo (EditRole) para ordenar numéricamente."""
+        it = QTableWidgetItem(self._fmt(x))
+        it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        try:
+            n = int(Decimal(str(x)).quantize(Decimal("1")))
+        except Exception:
+            n = 0
+        it.setData(Qt.EditRole, n)
         return it
 
+    @staticmethod
+    def _cell(text: str, right: bool = False) -> QTableWidgetItem:
+        it = QTableWidgetItem(text)
+        it.setTextAlignment((Qt.AlignRight if right else Qt.AlignLeft) | Qt.AlignVCenter)
+        return it
+
+    def _busy(self, v: bool):
+        for b in (self.btn_generar, self.btn_excel, self.btn_pdf, self.btn_cerrar):
+            b.setEnabled(not v)
 
     def _correr_con_sesion(self, fn):
         """Corre una función con sesión fresca y la cierra. Reintenta 1 vez si la conexión cae."""
@@ -120,67 +169,121 @@ class InformeStockMensualForm(QDialog):
             finally:
                 s.close()
         except (OperationalError, InterfaceError, DisconnectionError):
-            # Reintento limpio
             s = new_session()
             try:
                 return fn(s)
             finally:
                 s.close()
-    def _busy(self, v: bool):
-        for b in (self.btn_generar, self.btn_excel, self.btn_pdf):
-            b.setEnabled(not v)
 
-    def buscar(self):
+    # -------- Búsqueda / Render --------
+    def buscar(self, redraw_only: bool = False):
+        """
+        Si redraw_only=True, vuelve a dibujar la tabla aplicando filtros UI
+        sobre self._last_info (sin tocar base).
+        """
         self._busy(True)
         try:
-            mes  = self.cmb_mes.currentData()
+            mes = self.cmb_mes.currentData()
             anio = int(self.txt_anio.text().strip())
 
-            info = self._correr_con_sesion(lambda s: obtener_informe_stock_mensual(s, year=anio, month=mes))
+            if not redraw_only or self._last_info is None:
+                info = self._correr_con_sesion(lambda s: obtener_informe_stock_mensual(s, year=anio, month=mes))
+                self._last_info = info
+            else:
+                info = self._last_info
 
+            # Leyenda más completa
+            try:
+                f_ini = info.corte_inicial.strftime('%d/%m/%Y')
+                f_fin = info.corte_final.strftime('%d/%m/%Y') if hasattr(info, "corte_final") else f"{mes:02d}/{anio}"
+            except Exception:
+                f_ini, f_fin = "-", "-"
             self.lbl_leyenda.setText(
-                f"Inicial = stock al {info.corte_inicial.strftime('%d/%m/%Y')}   •   "
-               
+                "Inicial = stock al {ini}  •  "
+                "Ingreso = compras/ajustes(+)  •  "
+                "Ventas = ventas  •  "
+                "Insumo = egresos/ajustes(-)  •  "
+                "Actual = Inicial + Ingreso - Ventas - Insumo  •  "
+                "Período: {fin}"
+                .format(ini=f_ini, fin=f_fin)
             )
 
+            # Filtros UI (bonus)
+            txt = (self.txt_buscar.text() or "").strip().lower()
+            ocultar_cero = self.chk_ocultar_cero.isChecked()
+            solo_neg = self.chk_solo_neg.isChecked()
+
+            def pasa_filtros(it) -> bool:
+                nombre_ok = (txt in (it.nombre or "").lower()) if txt else True
+                ing = Decimal(it.ingreso or 0)
+                ven = Decimal(it.ventas or 0)
+                otr = Decimal(it.otros or 0)
+                act = Decimal(it.actual or 0)
+                sin_mov = (ing == 0 and ven == 0 and otr == 0)
+                neg_ok = (act < 0) if solo_neg else True
+                sinmov_ok = (not ocultar_cero) or (not sin_mov)
+                return nombre_ok and neg_ok and sinmov_ok
+
+            # Render
             self.tbl.setSortingEnabled(False)
             self.tbl.setUpdatesEnabled(False)
             self.tbl.setRowCount(0)
 
-            # inicializar acumuladores
             grand_ini = Decimal(0)
             grand_ing = Decimal(0)
             grand_ven = Decimal(0)
             grand_otr = Decimal(0)
             grand_act = Decimal(0)
 
-            i = 1
-            for g in info.grupos:
-                for it in g.items:
+            row_idx = 1
+            for g in (info.grupos or []):
+                for it in (g.items or []):
+                    if not pasa_filtros(it):
+                        continue
+
                     r = self.tbl.rowCount()
                     self.tbl.insertRow(r)
-                    self.tbl.setItem(r, 0, self._cell(str(i)))
-                    self.tbl.setItem(r, 1, self._cell(it.nombre))
-                    self.tbl.setItem(r, 2, self._num(it.inicial))
-                    self.tbl.setItem(r, 3, self._num(it.ingreso))
-                    self.tbl.setItem(r, 4, self._num(it.ventas))
-                    self.tbl.setItem(r, 5, self._num(it.otros))
-                    self.tbl.setItem(r, 6, self._num(it.actual))
-                    i += 1
+                    self.tbl.setItem(r, 0, self._cell(str(row_idx)))
+                    self.tbl.setItem(r, 1, self._cell(it.nombre or ""))
 
-                    # acumular totales
-                    grand_ini += it.inicial
-                    grand_ing += it.ingreso
-                    grand_ven += it.ventas
-                    grand_otr += it.otros
-                    grand_act += it.actual
+                    self.tbl.setItem(r, 2, self._num_item(it.inicial))
+                    self.tbl.setItem(r, 3, self._num_item(it.ingreso))
+                    self.tbl.setItem(r, 4, self._num_item(it.ventas))
+                    self.tbl.setItem(r, 5, self._num_item(it.otros))
+                    self.tbl.setItem(r, 6, self._num_item(it.actual))
 
-            # Pie (footer) de totales fuera de la tabla
-            if i == 1:
+                    # Coloreado bonus
+                    ing = Decimal(it.ingreso or 0)
+                    ven = Decimal(it.ventas or 0)
+                    otr = Decimal(it.otros or 0)
+                    act = Decimal(it.actual or 0)
+                    sin_mov = (ing == 0 and ven == 0 and otr == 0)
+
+                    if act < 0:
+                        # rojo si negativo
+                        for c in range(self.tbl.columnCount()):
+                            self.tbl.item(r, c).setForeground(QBrush(QColor("#b00020")))
+                    elif sin_mov and not ocultar_cero:
+                        # gris si sin movimiento (solo si se muestra)
+                        for c in range(self.tbl.columnCount()):
+                            self.tbl.item(r, c).setForeground(QBrush(QColor("#888888")))
+
+                    # Totales
+                    grand_ini += Decimal(it.inicial or 0)
+                    grand_ing += ing
+                    grand_ven += ven
+                    grand_otr += otr
+                    grand_act += act
+
+                    row_idx += 1
+
+            # Pie de totales
+            if row_idx == 1:
                 self.lbl_totales.setText("TOTAL GENERAL — (sin datos)")
             else:
                 self.lbl_totales.setText(
-                    f"TOTAL GENERAL — Inicial: {self._fmt(grand_ini)}   •   "
+                    f"TOTAL GENERAL — "
+                    f"Inicial: {self._fmt(grand_ini)}   •   "
                     f"Ingreso: {self._fmt(grand_ing)}   •   "
                     f"Ventas: {self._fmt(grand_ven)}   •   "
                     f"Insumo: {self._fmt(grand_otr)}   •   "
@@ -188,7 +291,7 @@ class InformeStockMensualForm(QDialog):
                 )
 
             self.tbl.resizeRowsToContents()
-            # mostrar y forzar orden por NOMBRE (columna 1)
+            # Ordenar por NOMBRE asc por defecto
             self.tbl.setUpdatesEnabled(True)
             self.tbl.setSortingEnabled(True)
             self.tbl.horizontalHeader().setSortIndicatorShown(True)
@@ -204,24 +307,34 @@ class InformeStockMensualForm(QDialog):
             self.tbl.setSortingEnabled(True)
             self._busy(False)
 
-
     # -------- Exportaciones --------
     def exportar_pdf(self):
-        mes = self.cmb_mes.currentData()
-        anio = int(self.txt_anio.text().strip())
+        """
+        Nota: la exportación se hace desde el service y no respeta
+        los filtros UI (texto/negativos/sin movimiento). Para exportar
+        exactamente lo visible, hacé la exportación a Excel y filtrá allí,
+        o adaptá el service para recibir filtros.
+        """
+        try:
+            mes = self.cmb_mes.currentData()
+            anio = int(self.txt_anio.text().strip())
+        except Exception:
+            QMessageBox.warning(self, "Validación", "Mes/Año inválido.")
+            return
 
-        stamp = datetime.now().strftime("%H_%M")              # <-- hh_mm
-        sug = f"informe_stock_{anio}_{mes:02d}_{stamp}.pdf"   # <-- nombre con hora
-
+        stamp = datetime.now().strftime("%H_%M")
+        sug = f"informe_stock_{anio}_{mes:02d}_{stamp}.pdf"
         ruta, _ = QFileDialog.getSaveFileName(self, "Guardar PDF", sug, "PDF (*.pdf)")
         if not ruta:
             return
-        if not ruta.lower().endswith(".pdf"):                # asegura extensión
+        if not ruta.lower().endswith(".pdf"):
             ruta += ".pdf"
 
         self._busy(True)
         try:
-            self._correr_con_sesion(lambda s: exportar_pdf_informe_stock_mensual(s, year=anio, month=mes, ruta_pdf=ruta))
+            self._correr_con_sesion(
+                lambda s: exportar_pdf_informe_stock_mensual(s, year=anio, month=mes, ruta_pdf=ruta)
+            )
             QMessageBox.information(self, "PDF", f"PDF generado:\n{ruta}")
         except Exception as e:
             QMessageBox.critical(self, "Error PDF", str(e))
@@ -229,17 +342,41 @@ class InformeStockMensualForm(QDialog):
             self._busy(False)
 
     def exportar_excel(self):
-        mes = self.cmb_mes.currentData()
-        anio = int(self.txt_anio.text().strip())
+        """
+        Igual que PDF: el service exporta el conjunto completo del mes,
+        sin filtros UI.
+        """
+        try:
+            mes = self.cmb_mes.currentData()
+            anio = int(self.txt_anio.text().strip())
+        except Exception:
+            QMessageBox.warning(self, "Validación", "Mes/Año inválido.")
+            return
+
         sug = f"informe_stock_{anio}_{mes:02d}.xlsx"
         ruta, _ = QFileDialog.getSaveFileName(self, "Guardar Excel", sug, "Excel (*.xlsx)")
-        if not ruta: return
+        if not ruta:
+            return
+        if not ruta.lower().endswith(".xlsx"):
+            ruta += ".xlsx"
+
         self._busy(True)
         try:
-            self._correr_con_sesion(lambda s: exportar_excel_informe_stock_mensual(s, year=anio, month=mes, ruta_xlsx=ruta))
+            self._correr_con_sesion(
+                lambda s: exportar_excel_informe_stock_mensual(s, year=anio, month=mes, ruta_xlsx=ruta)
+            )
             QMessageBox.information(self, "Excel", f"Excel generado:\n{ruta}")
         except Exception as e:
             QMessageBox.critical(self, "Error Excel", str(e))
         finally:
             self._busy(False)
 
+
+# --- Runner manual ----
+if __name__ == "__main__":
+    from PyQt5.QtWidgets import QApplication
+    import sys
+    app = QApplication(sys.argv)
+    w = InformeStockMensualForm()
+    w.show()
+    sys.exit(app.exec_())

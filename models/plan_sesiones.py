@@ -71,24 +71,26 @@ class PlanSesion(Base):
     nro = Column(SmallInteger, nullable=False)
     estado = Column(Enum(SesionEstado, name="sesion_estado"), nullable=False, default=SesionEstado.PROGRAMADA)
 
-    fecha_programada = Column(Date)
-    fecha_realizada = Column(DateTime)
-    idterapeuta = Column(Integer, ForeignKey("profesional.idprofesional"))
+    # ✅ Recomendado: TIMESTAMP para guardar exactamente fecha+hora de la cita
+    # (si aún es Date en tu DB, ver migración más abajo)
+    fecha_programada = Column(DateTime)     # <— cambiar a DateTime
+    fecha_realizada  = Column(DateTime)
+    idterapeuta      = Column(Integer, ForeignKey("profesional.idprofesional"))
 
     hizo_masaje = Column(Boolean, nullable=False, default=False)
+    idaparato   = Column(Integer, ForeignKey("aparato.idaparato", ondelete="SET NULL"))
+    parametros  = Column(JSONB, nullable=False, default=dict)
+    notas       = Column(Text)
 
-    # Aparatología utilizada en la sesión (item tipo "APARATO")
-    idaparato  = Column(Integer, ForeignKey("aparato.idaparato", ondelete="SET NULL"))
-
-    parametros = Column(JSONB, nullable=False, default=dict)  # intensidades, tiempos, etc.
-    notas = Column(Text)
-
-    creado_en = Column(DateTime, nullable=False, server_default=func.now())
-    creado_por = Column(Integer)
-    actualizado_en = Column(DateTime)
+    creado_en       = Column(DateTime, nullable=False, server_default=func.now())
+    creado_por      = Column(Integer)
+    actualizado_en  = Column(DateTime)
     actualizado_por = Column(Integer)
 
-    plan = relationship("PlanSesiones", back_populates="sesiones")
+    plan  = relationship("PlanSesiones", back_populates="sesiones")
+
+    # 🔗 inversa a Cita (la FK vive en Cita.idsesion)
+    cita  = relationship("Cita", back_populates="sesion", uselist=False)
 
     def __repr__(self):
         return f"<PlanSesion id={self.idsesion} plan={self.idplan} nro={self.nro} estado={self.estado.value}>"

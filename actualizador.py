@@ -2,7 +2,6 @@ import os
 import shutil
 import subprocess
 import sys
-from filecmp import cmp
 import ctypes
 
 from PyQt5.QtWidgets import QApplication, QProgressDialog
@@ -36,29 +35,10 @@ def leer_version(ruta):
         print(f"[WARN] No se pudo leer versión en {ruta}: {e}")
         return None
 
-def sincronizar_imagenes(origen, destino):
-    try:
-        if not os.path.isdir(origen):
-            print(f"[WARN] Carpeta imágenes en servidor no disponible: {origen}")
-            return
-        os.makedirs(destino, exist_ok=True)
-        for archivo in os.listdir(origen):
-            src = os.path.join(origen, archivo)
-            dst = os.path.join(destino, archivo)
-            try:
-                if not os.path.exists(dst) or not cmp(src, dst, shallow=False):
-                    shutil.copy2(src, dst)
-                    print(f"[INFO] Copiado: {archivo}")
-            except Exception as e:
-                print(f"[WARN] No se pudo copiar {archivo}: {e}")
-    except Exception as e:
-        print(f"[WARN] Error al sincronizar imágenes: {e}")
-
 def message_box(title: str, msg: str):
     try:
         ctypes.windll.user32.MessageBoxW(0, msg, title, 0)
     except Exception:
-        # En última instancia, imprime a consola.
         print(f"{title}: {msg}")
 
 def lanzar_local(exe_path: str):
@@ -76,7 +56,6 @@ def lanzar_local(exe_path: str):
 
 def actualizar_con_progreso():
     """Devuelve True si la actualización terminó bien, False si hubo error."""
-    # Creamos la app solo para el diálogo de progreso
     app = QApplication.instance() or QApplication(sys.argv)
 
     dialog = QProgressDialog("Actualizando aplicación...", None, 0, 0)
@@ -89,18 +68,19 @@ def actualizar_con_progreso():
     try:
         os.makedirs(RUTA_LOCAL, exist_ok=True)
 
-        # Copiamos binario y version.txt
-        shutil.copy2(os.path.join(RUTA_SERVIDOR, 'main.exe'),
-                     os.path.join(RUTA_LOCAL, 'main.exe'))
+        # --- SOLO ejecutable principal y version.txt ---
+        src_main = os.path.join(RUTA_SERVIDOR, 'main.exe')
+        dst_main = os.path.join(RUTA_LOCAL, 'main.exe')
+        shutil.copy2(src_main, dst_main)
         print("[INFO] main.exe actualizado.")
 
-        shutil.copy2(os.path.join(RUTA_SERVIDOR, 'version.txt'),
-                     os.path.join(RUTA_LOCAL, 'version.txt'))
+        src_ver = os.path.join(RUTA_SERVIDOR, 'version.txt')
+        dst_ver = os.path.join(RUTA_LOCAL, 'version.txt')
+        shutil.copy2(src_ver, dst_ver)
         print("[INFO] version.txt actualizado.")
 
-        # Sincronizamos imágenes, pero si falla no abortamos la actualización
-        sincronizar_imagenes(os.path.join(RUTA_SERVIDOR, 'imagenes'),
-                             os.path.join(RUTA_LOCAL, 'imagenes'))
+        # IMPORTANTE: ya NO copiamos nada de la carpeta 'imagenes'
+        # (se eliminó la función sincronizar_imagenes y su uso)
 
     except Exception as e:
         print(f"[WARN] Error durante la actualización: {e}")
@@ -132,10 +112,8 @@ def main():
         if not ok:
             print("[WARN] Falló la actualización; iniciando versión local.")
             lanzar_local(exe_path)
-        # Si se actualizó, ejecutamos la nueva versión local
         lanzar_local(exe_path)
     else:
-        # Ya está actualizado: ejecutar directo
         print("[INFO] Versión local al día; iniciando aplicación.")
         lanzar_local(exe_path)
 

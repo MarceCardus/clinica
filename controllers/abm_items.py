@@ -3,7 +3,7 @@ import sys, os, pathlib
 from PyQt5.QtWidgets import (
     QApplication, QDialog, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QPushButton, QWidget, QLabel, QLineEdit, QComboBox, QMessageBox, QTextEdit,
-    QCheckBox, QTabWidget, QSpinBox, QDoubleSpinBox, QHeaderView,QAbstractItemView
+    QCheckBox, QTabWidget, QSpinBox, QDoubleSpinBox, QHeaderView, QAbstractItemView
 )
 from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import Qt, QSize, QLocale
@@ -18,7 +18,7 @@ from models.tipoproducto import TipoProducto
 from models.especialidad import Especialidad
 from models.compra_detalle import CompraDetalle
 from models.venta_detalle  import VentaDetalle
-from models.plan_tipo import PlanTipo
+from models.plan_tipo import PlanTipo  # si lo usás en otro lado
 
 # --- util rutas de icono (con fallback) ---
 def resource_path(*parts):
@@ -70,11 +70,11 @@ class ABMItems(QDialog):
         f.addWidget(self.chk_inactivos)
         layout.addWidget(filtros)
 
-        # Grilla (11 columnas)
-        self.table = QTableWidget(0, 11)
+        # Grilla (12 columnas)
+        self.table = QTableWidget(0, 12)
         self.table.setHorizontalHeaderLabels([
             "ID","Nombre","Tipo","Precio de Venta","Tipo de Producto","Especialidad",
-            "Tipo de Insumo","Uso Interno","Uso Procedimiento","Activo","Acciones"
+            "Tipo de Insumo","Uso Interno","Uso Procedimiento","Genera Stock","Activo","Acciones"
         ])
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -89,7 +89,7 @@ class ABMItems(QDialog):
         hdr.setMinimumSectionSize(60)
         self.table.setWordWrap(False)
 
-        # Extras de usabilidad (¡ahora sí, después de crearla!)
+        # Doble clic para editar
         self.table.itemDoubleClicked.connect(lambda *_: self.abrir_dialogo_editar(self.table.currentRow()))
         self.table.setAlternatingRowColors(True)
 
@@ -97,7 +97,6 @@ class ABMItems(QDialog):
         fm = self.table.fontMetrics()
         self.table.verticalHeader().setDefaultSectionSize(int(fm.height() * 1.9))
         layout.addWidget(self.table)
-        
 
         # Botón agregar
         self.btn_agregar = QPushButton(" Agregar ítem")
@@ -109,7 +108,6 @@ class ABMItems(QDialog):
         h = QHBoxLayout(); h.addStretch(); h.addWidget(self.btn_agregar)
         layout.addLayout(h)
         self.setLayout(layout)
-
 
     def _selected_id(self):
         r = self.table.currentRow()
@@ -143,7 +141,6 @@ class ABMItems(QDialog):
         self.table.verticalScrollBar().setValue(state.get("vpos", 0))
         self.table.horizontalScrollBar().setValue(state.get("hpos", 0))
 
-        
     def _fmt_precio(self, v):
         try:
             n = int(v or 0)
@@ -243,9 +240,15 @@ class ABMItems(QDialog):
                 it_uso_proc.setTextAlignment(Qt.AlignCenter)
                 self.table.setItem(r, 8, it_uso_proc)
 
+                # Genera stock
+                it_gen = QTableWidgetItem("Sí" if getattr(it, "genera_stock", True) else "No")
+                it_gen.setTextAlignment(Qt.AlignCenter)
+                self.table.setItem(r, 9, it_gen)
+
+                # Activo
                 it_activo = QTableWidgetItem("Sí" if it.activo else "No")
                 it_activo.setTextAlignment(Qt.AlignCenter)
-                self.table.setItem(r, 9, it_activo)
+                self.table.setItem(r, 10, it_activo)
 
                 # Acciones
                 cell = QWidget(); h = QHBoxLayout(cell); h.setContentsMargins(0,0,0,0)
@@ -267,7 +270,7 @@ class ABMItems(QDialog):
 
                 h.addWidget(btn_editar); h.addWidget(btn_del)
                 cell.setLayout(h)
-                self.table.setCellWidget(r, 10, cell)
+                self.table.setCellWidget(r, 11, cell)
 
             self.table.resizeRowsToContents()
             self._auto_fit_columns()
@@ -275,13 +278,11 @@ class ABMItems(QDialog):
             self.table.setSortingEnabled(True)
             self.table.setUpdatesEnabled(True)
 
-
     def _row_id(self, row):
         it = self.table.item(row, 0)
         if not it or not it.text().isdigit():
             return -1
         return int(it.text())
-    
 
     def _row_by_id(self, iditem: int) -> int:
         for r in range(self.table.rowCount()):
@@ -313,7 +314,6 @@ class ABMItems(QDialog):
                 QApplication.restoreOverrideCursor()
             self._restore_view_state(state)
 
-
     def abrir_dialogo_editar(self, row):
         if row < 0:
             return
@@ -327,18 +327,15 @@ class ABMItems(QDialog):
         if dlg.exec_() == QDialog.Accepted:
             QApplication.setOverrideCursor(Qt.WaitCursor)
             try:
-                # no hace falta recargar tipos (son fijos); sólo la grilla
                 self.load_data()
             finally:
                 QApplication.restoreOverrideCursor()
             self._restore_view_state(state)
 
-
     def _esta_referenciado(self, iditem:int) -> bool:
         s = self.session
         usado_en_compra = s.query(exists().where(CompraDetalle.iditem == iditem)).scalar()
         usado_en_venta  = s.query(exists().where(VentaDetalle.iditem == iditem)).scalar()
-
         return bool(usado_en_compra or usado_en_venta)
 
     def eliminar_item(self, row):
@@ -387,15 +384,12 @@ class ABMItems(QDialog):
         # Restaurar scroll y selección “inteligente”
         if next_sel_id is not None:
             self._select_row_by_id(next_sel_id, state.get("col"))
-            # re-centrar como en _restore_view_state
             self.table.verticalScrollBar().setValue(state.get("vpos", 0))
             self.table.horizontalScrollBar().setValue(state.get("hpos", 0))
         else:
             self._restore_view_state(state)
 
 
-
-# ------------ FORM MODAL ------------
 # ------------ FORM MODAL ------------
 class FormularioItem(QDialog):
     TIPOS_INSUMO = ["Medicamento", "Descartable", "Reactivo", "Limpieza", "Cafetería","Varios"]
@@ -417,15 +411,19 @@ class FormularioItem(QDialog):
         # --- Comunes (encabezado) ---
         self.txt_nombre = QLineEdit()
 
-        # NUEVO: código de barra
+        # Código de barra
         self.txt_codigo = QLineEdit()
         self.txt_codigo.setPlaceholderText("Escaneá o escribí el código…")
         self.txt_codigo.setClearButtonEnabled(True)
         self.txt_codigo.setMaxLength(64)
 
-        self.cbo_tipo_general = QComboBox()  # ItemTipo (PRODUCTO/INSUMO/AMBOS)
+        self.cbo_tipo_general = QComboBox()  # ItemTipo (PRODUCTO/INSUMO/AMBOS/SERVICIO...)
         self.txt_descripcion = QTextEdit()
         self.chk_activo = QCheckBox("Activo"); self.chk_activo.setChecked(True)
+
+        # NUEVO: flag genera stock
+        self.chk_genera_stock = QCheckBox("Genera stock")
+        self.chk_genera_stock.setChecked(True)
 
         # Tabs
         self.tabs = QTabWidget()
@@ -471,15 +469,14 @@ class FormularioItem(QDialog):
         self.tabs.addTab(tab_prod, "Producto")
         self.tabs.addTab(tab_ins, "Insumo")
 
-        # Header comunes (orden pedido: Nombre → Código → Tipo → Descripción → Activo)
+        # Header comunes (orden: Nombre → Código → Tipo → Descripción → GeneraStock → Activo)
         head = QVBoxLayout()
         head.addWidget(QLabel("Nombre")); head.addWidget(self.txt_nombre)
-
-        head.addWidget(QLabel("Código de barra"))   # ← NUEVO
-        head.addWidget(self.txt_codigo)             # ← NUEVO
-
+        head.addWidget(QLabel("Código de barra"))
+        head.addWidget(self.txt_codigo)
         head.addWidget(QLabel("Tipo (GENERAL)")); head.addWidget(self.cbo_tipo_general)
         head.addWidget(QLabel("Descripción")); head.addWidget(self.txt_descripcion)
+        head.addWidget(self.chk_genera_stock)  # NUEVO
         head.addWidget(self.chk_activo)
 
         cont = QWidget(); cont.setLayout(head)
@@ -524,12 +521,20 @@ class FormularioItem(QDialog):
         if txt == "PRODUCTO" and not (self.chk_uso_interno.isChecked() or self.chk_uso_proc.isChecked()):
             self.chk_uso_proc.setChecked(True)
 
+        # Regla UX para genera_stock
+        if txt == "SERVICIO":
+            self.chk_genera_stock.setChecked(False)
+            self.chk_genera_stock.setEnabled(False)
+        else:
+            self.chk_genera_stock.setEnabled(True)
+
     def cargar_datos(self):
         it = self.item
         self.txt_nombre.setText(it.nombre or "")
-        self.txt_codigo.setText(it.codigo_barra or "")  # ← NUEVO
+        self.txt_codigo.setText(it.codigo_barra or "")
         self.txt_descripcion.setPlainText(it.descripcion or "")
         self.chk_activo.setChecked(bool(it.activo))
+        self.chk_genera_stock.setChecked(bool(getattr(it, "genera_stock", True)))
 
         if it.tipo:
             ix = self.cbo_tipo_general.findText(it.tipo.nombre, Qt.MatchFixedString)
@@ -568,7 +573,7 @@ class FormularioItem(QDialog):
             QMessageBox.warning(self, "Validación", "Debe seleccionar el tipo general.")
             return
 
-        # NUEVO: tomar código y validar unicidad si viene cargado
+        # validar código de barra único si viene cargado
         codigo = (self.txt_codigo.text() or "").strip() or None
         if codigo:
             q = self.session.query(Item).filter(Item.codigo_barra == codigo)
@@ -606,10 +611,13 @@ class FormularioItem(QDialog):
             if not (uso_int or uso_proc): uso_proc = True
         elif tipo_general == "INSUMO":
             precio = 0; idtp = None; idesp = None; req = False; dias = 0; msg = None
+        elif tipo_general == "SERVICIO":
+            # coherencia: servicios no mueven stock
+            self.chk_genera_stock.setChecked(False)
 
         data = dict(
             nombre=nombre,
-            codigo_barra=codigo,              # ← NUEVO
+            codigo_barra=codigo,
             descripcion=(self.txt_descripcion.toPlainText() or None),
             activo=self.chk_activo.isChecked(),
             iditemtipo=iditemtipo,
@@ -629,6 +637,9 @@ class FormularioItem(QDialog):
             stock_minimo=stock_min,
             uso_interno=uso_int,
             uso_procedimiento=uso_proc,
+
+            # NUEVO
+            genera_stock=self.chk_genera_stock.isChecked(),
         )
 
         try:

@@ -2,12 +2,12 @@
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QComboBox,
     QDateEdit, QTextEdit, QTableWidget, QTableWidgetItem, QSplitter, QGroupBox, QFormLayout,
-    QMessageBox, QListWidget, QDialog,QCompleter ,QShortcut,QAbstractItemView  
+    QMessageBox, QListWidget, QDialog, QCompleter, QShortcut, QAbstractItemView
 )
 from PyQt5.QtGui import QIcon, QKeySequence
 from PyQt5.QtCore import Qt, QDate, QEvent, QTimer
 from decimal import Decimal
-from sqlalchemy import select
+from sqlalchemy import select, or_, func
 from utils.db import SessionLocal
 from controllers.ventas_controller import VentasController
 from models.paciente import Paciente
@@ -16,6 +16,19 @@ from models.clinica import Clinica
 from models.venta_detalle import VentaDetalle
 from models.venta import Venta
 from controllers.buscar_venta_dialog import BuscarVentaDialog
+
+# ====== NUEVO: imports tolerantes de Cobro y CobroVenta ======
+try:
+    from models.cobro import Cobro
+except Exception:
+    Cobro = None
+
+try:
+    from models.cobro_venta import CobroVenta
+except Exception:
+    CobroVenta = None
+# =============================================================
+
 
 # --- Diálogo de selección genérico (producto o paquete)
 class ItemSelectDialog(QDialog):
@@ -37,7 +50,6 @@ class ItemSelectDialog(QDialog):
         layout.addWidget(btn)
         self.listWidget.itemDoubleClicked.connect(self.accept)
         self.resize(420, 330)
-       
 
     def accept(self):
         idx = self.listWidget.currentRow()
@@ -63,23 +75,23 @@ class ABMVenta(QWidget):
         self._setup_ui()
         self.btn_planes.clicked.connect(self.abrir_planes_paciente)
         self.btn_buscar_venta.clicked.connect(self.abrir_buscador_venta)
-        QShortcut(QKeySequence("Ctrl+F"), self, activated=self.abrir_buscador_venta)           # <<< crea los widgets
+        QShortcut(QKeySequence("Ctrl+F"), self, activated=self.abrir_buscador_venta)  # <<< crea los widgets
         QShortcut(QKeySequence("Ctrl+G"), self, activated=self._on_guardar_click)
         self.grilla.itemChanged.connect(self._on_item_changed)
         # --- Conexiones (después del setup) ---
         self.btn_eliminar.clicked.connect(self.eliminar_fila_grilla)
         self.btn_guardar.clicked.connect(self._on_guardar_click)
         self.btn_anular.clicked.connect(self.anular_venta_actual)
-        #self.btn_agregar.clicked.connect(self._agregar_fila_grilla)
+        # self.btn_agregar.clicked.connect(self._agregar_fila_grilla)
         self.btn_anular.setEnabled(False)
-        #self.btn_cancelar.clicked.connect(self.cancelar)
+        # self.btn_cancelar.clicked.connect(self.cancelar)
         self.btn_primero.clicked.connect(self.ir_primero)
         self.btn_anterior.clicked.connect(self.ir_anterior)
         self.btn_siguiente.clicked.connect(self.ir_siguiente)
         self.btn_ultimo.clicked.connect(self.ir_ultimo)
         self.btn_nuevo.clicked.connect(self.nuevo)
         self.btn_buscar.clicked.connect(self.buscar_y_agregar_item)
-        
+
         # Datos
         self.cargar_maestros()
         self.setup_focus()
@@ -87,7 +99,7 @@ class ABMVenta(QWidget):
         self.cargar_ventas()
         self.modo_edicion = False
         self._update_buttons_state()
-        
+
     def _detalle_id_seleccionado(self) -> int | None:
         r = self.grilla.currentRow()
         if r < 0:
@@ -96,7 +108,7 @@ class ABMVenta(QWidget):
             return int(self._detalle_ids[r])  # toma el idventadet según la fila
         except Exception:
             return None
-        
+
     def abrir_planes_paciente(self):
         if not self.modo_edicion:
             QMessageBox.information(self, "Planes", "Para gestionar los planes, primero presioná Editar.")
@@ -132,7 +144,6 @@ class ABMVenta(QWidget):
         except Exception as e:
             QMessageBox.information(self, "Planes", f"No se pudo abrir el panel de planes.\n{e}")
 
-   
     def _mask_vacia(self, txt: str) -> bool:
         # Considera vacío si viene None, cadena vacía o solo guiones/underscores
         return ((txt or "").replace("_", "").replace("-", "").strip() == "")
@@ -157,7 +168,7 @@ class ABMVenta(QWidget):
             self.lbl_estado.setText("Cobrada")
             self.lbl_estado.setStyleSheet("font-weight:bold; color: green; margin-bottom:6px;")
             self.btn_anular.setEnabled(True)
-    
+
     def _enable_search_on_combobox(self, combo: QComboBox):
         combo.setEditable(True)
         combo.setInsertPolicy(QComboBox.NoInsert)
@@ -168,13 +179,30 @@ class ABMVenta(QWidget):
         comp.setFilterMode(Qt.MatchContains)
         combo.setCompleter(comp)
 
+    # ---------- NUEVO: helper para validar cobros activos ----------
+    def _venta_tiene_cobros_activos(self, idventa: int) -> bool:
+        from models.cobro import Cobro
+        from models.cobro_venta import CobroVenta
+        row = self.session.execute(
+            select(1)
+            .select_from(CobroVenta)
+            .join(Cobro, Cobro.idcobro == CobroVenta.idcobro)
+            .where(
+                CobroVenta.idventa == int(idventa),
+                func.lower(Cobro.estado) != "anulado"
+            )
+            .limit(1)
+        ).first()
+        return bool(row)
+    # ----------------------------------------------------------------
+
     # ---------- UI ----------
     def _setup_ui(self):
         main_layout = QVBoxLayout(self)
 
         # Título (igual a Compras)
         title_layout = QHBoxLayout()
-        icono = QLabel(); icono.setPixmap(QIcon("imagenes/venta.png").pixmap(32,32))
+        icono = QLabel(); icono.setPixmap(QIcon("imagenes/venta.png").pixmap(32, 32))
         title_layout.addWidget(icono)
         title_label = QLabel("Ventas")
         title_label.setStyleSheet("font-size: 18pt; font-weight: bold; margin-left:8px;")
@@ -232,14 +260,14 @@ class ABMVenta(QWidget):
 
         # Grilla
         self.grilla = QTableWidget(0, 6)
-        self.grilla.setHorizontalHeaderLabels(["Código","Nombre","Cantidad","Precio","Total","IVA 10%"])
+        self.grilla.setHorizontalHeaderLabels(["Código", "Nombre", "Cantidad", "Precio", "Total", "IVA 10%"])
         right_layout.addWidget(self.grilla)
 
         # Botones detalle
         btns_detalle = QHBoxLayout()
-        #self.btn_agregar  = QPushButton(QIcon("imagenes/agregar.png"), "Agregar")
+        # self.btn_agregar  = QPushButton(QIcon("imagenes/agregar.png"), "Agregar")
         self.btn_eliminar = QPushButton(QIcon("imagenes/eliminar.png"), "Eliminar")
-        #btns_detalle.addWidget(self.btn_agregar)
+        # btns_detalle.addWidget(self.btn_agregar)
         btns_detalle.addWidget(self.btn_eliminar)
         self.lbl_total = QLabel("Total: 0    IVA10: 0")
         btns_detalle.addStretch()
@@ -281,14 +309,9 @@ class ABMVenta(QWidget):
         QPushButton:disabled { background-color: #e9ecef; color: #6c757d; }
         """)
         self.btn_editar.clicked.connect(self.editar_actual)
-        botones = [
-            (self.btn_nuevo, "#007bff", "white"),
-            (self.btn_guardar, "#28a745", "white"),
-            (self.btn_anular, "#dc3545", "white"),
-        ]
         for btn, fondo in [(self.btn_nuevo, "#007bff"),
-                   (self.btn_guardar, "#28a745"),
-                   (self.btn_anular, "#dc3545")]:
+                           (self.btn_guardar, "#28a745"),
+                           (self.btn_anular, "#dc3545")]:
             btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {fondo};
@@ -309,7 +332,6 @@ class ABMVenta(QWidget):
         main_layout.addWidget(splitter)
         self.setLayout(main_layout)
 
-
     def _on_item_changed(self, item):
         r, c = item.row(), item.column()
         # columnas: 0=Cod, 1=Nombre, 2=Cantidad, 3=Precio, 4=Total, 5=IVA
@@ -317,7 +339,7 @@ class ABMVenta(QWidget):
             if not self.grilla.item(r, 2) or not self.grilla.item(r, 3):
                 return
             if (self.grilla.item(r, 2).text() or "").strip() == "" or \
-            (self.grilla.item(r, 3).text() or "").strip() == "":
+               (self.grilla.item(r, 3).text() or "").strip() == "":
                 return
             self.grilla.blockSignals(True)
             self.calcular_total_row(r)
@@ -411,10 +433,11 @@ class ABMVenta(QWidget):
     def _select_all_in_current_editor(self):
         from PyQt5.QtWidgets import QApplication, QLineEdit, QSpinBox, QDoubleSpinBox
         w = QApplication.focusWidget()
-        if isinstance(w, (QLineEdit, )):
+        if isinstance(w, (QLineEdit,)):
             w.selectAll()
         elif isinstance(w, (QSpinBox, QDoubleSpinBox)):
             w.lineEdit().selectAll()
+
     # ---------- Data maestros ----------
     def cargar_maestros(self):
         s = self.session
@@ -446,7 +469,7 @@ class ABMVenta(QWidget):
         self.cbo_tipo.setEnabled(estado)
         self.busca_item.setEnabled(estado)
         self.btn_buscar.setEnabled(estado)
-        #self.btn_agregar.setEnabled(estado)
+        # self.btn_agregar.setEnabled(estado)
         self.btn_eliminar.setEnabled(estado)
 
     def limpiar_formulario(self, editable=False):
@@ -473,9 +496,9 @@ class ABMVenta(QWidget):
         self.btn_nuevo.setEnabled(not editable)
         self.btn_editar.setEnabled(False)
 
-    # navegación y "Buscar venta" solo cuando NO estoy creando
+        # navegación y "Buscar venta" solo cuando NO estoy creando
         self._toggle_nav(not editable)
-        
+
     def eliminar_fila_grilla(self):
         row = self.grilla.currentRow()
         if row < 0:
@@ -500,6 +523,7 @@ class ABMVenta(QWidget):
         """Vuelve el formulario a modo lectura y limpia la edición actual."""
         self.modo_nuevo = False
         self.limpiar_formulario(editable=False)
+
     # ---------- Carga / navegación ----------
     def cargar_ventas(self):
         ctrl = VentasController(self.session, usuario_id=self.usuario_id)
@@ -511,7 +535,6 @@ class ABMVenta(QWidget):
         from decimal import Decimal
         from sqlalchemy import select
         from models.item import Item
-        # from models.item_tipo import ItemTipo  # ya no lo necesitamos acá
 
         if not self.ventas or idx < 0 or idx >= len(self.ventas):
             return
@@ -593,7 +616,7 @@ class ABMVenta(QWidget):
         self.idx_actual = idx
         self.set_campos_enabled(False)
         self.btn_guardar.setEnabled(False)
-        #self.btn_cancelar.setEnabled(True)
+        # self.btn_cancelar.setEnabled(True)
         self.btn_anular.setEnabled(True)
         self.btn_nuevo.setEnabled(True)
         self.set_modo_edicion_minima(False)
@@ -601,10 +624,7 @@ class ABMVenta(QWidget):
         self._pintar_estado(v)
         self._update_buttons_state()
         self.grilla.blockSignals(False)
-        
 
-
-    
     def ir_primero(self):
         if self.ventas: self.mostrar_venta(0)
 
@@ -745,7 +765,7 @@ class ABMVenta(QWidget):
             QMessageBox.warning(self, "Sin detalle", "Debe agregar al menos un ítem.")
             self.busca_item.setFocus()
             return
-        
+
         nro = (self.txt_nro_factura.text() or "").strip()
         if self._mask_vacia(nro):
             nro = None
@@ -779,8 +799,21 @@ class ABMVenta(QWidget):
         if not self.idventa_actual:
             QMessageBox.warning(self, "Atención", "No hay venta cargada para anular.")
             return
-        if QMessageBox.question(self, "Confirmar anulación", "¿Está seguro que desea anular esta venta?",
-                                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.No:
+
+        # ====== NUEVO: bloqueo si tiene cobros activos ======
+        if self._venta_tiene_cobros_activos(self.idventa_actual):
+            QMessageBox.warning(
+                self,
+                "No permitido",
+                "La venta tiene cobros asociados.\nPrimero anulá los cobros y luego intentá anular la venta."
+            )
+            return
+        # ====================================================
+
+        if QMessageBox.question(
+            self, "Confirmar anulación", "¿Está seguro que desea anular esta venta?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        ) == QMessageBox.No:
             return
         ctrl = VentasController(self.session, usuario_id=self.usuario_id)
         try:
@@ -796,7 +829,7 @@ class ABMVenta(QWidget):
     # ---------- Focus / Enter flow ----------
     def setup_focus(self):
         for w in [self.txt_nro_factura, self.cbo_paciente, self.cbo_profesional,
-                self.cbo_clinica, self.observaciones, self.busca_item]:
+                  self.cbo_clinica, self.observaciones, self.busca_item]:
             w.installEventFilter(self)
 
     def eventFilter(self, obj, event):
@@ -814,6 +847,7 @@ class ABMVenta(QWidget):
             elif obj == self.busca_item:
                 self.buscar_y_agregar_item(); return True
         return super().eventFilter(obj, event)
+
     def keyPressEvent(self, event):
         if self.grilla.hasFocus() and event.key() in (Qt.Key_Return, Qt.Key_Enter):
             r = self.grilla.currentRow()
@@ -828,6 +862,7 @@ class ABMVenta(QWidget):
                 self.busca_item.setFocus()
                 return
         super().keyPressEvent(event)
+
     def closeEvent(self, ev):
         try:
             self.session.close()
@@ -888,7 +923,6 @@ class ABMVenta(QWidget):
             f"Total: {total:,.0f}    IVA10: {int(round(total_iva)):,.0f}".replace(",", ".")
         )
 
-
     def editar_actual(self):
         if self.modo_nuevo:
             QMessageBox.information(self, "Editar", "Estás creando una venta nueva. Guardala o cancelá antes de editar otra.")
@@ -945,7 +979,6 @@ class ABMVenta(QWidget):
             self.session.rollback()
             QMessageBox.critical(self, "Error", f"Ocurrió un error al guardar: {e}")
 
-   
     def _collect_items(self):
         items = []
         for r in range(self.grilla.rowCount()):
@@ -978,7 +1011,7 @@ class ABMVenta(QWidget):
                         "descuento": Decimal("0"),
                     })
         return items
-    
+
     def set_modo_edicion_minima(self, on: bool):
         self.modo_edicion = on
         if on:
@@ -1005,11 +1038,11 @@ class ABMVenta(QWidget):
         dlg = BuscarVentaDialog(self.session, self)
         if dlg.exec_() == QDialog.Accepted and dlg.selected_idventa:
             self.cargar_venta_por_id(dlg.selected_idventa)
-    
+
     def _toggle_nav(self, on: bool):
         for b in (self.btn_buscar_venta, self.btn_primero, self.btn_anterior, self.btn_siguiente, self.btn_ultimo):
             b.setEnabled(on)
-   
+
     def cargar_venta_por_id(self, idventa: int):
         """
         Carga en pantalla la venta indicada.

@@ -61,12 +61,15 @@ class ComprasReportForm(QWidget):
         self.btn_excel = QPushButton("Exportar Excel")
         self.chk_mostrar_anuladas = QCheckBox("Mostrar anuladas")
         self.chk_mostrar_anuladas.setChecked(False)
+        self.chk_solo_stock = QCheckBox("Solo ítems que generan stock")
+        self.chk_solo_stock.setChecked(False)
 
         fl.addWidget(QLabel("Desde:")); fl.addWidget(self.dt_desde)
         fl.addWidget(QLabel("Hasta:")); fl.addWidget(self.dt_hasta)
         fl.addWidget(QLabel("Proveedor:")); fl.addWidget(self.txt_proveedor, 2)
         fl.addWidget(QLabel("Tipo de ítem:")); fl.addWidget(self.cbo_tipo, 1)
         fl.addWidget(self.chk_mostrar_anuladas)
+        fl.addWidget(self.chk_solo_stock)  # nuevo
         fl.addWidget(self.btn_buscar)
         fl.addWidget(self.btn_pdf)
         fl.addWidget(self.btn_excel)
@@ -98,10 +101,19 @@ class ComprasReportForm(QWidget):
         self.table_detalle.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table_detalle.setSelectionBehavior(QTableWidget.SelectRows)
 
-        
+        # Resumen (tabla en UI para evitar atributos inexistentes si se usa)
+        self.table_resumen = QTableWidget(0, 3)
+        self.table_resumen.setHorizontalHeaderLabels(["Ítem", "Cantidad total", "Monto total"])
+        self.table_resumen.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table_resumen.verticalHeader().setVisible(False)
+        self.table_resumen.setAlternatingRowColors(True)
+        self.table_resumen.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table_resumen.setSelectionBehavior(QTableWidget.SelectRows)
+
         splitter.addWidget(self.table_master)
         splitter.addWidget(self.table_detalle)
-        splitter.setSizes([360, 220])
+        splitter.addWidget(self.table_resumen)
+        splitter.setSizes([300, 220, 160])
 
         # Totales
         tot_layout = QHBoxLayout()
@@ -123,6 +135,7 @@ class ComprasReportForm(QWidget):
         self.table_master.itemSelectionChanged.connect(self._on_master_changed)
         self.btn_excel.clicked.connect(self.exportar_excel)
         self.chk_mostrar_anuladas.stateChanged.connect(lambda _ : self.buscar())
+        self.chk_solo_stock.stateChanged.connect(lambda _ : self.buscar())  # nuevo
         self.dt_desde.dateChanged.connect(lambda _ : self.buscar())
         self.dt_hasta.dateChanged.connect(lambda _ : self.buscar())
 
@@ -136,7 +149,8 @@ class ComprasReportForm(QWidget):
 
         self.cbo_tipo.clear()
         self.cbo_tipo.addItem("Todos", None)
-        for t in ['MEDICAMENTO', 'DESCARTABLE', 'REACTIVO', 'ANTIBIOTICO', 'VARIOS']:
+        # Coincide con Item.tipo_insumo
+        for t in ['MEDICAMENTO', 'DESCARTABLE', 'REACTIVO', 'ANTIBIOTICO', 'VARIOS', 'LIMPIEZA', 'CAFETERÍA']:
             self.cbo_tipo.addItem(t, t)
 
     # ---------- Búsqueda ----------
@@ -147,19 +161,27 @@ class ComprasReportForm(QWidget):
         desde = self.dt_desde.date().toPyDate()
         hasta = self.dt_hasta.date().toPyDate()
         prov_txt = (self.txt_proveedor.text() or "").strip()
-        tipo_val = self.cbo_tipo.currentData()
+        tipo_val = self.cbo_tipo.currentData()   # Item.tipo_insumo
+        solo_stock = self.chk_solo_stock.isChecked()
 
         filtros = [Compra.fecha.between(desde, hasta)]
         if not self.chk_mostrar_anuladas.isChecked():
             filtros.append(or_(Compra.anulada.is_(False), Compra.anulada.is_(None)))
         if prov_txt:
             filtros.append(Proveedor.nombre.ilike(f"%{prov_txt}%"))
-        return filtros, tipo_val
+        return filtros, tipo_val, solo_stock
+
+    def _aplicar_filtro_tipo_stock(self, q, tipo_val, solo_stock: bool):
+        if tipo_val:
+            q = q.filter(Item.tipo_insumo == tipo_val)  # filtra por tipo de insumo
+        if solo_stock:
+            q = q.filter(or_(Item.genera_stock == True, Item.genera_stock.is_(True)))
+        return q
 
     def buscar(self):
-        filtros, tipo_val = self._filtros_actuales()
+        filtros, tipo_val, solo_stock = self._filtros_actuales()
 
-        # Maestro
+        # Maestro (totales por compra completa)
         q_master = (
             self.session.query(
                 Compra.idcompra,
@@ -180,11 +202,13 @@ class ComprasReportForm(QWidget):
 
         if rows:
             self.table_master.selectRow(0)
-            self._cargar_detalle(rows[0].idcompra)
+            self._cargar_detalle(rows[0].idcompra, tipo_val, solo_stock)
         else:
             self.table_detalle.setRowCount(0)
 
-        
+        # Resumen UI (en la tercera tabla)
+        self._cargar_resumen()
+
     def exportar_excel(self):
         # Intentar usar pandas; si no está, hacer fallback a CSV
         try:
@@ -193,7 +217,7 @@ class ComprasReportForm(QWidget):
             self._exportar_csv_simple()
             return
 
-        filtros, tipo_val = self._filtros_actuales()
+        filtros, tipo_val, solo_stock = self._filtros_actuales()
 
         # Maestro
         q_master = (
@@ -228,8 +252,7 @@ class ComprasReportForm(QWidget):
             .filter(and_(*filtros))
             .order_by(CompraDetalle.idcompra.desc(), Item.nombre.asc())
         )
-        if tipo_val:
-            q_det = q_det.filter(Item.tipo == tipo_val)
+        q_det = self._aplicar_filtro_tipo_stock(q_det, tipo_val, solo_stock)
         det_rows = q_det.all()
 
         # Resumen
@@ -246,8 +269,7 @@ class ComprasReportForm(QWidget):
             .group_by(Item.nombre)
             .order_by(Item.nombre.asc())
         )
-        if tipo_val:
-            q_res = q_res.filter(Item.tipo == tipo_val)
+        q_res = self._aplicar_filtro_tipo_stock(q_res, tipo_val, solo_stock)
         res_rows = q_res.all()
 
         import pandas as pd
@@ -275,7 +297,6 @@ class ComprasReportForm(QWidget):
 
         fname = f"informe_compras_{self._stamp()}.xlsx"
 
-        # Asegurar engine (con auto-instalación silenciosa)
         engine = self._ensure_excel_engine()
 
         if engine:
@@ -329,7 +350,7 @@ class ComprasReportForm(QWidget):
         para Excel. No requiere pandas/openpyxl/xlsxwriter.
         """
         import csv, os
-        filtros, tipo_val = self._filtros_actuales()
+        filtros, tipo_val, solo_stock = self._filtros_actuales()
 
         # Maestro
         q_master = (
@@ -364,8 +385,7 @@ class ComprasReportForm(QWidget):
             .filter(and_(*filtros))
             .order_by(CompraDetalle.idcompra.desc(), Item.nombre.asc())
         )
-        if tipo_val:
-            q_det = q_det.filter(Item.tipo == tipo_val)
+        q_det = self._aplicar_filtro_tipo_stock(q_det, tipo_val, solo_stock)
         det_rows = q_det.all()
 
         # Resumen
@@ -382,8 +402,7 @@ class ComprasReportForm(QWidget):
             .group_by(Item.nombre)
             .order_by(Item.nombre.asc())
         )
-        if tipo_val:
-            q_res = q_res.filter(Item.tipo == tipo_val)
+        q_res = self._aplicar_filtro_tipo_stock(q_res, tipo_val, solo_stock)
         res_rows = q_res.all()
 
         base = self._stamp()
@@ -410,12 +429,12 @@ class ComprasReportForm(QWidget):
                 w = csv.writer(fp, delimiter=';')
                 w.writerow(["Ítem","Cantidad total","Monto total"])
                 for r in res_rows:
-                    w.writerow([r.nombre or "", r.cant_total or 0, self._fmt_csv_monto(r.monto_total or 0)])
+                    w.writerow([r.item or "", r.cant_total or 0, self._fmt_csv_monto(r.monto_total or 0)])
             QMessageBox.information(
                 self, "Exportación",
                 "No se encontraron librerías para Excel (openpyxl/xlsxwriter). "
-                "Se exportaron 3 archivos CSV (separados por ';'):\n\n"
-                f"• {os.path.abspath(f1)}\n• {os.path.abspath(f2)}\n• {os.path.abspath(f3)}\n"
+                "Se exportaron 3 archivos CSV (separados por ';')."
+                f"\n\n• {os.path.abspath(f1)}\n• {os.path.abspath(f2)}\n• {os.path.abspath(f3)}\n"
                 "Tip: Podés abrirlos en Excel sin problemas." + (extra_msg or "")
             )
         except Exception as e:
@@ -427,7 +446,6 @@ class ComprasReportForm(QWidget):
             return f"{float(v):,.0f}".replace(",", ".")
         except Exception:
             return str(v)
-
 
     def _llenar_maestro(self, rows):
         self.table_master.setRowCount(0)
@@ -480,25 +498,25 @@ class ComprasReportForm(QWidget):
         if not sel:
             return
         idcompra = int(self.table_master.item(self.table_master.currentRow(), 0).text())
-        self._cargar_detalle(idcompra)
+        _, tipo_val, solo_stock = self._filtros_actuales()
+        self._cargar_detalle(idcompra, tipo_val, solo_stock)
 
-    def _cargar_detalle(self, idcompra: int):
+    def _cargar_detalle(self, idcompra: int, tipo_val=None, solo_stock=False):
         q = (
             self.session.query(
                 CompraDetalle.cantidad,
                 Item.nombre,
                 CompraDetalle.preciounitario,
-                CompraDetalle.iva,
-                CompraDetalle.lote,
-                CompraDetalle.fechavencimiento,
-                CompraDetalle.observaciones,
                 (CompraDetalle.cantidad * CompraDetalle.preciounitario).label("total_fila"),
+                Item.genera_stock.label("genera_stock"),
             )
             .join(Item, CompraDetalle.iditem == Item.iditem)
             .filter(CompraDetalle.idcompra == idcompra)
             .order_by(Item.nombre.asc())
         )
+        q = self._aplicar_filtro_tipo_stock(q, tipo_val, solo_stock)
         rows = q.all()
+
         self.table_detalle.setRowCount(0)
 
         def fmt(v):
@@ -520,18 +538,15 @@ class ComprasReportForm(QWidget):
                 it.setTextAlignment(Qt.AlignCenter if i in (0,2,3) else Qt.AlignVCenter | Qt.AlignLeft)
                 self.table_detalle.setItem(row, i, it)
 
+            # BONUS: grisear los que NO generan stock cuando el filtro no los oculta
+            if not solo_stock and not bool(r.genera_stock):
+                for c in range(self.table_detalle.columnCount()):
+                    cell = self.table_detalle.item(row, c)
+                    if cell:
+                        cell.setForeground(QBrush(QColor("#888")))
+
     def _cargar_resumen(self):
-        desde = self.dt_desde.date().toPyDate()
-        hasta = self.dt_hasta.date().toPyDate()
-        prov_txt = (self.txt_proveedor.text() or "").strip()
-        tipo_val = self.cbo_tipo.currentData()
-
-        filtros = [Compra.fecha.between(desde, hasta)]
-        if not self.chk_mostrar_anuladas.isChecked():
-            filtros.append(or_(Compra.anulada.is_(False), Compra.anulada.is_(None)))
-        if prov_txt:
-            filtros.append(Proveedor.nombre.ilike(f"%{prov_txt}%"))
-
+        filtros, tipo_val, solo_stock = self._filtros_actuales()
         q = (
             self.session.query(
                 Item.nombre.label("item"),
@@ -545,9 +560,7 @@ class ComprasReportForm(QWidget):
             .group_by(Item.nombre)
             .order_by(Item.nombre.asc())
         )
-        if tipo_val:
-            q = q.filter(Item.tipo == tipo_val)
-
+        q = self._aplicar_filtro_tipo_stock(q, tipo_val, solo_stock)
         rows = q.all()
 
         def fmt_m(n):
@@ -604,11 +617,11 @@ class ComprasReportForm(QWidget):
             pass
 
         # Intento de instalación automática
-        import subprocess, sys
+        import subprocess, sys as _sys
         candidates = [("openpyxl", "openpyxl"), ("XlsxWriter", "xlsxwriter")]
         for pkg, eng in candidates:
             try:
-                subprocess.check_call([sys.executable, "-m", "pip", "install", pkg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.check_call([_sys.executable, "-m", "pip", "install", pkg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 return eng
             except Exception:
                 continue
@@ -664,8 +677,7 @@ class ComprasReportForm(QWidget):
             monto = self.table_master.item(r, 4).text()
             iva = self.table_master.item(r, 5).text()
             anulada = (self.table_master.item(r, 6).text().upper() == "ANULADA")
-            estado_html = " — <font color='red'><b>ESTADO: ANULADA</b></font>" if anulada else ""
-            # Estética alineada y por línea como informe de ventas
+
             story.append(Paragraph(f"<b>N° Compra:</b> {idc}", styles["Heading3"]))
             story.append(Paragraph(f"<b>Fecha:</b> {fecha_txt}", styles["Normal"]))
             story.append(Paragraph(f"<b>N° Factura:</b> {comp}", styles["Normal"]))
@@ -674,8 +686,8 @@ class ComprasReportForm(QWidget):
                 story.append(Paragraph("<font color='red'><b>ESTADO: ANULADA</b></font>", styles["Normal"]))
             story.append(Spacer(1, 4))
 
-            # Detalle desde DB (respeta filtro de tipo)
-            tipo_val = self.cbo_tipo.currentData()
+            # Detalle desde DB (respeta filtro de tipo y solo_stock)
+            filtros, tipo_val, solo_stock = self._filtros_actuales()
             q = (
                 self.session.query(
                     CompraDetalle.cantidad,
@@ -687,8 +699,7 @@ class ComprasReportForm(QWidget):
                 .filter(CompraDetalle.idcompra == int(idc))
                 .order_by(Item.nombre.asc())
             )
-            if tipo_val:
-                q = q.filter(Item.tipo == tipo_val)
+            q = self._aplicar_filtro_tipo_stock(q, tipo_val, solo_stock)
             det = q.all()
 
             data = [["Cantidad", "Ítem", "Precio Unitario", "Total Fila"]]
@@ -741,9 +752,10 @@ class ComprasReportForm(QWidget):
 
         story.append(Paragraph(self.lbl_total_monto.text(), styles["Heading3"]))
         story.append(Paragraph(self.lbl_total_iva.text(), styles["Heading3"]))
-        story.append(PageBreak())   
-        # ====== Resumen al final ======
-        filtros, tipo_val = self._filtros_actuales()
+        story.append(PageBreak())
+
+        # ====== Resumen al final (respeta filtros) ======
+        filtros, tipo_val, solo_stock = self._filtros_actuales()
         q_res = (
             self.session.query(
                 Item.nombre.label("item"),
@@ -757,11 +769,9 @@ class ComprasReportForm(QWidget):
             .group_by(Item.nombre)
             .order_by(Item.nombre.asc())
         )
-        if tipo_val:
-            q_res = q_res.filter(Item.tipo == tipo_val)
+        q_res = self._aplicar_filtro_tipo_stock(q_res, tipo_val, solo_stock)
         res = q_res.all()
 
-        from reportlab.lib import colors
         from reportlab.platypus import Table, TableStyle
         story.append(Spacer(1, 10))
         story.append(Paragraph("<b>Resumen por ítem (rango)</b>", styles["Heading2"]))

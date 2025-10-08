@@ -30,7 +30,7 @@ class Item(Base):
     activo = Column(Boolean, nullable=False, default=True)
     fecha_creacion = Column(DateTime, nullable=False, server_default=func.now())
     fecha_actualizacion = Column(DateTime)
-
+    genera_stock = Column(Boolean, nullable=False, default=True)  # << nuevo
     # Código de barra
     codigo_barra = Column(String(64), unique=True)  # EAN/UPC/QR (opcional, único si está presente)
 
