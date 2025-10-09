@@ -79,8 +79,18 @@ from controllers.informe_cobros_paciente import InformeCobrosPorPacienteDlg
 from controllers.informe_ranking import InformeRankingDlg
 from controllers.informe_atencion_prof import InformeAtencionProfesionalDlg
 from controllers.buscar_paciente_planes import BuscarPacientePlanesDlg
-
+from controllers.form_apertura_caja import FormAperturaCaja
+from controllers.form_registrar_gasto import FormRegistrarGasto
+from controllers.form_ver_estado_caja import FormVerEstadoCaja
+from controllers.form_cierre_caja import FormCierreCaja
+from models.caja_chica import CajaChicaSesion # Necesario para las comprobaciones
 from controllers.visor_graficos import VisorGraficosDlg
+from controllers.form_apertura_caja import FormAperturaCaja
+from controllers.form_registrar_gasto import FormRegistrarGasto
+from controllers.form_ver_estado_caja import FormVerEstadoCaja
+from controllers.form_cierre_caja import FormCierreCaja
+from models.caja_chica import CajaChicaSesion # Necesario para las comprobaciones
+from controllers.informe_caja_chica import InformeCajaChicaForm
 
 class MainWindow(QMainWindow):
     def __init__(self, usuario: Usuario, rol: str, session):
@@ -211,6 +221,28 @@ class MainWindow(QMainWindow):
         self.action_compras.triggered.connect(self.abrir_compra)
         menubar.addAction(self.action_compras)
 
+        # Menú Pagos (Caja Chica)
+        self.menu_pagos = menubar.addMenu("Pagos")
+        
+        accion_abrir_caja = QAction("Apertura de Caja", self)
+        accion_abrir_caja.triggered.connect(self.abrir_form_apertura_caja)
+        self.menu_pagos.addAction(accion_abrir_caja)
+
+        accion_registrar_gasto = QAction("Registrar Gasto", self)
+        accion_registrar_gasto.triggered.connect(self.abrir_form_registrar_gasto)
+        self.menu_pagos.addAction(accion_registrar_gasto)
+
+        accion_ver_estado = QAction("Ver Estado de Caja", self)
+        accion_ver_estado.triggered.connect(self.abrir_form_ver_estado)
+        self.menu_pagos.addAction(accion_ver_estado)
+        
+        self.menu_pagos.addSeparator()
+
+        accion_cerrar_caja = QAction("Cierre de Caja (Arqueo)", self)
+        accion_cerrar_caja.triggered.connect(self.abrir_form_cierre_caja)
+        self.menu_pagos.addAction(accion_cerrar_caja)
+
+
            # Menú Ventas
         self.menu_ventas = menubar.addMenu("Ventas")
         self.action_nueva_venta = QAction("Nueva Venta", self)
@@ -280,6 +312,10 @@ class MainWindow(QMainWindow):
         actionInformeGeneral.triggered.connect(self.abrir_visor_graficos)
         self.menu_informes.addAction(actionInformeGeneral)
 
+        # Informes → Caja Chica
+        action_informe_caja_chica = QAction("Caja Chica", self)
+        action_informe_caja_chica.triggered.connect(self.abrir_informe_caja_chica)
+        self.menu_informes.addAction(action_informe_caja_chica)
 
         # --- BLOQUEO DE MENÚ SEGÚN ROL ---
         if self.rol != "superusuario":
@@ -302,10 +338,7 @@ class MainWindow(QMainWindow):
         dlg = VisorGraficosDlg(self)
         dlg.exec_()
 
-    def abrir_informe_general(self):
-        dlg = InformeGeneralDlg(self)
-        dlg.exec_()
-
+    
     def abrir_informe_atencion_prof(self):
         dlg = InformeAtencionProfesionalDlg(self)
         dlg.exec_()
@@ -618,6 +651,43 @@ class MainWindow(QMainWindow):
         self.mdi_area.addSubWindow(sub)
         self.ajustar_subventana(sub)
         sub.show()
+
+    def abrir_form_apertura_caja(self):
+        dlg = FormAperturaCaja(session=self.session, usuario_id=self.usuario_id, parent=self)
+        dlg.exec_()
+
+    def abrir_form_registrar_gasto(self):
+        # Primero, comprobar si hay una caja abierta
+        caja_abierta = self.session.query(CajaChicaSesion).filter(CajaChicaSesion.estado == 'ABIERTA').first()
+        if not caja_abierta:
+            QMessageBox.warning(self, "Operación no permitida", "Debe abrir una caja antes de registrar un gasto.")
+            return
+        
+        dlg = FormRegistrarGasto(session=self.session, usuario_id=self.usuario_id, parent=self)
+        dlg.exec_()
+
+    def abrir_form_ver_estado(self):
+        caja_abierta = self.session.query(CajaChicaSesion).filter(CajaChicaSesion.estado == 'ABIERTA').first()
+        if not caja_abierta:
+            QMessageBox.information(self, "Sin caja activa", "No hay ninguna sesión de caja abierta en este momento.")
+            return
+
+        dlg = FormVerEstadoCaja(session=self.session, parent=self)
+        dlg.exec_()
+
+    def abrir_form_cierre_caja(self):
+        caja_abierta = self.session.query(CajaChicaSesion).filter(CajaChicaSesion.estado == 'ABIERTA').first()
+        if not caja_abierta:
+            QMessageBox.warning(self, "Operación no permitida", "No hay ninguna caja abierta para cerrar.")
+            return
+
+        dlg = FormCierreCaja(session=self.session, usuario_id=self.usuario_id, parent=self)
+        dlg.exec_()
+
+    def abrir_informe_caja_chica(self):
+        # Usamos exec_() para abrirlo como un diálogo modal
+        dlg = InformeCajaChicaForm(session=self.session, parent=self)
+        dlg.exec_()
 
 if __name__ == "__main__":
     from login import LoginDialog

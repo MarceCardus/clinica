@@ -1,4 +1,4 @@
-# controllers/abm_ventas_form.py
+# controllers/ventas_form.py
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QComboBox,
     QDateEdit, QTextEdit, QTableWidget, QTableWidgetItem, QSplitter, QGroupBox, QFormLayout,
@@ -8,6 +8,7 @@ from PyQt5.QtGui import QIcon, QKeySequence
 from PyQt5.QtCore import Qt, QDate, QEvent, QTimer
 from decimal import Decimal
 from sqlalchemy import select, or_, func
+from sqlalchemy.orm import joinedload
 from utils.db import SessionLocal
 from controllers.ventas_controller import VentasController
 from models.paciente import Paciente
@@ -16,6 +17,10 @@ from models.clinica import Clinica
 from models.venta_detalle import VentaDetalle
 from models.venta import Venta
 from controllers.buscar_venta_dialog import BuscarVentaDialog
+from printing.factura_txt import render_factura_txt, DEFAULT_LAYOUT, print_text_windows
+# === impresión TXT (preimpreso) ===
+from printing.factura_txt import render_factura_txt, DEFAULT_LAYOUT
+import os, datetime
 
 # ====== NUEVO: imports tolerantes de Cobro y CobroVenta ======
 try:
@@ -82,6 +87,7 @@ class ABMVenta(QWidget):
         self.btn_eliminar.clicked.connect(self.eliminar_fila_grilla)
         self.btn_guardar.clicked.connect(self._on_guardar_click)
         self.btn_anular.clicked.connect(self.anular_venta_actual)
+        self.btn_imprimir.clicked.connect(self._on_imprimir_clicked)  # NUEVO
         # self.btn_agregar.clicked.connect(self._agregar_fila_grilla)
         self.btn_anular.setEnabled(False)
         # self.btn_cancelar.clicked.connect(self.cancelar)
@@ -206,7 +212,21 @@ class ABMVenta(QWidget):
         title_layout.addWidget(icono)
         title_label = QLabel("Ventas")
         title_label.setStyleSheet("font-size: 18pt; font-weight: bold; margin-left:8px;")
-        title_layout.addWidget(title_label); title_layout.addStretch()
+        title_layout.addWidget(title_label)
+
+        # === NUEVO: botón imprimir arriba derecha ===
+        title_layout.addStretch()
+        self.btn_imprimir = QPushButton(QIcon("imagenes/imprimir.png"), "")
+        self.btn_imprimir.setToolTip("Imprimir factura (TXT)")
+        self.btn_imprimir.setFixedSize(36, 28)
+        self.btn_imprimir.setCursor(Qt.PointingHandCursor)
+        self.btn_imprimir.setStyleSheet("""
+        QPushButton { background-color: #198754; border-radius: 6px; padding: 4px 8px; }
+        QPushButton:hover:!disabled { background-color: #20c997; }
+        QPushButton:disabled { background-color: #e9ecef; }
+        """)
+        title_layout.addWidget(self.btn_imprimir)
+
         main_layout.addLayout(title_layout)
 
         splitter = QSplitter(Qt.Horizontal)
@@ -312,7 +332,18 @@ class ABMVenta(QWidget):
         for btn, fondo in [(self.btn_nuevo, "#007bff"),
                            (self.btn_guardar, "#28a745"),
                            (self.btn_anular, "#dc3545")]:
-            btn.setStyleSheet(f"""
+            self.set_btn_style(btn, fondo)
+        for b in [self.btn_nuevo, self.btn_editar, self.btn_guardar, self.btn_anular]:
+            pie_layout.addWidget(b)
+        right_layout.addLayout(pie_layout)
+        splitter.addWidget(right_widget)
+        splitter.setSizes([340, 800])   # <<< igual que Compras
+
+        main_layout.addWidget(splitter)
+        self.setLayout(main_layout)
+
+    def set_btn_style(self, btn: QPushButton, fondo: str):
+        btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {fondo};
                 color: white;
@@ -322,15 +353,7 @@ class ABMVenta(QWidget):
             }}
             QPushButton:hover:!disabled {{ background-color: #b6d4fe; color: #0d6efd; }}
             QPushButton:disabled {{ background-color: #e9ecef; color: #6c757d; }}
-            """)
-        for b in [self.btn_nuevo, self.btn_editar, self.btn_guardar, self.btn_anular]:
-            pie_layout.addWidget(b)
-        right_layout.addLayout(pie_layout)
-        splitter.addWidget(right_widget)
-        splitter.setSizes([340, 800])   # <<< igual que Compras
-
-        main_layout.addWidget(splitter)
-        self.setLayout(main_layout)
+        """)
 
     def _on_item_changed(self, item):
         r, c = item.row(), item.column()
@@ -377,6 +400,9 @@ class ABMVenta(QWidget):
             self.btn_editar.setEnabled(has_loaded)
             self.btn_anular.setEnabled(has_loaded)
             self._toggle_nav(True)
+
+        # === NUEVO: estado del botón Imprimir ===
+        self.btn_imprimir.setEnabled(has_loaded and not (modo_nuevo or modo_ed))
 
     def agregar_item_a_grilla(self, it):
         tipo, _id, nombre, pv = it
@@ -787,6 +813,20 @@ class ABMVenta(QWidget):
         try:
             idventa = ctrl.crear_venta(datos)
             QMessageBox.information(self, "Venta", f"Venta N° {idventa} guardada correctamente.")
+
+            # === NUEVO: preguntar si quiere imprimir ===
+            resp = QMessageBox.question(
+                self, "Imprimir", "¿Desea imprimir la factura ahora?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
+            )
+            if resp == QMessageBox.Yes:
+                venta = self._cargar_venta_completa_para_print(idventa)
+                if venta:
+                    path = self._generar_txt_factura(venta)
+                    QMessageBox.information(self, "Imprimir", f"Archivo generado:\n{path}")
+                    # Para impresión directa:
+                    # import subprocess; subprocess.run(["notepad.exe", "/p", path], check=False)
+
             self.modo_nuevo = False
             self.cargar_ventas()
             self.limpiar_formulario(editable=False)
@@ -1068,3 +1108,77 @@ class ABMVenta(QWidget):
             self.mostrar_venta(len(self.ventas) - 1)
         else:
             QMessageBox.warning(self, "Venta", "No se encontró la venta seleccionada.")
+
+    # =========================
+    #   IMPRESIÓN – HELPERS
+    # =========================
+    def _cargar_venta_completa_para_print(self, idventa: int):
+        """
+        Trae la venta con paciente y detalles+item para poder renderizar.
+        """
+        try:
+            v = (
+                self.session.query(Venta)
+                .options(
+                    joinedload(Venta.paciente),
+                    joinedload(Venta.detalles).joinedload(VentaDetalle.item),
+                )
+                .filter(Venta.idventa == int(idventa))
+                .one_or_none()
+            )
+            return v
+        except Exception as e:
+            try: self.session.rollback()
+            except Exception: pass
+            print("Error load venta:", e)
+            return None
+
+    def _generar_txt_factura(self, venta):
+        """
+        Genera el TXT en una carpeta local. Devuelve la ruta.
+        Ajustá carpeta_salida si querés otro destino.
+        """
+        carpeta_salida = r"C:\consultorio\facturas_txt"
+        os.makedirs(carpeta_salida, exist_ok=True)
+
+        suf = venta.nro_factura or f"ID{venta.idventa}"
+        tstamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        nombre_archivo = f"FAC_{suf}_{tstamp}.txt"
+        path = os.path.join(carpeta_salida, nombre_archivo)
+
+        layout = DEFAULT_LAYOUT.copy()
+        # Acá podés ajustar filas/columnas/anchos para tu preimpreso si hace falta,
+        # ej: layout["row_fecha"] = 2; layout["col_fecha"] = 32
+
+        txt = render_factura_txt(venta, DEFAULT_LAYOUT)
+        print_text_windows(txt, "ELX350", condensed=True)   # letra chica
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(txt)
+        return path
+
+    def _on_imprimir_clicked(self):
+        """Imprime la venta actualmente mostrada (modo lectura)."""
+        if not self.idventa_actual:
+            QMessageBox.information(self, "Imprimir", "No hay una venta cargada para imprimir.")
+            return
+
+        if self._mask_vacia(self.txt_nro_factura.text() or ""):
+            if QMessageBox.question(
+                self, "Sin N° de factura",
+                "Esta venta no tiene N° de factura. ¿Desea imprimir de todos modos?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            ) == QMessageBox.No:
+                return
+
+        venta = self._cargar_venta_completa_para_print(self.idventa_actual)
+        if not venta:
+            QMessageBox.warning(self, "Imprimir", "No se pudo cargar la venta completa.")
+            return
+
+        try:
+            path = self._generar_txt_factura(venta)
+            QMessageBox.information(self, "Imprimir", f"Archivo generado:\n{path}")
+            # Impresión directa opcional:
+            # import subprocess; subprocess.run(["notepad.exe", "/p", path], check=False)
+        except Exception as ex:
+            QMessageBox.critical(self, "Imprimir", f"Ocurrió un error al generar el archivo:\n{ex}")
