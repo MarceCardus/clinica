@@ -71,6 +71,11 @@ def normalizar_telefono_py(telefono: str) -> str:
     if not t.startswith("+"): return "+595" + t
     return t
 
+# ---------- Sanitizar mensaje ----------
+def sanitizar_mensaje(mensaje: str) -> str:
+    """Elimina caracteres fuera del Basic Multilingual Plane (BMP)"""
+    return ''.join(char for char in mensaje if ord(char) <= 0xFFFF)
+
 # ---------- Clasificador simple de respuesta ----------
 POSITIVOS = {"si", "sí", "ok", "dale", "voy", "perfecto", "listo", "de una", "seguro", "presente", "👍", "👏", "👌"}
 NEGATIVOS = {"no", "no voy", "cancelo", "no puedo", "no podré", "no asistire", "no asistiré", "❌", "🚫"}
@@ -201,18 +206,18 @@ def click_boton_enviar(driver) -> bool:
     for xp in XPATHS_BTN:
         try:
             btn = WebDriverWait(driver, 2).until(EC.element_to_be_clickable((By.XPATH, xp)))
-            driver.execute_script("arguments[0].scrollIntoView({block:\'center\'});", btn)
+            driver.execute_script("arguments[0].scrollIntoView({block:\'center'});", btn)
             btn.click()
             return True
         except: pass
     return False
 
 def enviar_mensaje_en_chat(driver, mensaje: str) -> bool:
+    mensaje = sanitizar_mensaje(mensaje)
     composer = esperar_caja_mensaje(driver)
     intento = 0
     while intento <= RETRY_SENDS:
         try:
-            # limpiar editor
             driver.execute_script("""
                 const el = arguments[0];
                 el.focus();
@@ -221,26 +226,20 @@ def enviar_mensaje_en_chat(driver, mensaje: str) -> bool:
                   document.execCommand('delete', false, null);
                 } catch(e) {}
             """, composer)
-
-            # escribir con saltos de línea
             lines = mensaje.splitlines()
             for i, linea in enumerate(lines):
                 if linea: composer.send_keys(linea)
                 if i < len(lines) - 1:
                     composer.send_keys(Keys.SHIFT, Keys.ENTER)
                     time.sleep(0.02)
-
             before = contar_salientes(driver)
-
             if not click_boton_enviar(driver):
                 composer.send_keys(Keys.ENTER)
                 time.sleep(0.2)
                 composer.send_keys(Keys.ENTER)
-
             WebDriverWait(driver, 12).until(lambda d: contar_salientes(d) > before)
             logging.info("Mensaje confirmado como enviado.")
             return True
-
         except Exception as e:
             logging.warning(f"Reintento {intento+1} falló: {e}")
             intento += 1
@@ -249,10 +248,6 @@ def enviar_mensaje_en_chat(driver, mensaje: str) -> bool:
     return False
 
 def obtener_ultima_respuesta_entrante(driver) -> str | None:
-    """
-    Intenta capturar texto del último mensaje 'entrante'.
-    Usa varios selectores por cambios de DOM.
-    """
     XPATHS = [
         '(//div[contains(@class,"message-in")]//*[self::span or self::div][@dir="ltr" or @role="paragraph"])[last()]',
         '(//div[contains(@class,"message-in")]//div[@data-lexical-text="true"])[last()]',
@@ -271,6 +266,7 @@ def main():
     _guard = None
     driver = None
     session = None
+    enviados_run = set()   # <- números ya procesados en ESTA corrida
     try:
         _guard = SingleInstance("envioWs")
 
@@ -307,6 +303,10 @@ def main():
 
         for idcita, fecha_inicio, nombre, apellido, sexo, telefono in rows:
             telefono_norm = normalizar_telefono_py(telefono)
+            if telefono_norm in enviados_run:
+                logging.info(f"Ya procesado en esta corrida: {telefono_norm}. Omito.")
+                continue
+
             if not telefono_norm.startswith("+595"):
                 logging.warning(f"Teléfono inválido ({telefono}) para {nombre} {apellido}. Salteado.")
                 continue
@@ -336,38 +336,20 @@ def main():
 
             cerrar_popup_si_existe(driver)
 
-            if not enviar_mensaje_en_chat(driver, mensaje):
+            # evitar duplicado: si el último saliente ya es igual al que voy a enviar
+            ultimo = obtener_ultima_respuesta_entrante(driver)
+            if _norm_min(ultimo) == _norm_min(mensaje):
+                logging.info(f"Ya hay un recordatorio idéntico como último mensaje para {telefono_norm}. Omito envío.")
+                continue
+
+            if enviar_mensaje_en_chat(driver, mensaje):
+                logging.info(f"Mensaje de recordatorio enviado a {telefono_norm}.")
+                enviados_run.add(telefono_norm)
+            else:
                 logging.error(f"No se confirmó envío a {telefono_norm}.")
                 continue
 
-            logging.info(f"Mensaje de recordatorio enviado a {telefono_norm}.")
-            sleep_jitter(1.0, 2.0)
-
-            # ===== Intento corto de lectura de respuesta =====
-            try:
-                time.sleep(3.0)  # pequeño colchón para recibir algo inmediato
-                resp = obtener_ultima_respuesta_entrante(driver)
-                if resp:
-                    nuevo = clasificar_respuesta(resp)
-                    logging.info(f"Última respuesta de {telefono_norm}: '{resp}' -> {nuevo or 'Ambigua'}")
-                    if nuevo:
-                        session.execute(
-                            text("""
-                                UPDATE cita
-                                SET estado = :nuevo_estado, modificado_en = :ahora
-                                WHERE idcita = :idcita
-                            """),
-                            {'nuevo_estado': nuevo, 'ahora': datetime.datetime.now(), 'idcita': idcita}
-                        )
-                        session.commit()
-                else:
-                    logging.info(f"Sin respuesta inmediata de {telefono_norm}.")
-            except Exception as e:
-                logging.warning(f"Fallo leyendo respuesta de {telefono_norm}: {e}")
-
-            sleep_jitter(1.0, 2.0)
-
-        logging.info("Proceso finalizado.")
+            logging.info(f"Proceso finalizado.")
 
     except Exception as e:
         logging.error(f"Error general: {e}")

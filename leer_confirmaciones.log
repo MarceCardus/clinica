@@ -1,0 +1,4 @@
+2025-10-09 20:12:55,647 INFO Leyendo confirmaciones para citas del: 2025-10-10
+2025-10-09 20:12:55,773 INFO Pacientes con cita mañana: 21
+2025-10-09 20:12:55,773 INFO Intentando adherirse a Chrome en 127.0.0.1:9222…
+2025-10-09 20:12:58,315 WARNING The chromedriver version (138.0.7204.157) detected in PATH at chromedriver.EXE might not be compatible with the detected chrome version (141.0.7390.55); currently, chromedriver 141.0.7390.76 is recommended for chrome 141.*, so it is advised to delete the driver in PATH and retry

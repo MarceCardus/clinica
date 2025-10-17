@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
+import sys
 import time
 import random
 import logging
@@ -7,6 +8,7 @@ import datetime
 import subprocess
 import tempfile
 import atexit
+
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from config import DATABASE_URI
@@ -44,19 +46,57 @@ logging.getLogger("").addHandler(console)
 
 def sleep_jitter(a,b): time.sleep(random.uniform(a,b))
 
+# ---------- Utils ----------
+def _is_process_running(pid: int) -> bool:
+    """Chequeo simple de si un PID existe (Windows/Linux). Sin dependencias externas."""
+    if pid <= 0:
+        return False
+    try:
+        # En Windows, abrir proceso con signal 0 no existe, pero os.kill funciona desde Py3.8
+        # En Linux/Mac, os.kill(pid, 0) no mata, solo valida existencia.
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+    except Exception:
+        # En algunos Windows duros, os.kill puede no estar permitido; asumimos no corre.
+        return False
+
 # ---------- Mutex ----------
 class SingleInstance:
+    """
+    Lock con PID. Si existe y el proceso ya no vive, se limpia el lock.
+    """
     def __init__(self, name):
         self.lock_path = os.path.join(tempfile.gettempdir(), f"{name}.lock")
         if os.path.exists(self.lock_path):
-            raise RuntimeError(f"Ya hay otra instancia ejecutándose: {self.lock_path}")
-        open(self.lock_path, "w").close()
+            try:
+                with open(self.lock_path, "r", encoding="utf-8") as f:
+                    old_pid_txt = f.read().strip()
+                old_pid = int(old_pid_txt) if old_pid_txt.isdigit() else -1
+            except Exception:
+                old_pid = -1
+
+            if old_pid > 0 and _is_process_running(old_pid):
+                raise RuntimeError(f"Ya hay otra instancia ejecutándose (PID {old_pid}): {self.lock_path}")
+            else:
+                # Lock huérfano
+                try:
+                    os.remove(self.lock_path)
+                except Exception:
+                    pass
+
+        with open(self.lock_path, "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
+
         atexit.register(self.release)
+
     def release(self):
         try:
             if os.path.exists(self.lock_path):
                 os.remove(self.lock_path)
-        except: pass
+        except Exception as e:
+            logging.warning(f"No se pudo eliminar el archivo de bloqueo: {e}")
 
 # ---------- Chrome (depuración remota) ----------
 def find_chrome_binary():
@@ -83,7 +123,9 @@ def launch_chrome_with_debug(profile_dir: str, profile_name: str, port: int):
         '--disable-dev-shm-usage',
         '--disable-gpu',
     ]
-    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # DEVUELVO el proceso para poder terminarlo luego si lo lanzamos nosotros
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return proc
 
 def attach_driver_to_debugger(port: int) -> webdriver.Chrome:
     opts = ChromeOptions()
@@ -93,20 +135,37 @@ def attach_driver_to_debugger(port: int) -> webdriver.Chrome:
     return drv
 
 def build_driver_via_debug(profile_dir: str, profile_name: str, port: int, wait_boot=2.5):
+    """
+    Intenta adjuntarse a Chrome. Si no hay, lo lanza y devuelve (driver, chrome_proc | None).
+    """
+    chrome_proc = None
     try:
         logging.info(f"Intentando adherirse a Chrome en 127.0.0.1:{port}…")
-        return attach_driver_to_debugger(port)
+        drv = attach_driver_to_debugger(port)
+        return drv, chrome_proc
     except Exception as e:
         logging.info(f"No hay Chrome escuchando en {port}: {e}")
+
     logging.info("Lanzando Chrome con depuración remota…")
-    launch_chrome_with_debug(profile_dir, profile_name, port)
+    chrome_proc = launch_chrome_with_debug(profile_dir, profile_name, port)
     time.sleep(wait_boot)
+
     last = None
-    for i in range(1,6):
+    for _ in range(6):
         try:
-            return attach_driver_to_debugger(port)
+            drv = attach_driver_to_debugger(port)
+            return drv, chrome_proc
         except Exception as e:
-            last = e; time.sleep(1)
+            last = e
+            time.sleep(1)
+
+    # Si no pudimos adjuntarnos, intentemos matar el Chrome que lanzamos
+    try:
+        if chrome_proc and chrome_proc.poll() is None:
+            chrome_proc.terminate()
+    except Exception:
+        pass
+
     raise RuntimeError(f"No se pudo adherir a Chrome con depuración remota: {last}")
 
 # ---------- WhatsApp helpers ----------
@@ -188,7 +247,7 @@ def esperar_caja_mensaje(driver):
             el = WebDriverWait(driver, CHAT_LOAD_TIMEOUT).until(
                 EC.element_to_be_clickable((By.XPATH, xp))
             )
-            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+            driver.execute_script("arguments[0].scrollIntoView({block:\'center\'});", el)
             el.click()
             return el
         except Exception as e:
@@ -214,7 +273,7 @@ def click_boton_enviar(driver) -> bool:
         '//button[@data-testid="send"]',
         '//button[@data-testid="compose-btn-send"]',
         '//span[@data-icon="send"]/ancestor::button',
-        '//button[.//span[@data-icon="send"]]'
+        '//button[.//span[@data-icon="send"])]'
     ]
     for xp in XPATHS_BTN:
         try:
@@ -271,12 +330,14 @@ def obtener_resumen_confirmaciones(session, fecha_cita: datetime.date) -> str:
     return mensaje
 
 def main():
-    _guard = None
+    guard = None
     driver = None
+    chrome_proc = None
     session = None
     try:
-        _guard = SingleInstance("envio_resumen_grupo")
+        guard = SingleInstance("envio_resumen_grupo")
 
+        # pool_pre_ping=True evita errores por conexiones inactivas cerradas por el servidor
         engine = create_engine(DATABASE_URI, pool_pre_ping=True)
         Session = sessionmaker(bind=engine)
         session = Session()
@@ -287,7 +348,7 @@ def main():
         mensaje = obtener_resumen_confirmaciones(session, fecha)
         logging.info("\n" + mensaje)
 
-        driver = build_driver_via_debug(BASE_PROFILE_DIR, PROFILE_NAME, DEBUG_PORT)
+        driver, chrome_proc = build_driver_via_debug(BASE_PROFILE_DIR, PROFILE_NAME, DEBUG_PORT)
         driver.get("https://web.whatsapp.com/")
         try:
             esperar_whatsapp_listo(driver)
@@ -309,14 +370,40 @@ def main():
 
     except Exception as e:
         logging.error(f"Error general: {e}")
-        raise
+        # re-raise opcional si querés que falle en Scheduler
+        # raise
     finally:
+        # CIERRES ROBUSTOS
         try:
-            if session: session.close()
-        except: pass
+            if session:
+                session.close()
+        except Exception as e:
+            logging.warning(f"Fallo cerrando sesión DB: {e}")
+
         try:
-            if driver: driver.quit()
-        except: pass
+            if driver:
+                driver.quit()
+        except Exception as e:
+            logging.warning(f"Fallo cerrando WebDriver: {e}")
+
+        # Si ESTE script lanzó el Chrome (tenemos chrome_proc), lo cerramos.
+        try:
+            if chrome_proc and chrome_proc.poll() is None:
+                chrome_proc.terminate()
+                # Por si no termina:
+                try:
+                    chrome_proc.wait(timeout=5)
+                except Exception:
+                    chrome_proc.kill()
+        except Exception as e:
+            logging.warning(f"Fallo terminando Chrome lanzado por el script: {e}")
+
+        # Soltar lock explícitamente (además de atexit)
+        try:
+            if guard:
+                guard.release()
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     main()

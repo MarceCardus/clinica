@@ -4,7 +4,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QComboBox,
     QDateEdit, QTextEdit, QTableWidget, QTableWidgetItem, QSplitter, QGroupBox, QFormLayout,
     QMessageBox, QDialog, QListWidget, QCompleter,
-    QRadioButton, QButtonGroup  # <<< CAMBIO AQUÍ: Agregamos los imports necesarios
+    QRadioButton, QButtonGroup
 )
 from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import Qt, QDate, QEvent
@@ -136,11 +136,10 @@ class ABMCompra(QWidget):
         left_layout.addRow(QLabel("Tipo Comprobante:"), self.comprobante)
         self.nro_comp = QLineEdit()
         left_layout.addRow(QLabel("N° Comprobante:"), self.nro_comp)
-
-        # <<< CAMBIO AQUÍ: Agregamos los Radio Buttons para la condición de compra >>>
+        
         self.rb_contado = QRadioButton("Contado")
         self.rb_credito = QRadioButton("Crédito")
-        self.rb_contado.setChecked(True) # Por defecto, Contado está seleccionado
+        self.rb_contado.setChecked(True)
 
         self.grupo_condicion = QButtonGroup(self)
         self.grupo_condicion.addButton(self.rb_contado)
@@ -151,7 +150,6 @@ class ABMCompra(QWidget):
         condicion_layout.addWidget(self.rb_credito)
         condicion_layout.addStretch()
         left_layout.addRow(QLabel("Condición:"), condicion_layout)
-        # <<< FIN DEL CAMBIO >>>
 
         self.observaciones = QTextEdit()
         left_layout.addRow(QLabel("Observaciones:"), self.observaciones)
@@ -161,7 +159,6 @@ class ABMCompra(QWidget):
         left_box.setLayout(left_layout)
         splitter.addWidget(left_box)
 
-        # Panel derecho - Detalle
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
 
@@ -305,7 +302,6 @@ class ABMCompra(QWidget):
             "idclinica": 1,
             "tipo_comprobante": self.comprobante.currentText(),
             "nro_comprobante": self.nro_comp.text(),
-            # <<< CAMBIO AQUÍ: Leemos el valor de los Radio Buttons >>>
             "condicion_compra": "CONTADO" if self.rb_contado.isChecked() else "CREDITO",
             "observaciones": self.observaciones.toPlainText(),
             "detalles": detalles
@@ -334,7 +330,6 @@ class ABMCompra(QWidget):
         self.proveedor.setEnabled(estado)
         self.comprobante.setEnabled(estado)
         self.nro_comp.setEnabled(estado)
-        # <<< CAMBIO AQUÍ: Habilitamos/deshabilitamos los Radio Buttons >>>
         self.rb_contado.setEnabled(estado)
         self.rb_credito.setEnabled(estado)
         self.observaciones.setEnabled(estado)
@@ -349,7 +344,6 @@ class ABMCompra(QWidget):
         self.proveedor.setCurrentIndex(0)
         self.comprobante.setCurrentIndex(0)
         self.nro_comp.clear()
-        # <<< CAMBIO AQUÍ: Reseteamos los Radio Buttons al estado inicial >>>
         self.rb_contado.setChecked(True)
         self.observaciones.clear()
         self.grilla.setRowCount(0)
@@ -379,7 +373,6 @@ class ABMCompra(QWidget):
                 self.mostrar_compra(0)
             else:
                 self.limpiar_formulario(editable=False)
-                # Opcional: Mostrar mensaje solo si hubo un filtro
                 if proveedor_like:
                     QMessageBox.information(self, "Sin resultados", "No se encontraron compras con ese criterio.")
         finally:
@@ -395,7 +388,6 @@ class ABMCompra(QWidget):
 
     def cancelar(self):
         self.modo_nuevo = False
-        # Vuelve a mostrar el registro que se estaba viendo o el primero
         if self.compras:
             self.mostrar_compra(self.idx_actual if self.idx_actual != -1 else 0)
         else:
@@ -414,12 +406,11 @@ class ABMCompra(QWidget):
         self.nro_comp.setText(compra.nro_comprobante or "")
         self.observaciones.setPlainText(compra.observaciones or "")
 
-        # <<< CAMBIO AQUÍ: Mostramos la condición de la compra guardada >>>
         if compra.condicion_compra == "CONTADO":
             self.rb_contado.setChecked(True)
         elif compra.condicion_compra == "CREDITO":
             self.rb_credito.setChecked(True)
-        else: # Si no tiene condición guardada, por defecto Contado
+        else:
             self.rb_contado.setChecked(True)
             
         self.grilla.blockSignals(True)
@@ -461,7 +452,6 @@ class ABMCompra(QWidget):
             self.lbl_estado.setText("Activo")
             self.lbl_estado.setStyleSheet("font-weight:bold; color: green;")
 
-    # (El resto de los métodos de navegación y acciones permanecen igual)
     def ir_primero(self):
         if self.compras: self.mostrar_compra(0)
     def ir_anterior(self):
@@ -581,29 +571,54 @@ class ABMCompra(QWidget):
                 return
         super().keyPressEvent(event)
 
+    # ====================================================================
+    # ▼▼▼ FUNCIONES CORREGIDAS PARA EVITAR EL ERROR ▼▼▼
+    # ====================================================================
     def calcular_iva_total_row(self, row):
         try:
             self.grilla.blockSignals(True)
-            cantidad = _num(self.grilla.item(row, 2).text())
-            precio = _num(self.grilla.item(row, 3).text())
+            
+            cantidad_item = self.grilla.item(row, 2)
+            precio_item = self.grilla.item(row, 3)
+
+            if not all([cantidad_item, precio_item]):
+                return
+
+            cantidad = _num(cantidad_item.text())
+            precio = _num(precio_item.text())
+
             total = (precio * cantidad).quantize(Decimal("1"))
             iva = (total / Decimal(11)).quantize(Decimal("1")) if total > 0 else Decimal(0)
             
             self._set_or_text(row, 3, f"{int(precio):,}".replace(",", "."), ro=False)
             self._set_or_text(row, 4, f"{int(iva):,}".replace(",", "."), ro=True)
             self._set_or_text(row, 5, f"{int(total):,}".replace(",", "."), ro=True)
+        
         except Exception as e:
             print(f"Error en calcular_iva_total_row: {e}")
         finally:
             self.grilla.blockSignals(False)
 
+
     def actualizar_totales(self):
         subtotal, iva_total = Decimal(0), Decimal(0)
         for row in range(self.grilla.rowCount()):
-            cantidad = _num(self.grilla.item(row, 2).text())
-            precio = _num(self.grilla.item(row, 3).text())
+            
+            cantidad_item = self.grilla.item(row, 2)
+            precio_item = self.grilla.item(row, 3)
+            iva_item = self.grilla.item(row, 4)
+
+            cantidad_texto = cantidad_item.text() if cantidad_item else "0"
+            precio_texto = precio_item.text() if precio_item else "0"
+            iva_texto = iva_item.text() if iva_item else "0"
+            
+            cantidad = _num(cantidad_texto)
+            precio = _num(precio_texto)
+            iva = _num(iva_texto)
+            
             subtotal += (precio * cantidad)
-            iva_total += _num(self.grilla.item(row, 4).text())
+            iva_total += iva
+            
         self.lbl_subtotal.setText(f"Total: {int(round(subtotal)):,}".replace(",", "."))
         self.lbl_iva.setText(f"IVA: {int(round(iva_total)):,}".replace(",", "."))
 

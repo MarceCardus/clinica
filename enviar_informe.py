@@ -1,8 +1,44 @@
+# enviar_informe.py
 import os, sys, traceback, re, unicodedata
 from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 import imaplib, time
+from models.base import Base
+from models.clinica import Clinica
+from models.paciente import Paciente
+from models.profesional import Profesional
+from models.especialidad import Especialidad
+from models.profesional_especialidad import ProfesionalEspecialidad
+from models.usuario import Usuario
+from models.producto import Producto
+from models.paquete import Paquete
+from models.paquete_producto import PaqueteProducto
+from models.proveedor import Proveedor
+from models.insumo import Insumo
+from models.compra import Compra
+from models.compra_detalle import CompraDetalle
+from models.venta import Venta
+from models.venta_detalle import VentaDetalle
+from models.cobro import Cobro
+from models.cobro_venta import CobroVenta
+from models.venta_cuota import VentaCuota
+from models.sesion import Sesion
+from models.fotoavance import FotoAvance
+from models.receta import Receta
+from models.comisionprofesional import ComisionProfesional
+from models.cajamovimiento import CajaMovimiento
+from models.auditoria import Auditoria
+from models.antecPatologico import AntecedentePatologicoPersonal
+from models.antecEnfActual import AntecedenteEnfermedadActual
+from models.antecFliar import AntecedenteFamiliar
+from models.barrio import Barrio
+from models.ciudad import Ciudad
+from models.tipoproducto import TipoProducto
+import models.departamento
+import models.plan_sesiones
+import models.plan_tipo
+import models.agenda
 
 # ---------------- util ----------------
 try:
@@ -10,19 +46,26 @@ try:
 except Exception:
     ZoneInfo = None
 
+
 def load_env():
     """Carga .env desde la carpeta del ejecutable y desde el cwd como fallback."""
     try:
         from dotenv import load_dotenv  # pip install python-dotenv
-        base_dir = Path(getattr(sys, "_MEIPASS",
-                         Path(sys.executable).parent if getattr(sys, "frozen", False)
-                         else Path(__file__).parent))
+        base_dir = Path(
+            getattr(
+                sys,
+                "_MEIPASS",
+                Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent,
+            )
+        )
         load_dotenv(base_dir / ".env", override=False)
-        load_dotenv(override=False)
+        load_dotenv(override=False)  # cwd
     except Exception:
         pass
 
+
 load_env()
+
 
 def asu_now(tz_name: str | None):
     tz = None
@@ -33,77 +76,166 @@ def asu_now(tz_name: str | None):
             tz = None
     return datetime.now(tz) if tz else datetime.now()
 
-def period_day(d: date): return d, d
+
+def period_day(d: date):
+    return d, d
+
 
 def period_month(d: date):
     first = date(d.year, d.month, 1)
-    last  = (date(d.year + (d.month//12), (d.month%12)+1, 1) - timedelta(days=1))
+    last = (date(d.year + (d.month // 12), (d.month % 12) + 1, 1) - timedelta(days=1))
     return first, last
 
-def period_year(d: date): return date(d.year,1,1), date(d.year,12,31)
+
+def period_year(d: date):
+    return date(d.year, 1, 1), date(d.year, 12, 31)
+
 
 def D(x):
-    if x is None: return Decimal("0")
-    if isinstance(x, Decimal): return x
-    try: return Decimal(str(x))
-    except Exception: return Decimal("0")
+    if x is None:
+        return Decimal("0")
+    if isinstance(x, Decimal):
+        return x
+    try:
+        return Decimal(str(x))
+    except Exception:
+        return Decimal("0")
+
 
 def money(x: Decimal):
     q = D(x).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
     return f"Gs. {q:,.0f}".replace(",", ".")
 
+
 # --- Normalización de forma de pago ---
 def _strip_accents(s: str) -> str:
-    return ''.join(c for c in unicodedata.normalize('NFKD', s) if not unicodedata.combining(c))
+    return "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
+
 
 def norm_fp(fp: str) -> str:
-    """
-    Devuelve una de: EFECTIVO, TRANSFERENCIA, TARJETA_CREDITO, TARJETA_DEBITO, CHEQUE.
-    Soporta variantes como: 'T. Crédito', 'T. Debito', 'Tarjeta', 'Transfer', etc.
-    """
     if not fp:
         return ""
     s = _strip_accents(str(fp)).upper()
-    s = re.sub(r'[^A-Z0-9 ]+', ' ', s)
-    s = re.sub(r'\s+', ' ', s).strip()
+    s = re.sub(r"[^A-Z0-9 ]+", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
     tokens = set(s.split())
 
-    if 'EFECTIVO' in tokens or 'CASH' in tokens or 'CONTADO' in tokens:
-        return 'EFECTIVO'
-    if any(w in s for w in ('TRANSFER', 'TRANSF', 'GIRO', 'DEPOSITO', 'DEPOSI')):
-        return 'TRANSFERENCIA'
-    if 'CHEQUE' in s or 'CHEQ' in s:
-        return 'CHEQUE'
-    if 'TD' in tokens or 'DEBITO' in s or 'DEBIT' in s:
-        return 'TARJETA_DEBITO'
-    # Si dice "TARJETA" sin aclarar, lo contamos como crédito
-    if 'TC' in tokens or 'CREDITO' in s or 'CREDIT' in s or 'TARJETA' in tokens:
-        return 'TARJETA_CREDITO'
-    return s  # quedará como "OTRO" y se verá en REPORT_DEBUG
+    if "EFECTIVO" in tokens or "CASH" in tokens or "CONTADO" in tokens:
+        return "EFECTIVO"
+    if any(w in s for w in ("TRANSFER", "TRANSF", "GIRO", "DEPOSITO", "DEPOSI")):
+        return "TRANSFERENCIA"
+    if "CHEQUE" in s or "CHEQ" in s:
+        return "CHEQUE"
+    if "TD" in tokens or "DEBITO" in s or "DEBIT" in s:
+        return "TARJETA_DEBITO"
+    if "TC" in tokens or "CREDITO" in s or "CREDIT" in s or "TARJETA" in tokens:
+        return "TARJETA_CREDITO"
+    return s
+
 
 # ---------------- DB ----------------
 from sqlalchemy import create_engine, text
-DB_URL = os.getenv("DATABASE_URL")
-if not DB_URL:
-    raise RuntimeError("Definí DATABASE_URL en .env (postgresql+psycopg2://...)")
-ENGINE = create_engine(DB_URL, pool_pre_ping=True, future=True)
+from sqlalchemy.engine import URL
 
-# ---------------- consultas (ajustadas a tu esquema) ----------------
-# Tablas/columnas:
-# venta(idventa, fecha, montototal, estadoventa, saldo)
-# cobro(idcobro, fecha, monto, formapago, estado)
-# compra(idcompra, fecha, montototal, anulada bool)
-# compra_detalle(idcompra, iditem, cantidad, preciounitario, observaciones, ...)
-# item(iditem, nombre, iditemtipo)
-# item_tipo(iditemtipo, nombre -> 'PRODUCTO'/'INSUMO'/'AMBOS')
 
+def _make_engine():
+    host = os.getenv("PGHOST", "181.1.152.126")
+    port = int(os.getenv("PGPORT", "5433"))
+    user = os.getenv("PGUSER", "Cardus")
+    pwd = os.getenv("PGPASSWORD", "S@nguines--23")
+    db = os.getenv("PGDATABASE", "consultorio")
+    sslmode = os.getenv("PGSSLMODE", "prefer")
+
+    url = URL.create(
+        "postgresql+psycopg2",
+        username=user,
+        password=pwd,
+        host=host,
+        port=port,
+        database=db,
+        query={"sslmode": sslmode},
+    )
+
+    eng = create_engine(
+        url,
+        pool_pre_ping=True,
+        future=True,
+        connect_args={"connect_timeout": 8, "application_name": "enviar_informe"},
+    )
+    return eng
+
+
+ENGINE = _make_engine()
+
+
+def _diag_connection():
+    """Diagnóstico detallado de conectividad."""
+    import socket
+    from psycopg2 import connect as _pg_connect, OperationalError as _PGOpError
+
+    url = ENGINE.url
+    host = url.host or "localhost"
+    port = int(url.port or 5432)
+
+    print("=== DIAGNÓSTICO DE CONEXIÓN ===")
+    print("DSN:", url.render_as_string(hide_password=True))
+    print("Host:", host, "Port:", port)
+    print("SSLMode:", url.query.get("sslmode"))
+
+    try:
+        addrs = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+        resolved = sorted(set([a[4][0] for a in addrs]))
+        print("DNS OK ->", resolved)
+    except Exception as e:
+        print("❌ DNS fallo:", repr(e))
+
+    try:
+        with socket.create_connection((host, port), timeout=5):
+            print("TCP OK -> se pudo abrir socket a", host, port)
+    except Exception as e:
+        print("❌ TCP fallo:", repr(e))
+
+    try:
+        import psycopg2
+        kwargs = {
+            "host": host,
+            "port": port,
+            "dbname": url.database,
+            "user": url.username,
+            "password": url.password,
+        }
+        sslmode = url.query.get("sslmode")
+        if sslmode:
+            kwargs["sslmode"] = sslmode
+
+        conn = _pg_connect(**kwargs)
+        cur = conn.cursor()
+        cur.execute("SELECT version();")
+        ver = cur.fetchone()[0]
+        cur.close()
+        conn.close()
+        print("psycopg2 OK ->", ver)
+    except _PGOpError as e:
+        print("❌ psycopg2 OperationalError:", repr(e))
+    except Exception as e:
+        print("❌ psycopg2 error:", repr(e))
+
+    try:
+        with ENGINE.connect() as cx:
+            cx.execute(text("SELECT 1"))
+        print("SQLAlchemy OK -> SELECT 1")
+    except Exception as e:
+        print("❌ SQLAlchemy fallo:", repr(e))
+
+
+# ---------------- consultas ----------------
 def _vigente_venta_sql(alias="v"):
-    # Excluimos anuladas según tu campo 'estadoventa'
     return f"AND ({alias}.estadoventa IS NULL OR UPPER({alias}.estadoventa) NOT IN ('ANULADO','ANULADA'))"
 
+
 def _vigente_cobro_sql(alias="c"):
-    # Excluimos cobros anulados si existiese 'ANULADO'
     return f"AND ({alias}.estado IS NULL OR UPPER({alias}.estado) NOT IN ('ANULADO','ANULADA'))"
+
 
 def sum_ventas(d1: date, d2: date) -> Decimal:
     sql = f"""
@@ -114,6 +246,7 @@ def sum_ventas(d1: date, d2: date) -> Decimal:
     """
     with ENGINE.begin() as cx:
         return D(cx.execute(text(sql), {"d1": d1, "d2": d2}).scalar())
+
 
 def sum_cobros_por_fp(d1: date, d2: date):
     sql = f"""
@@ -132,26 +265,16 @@ def sum_cobros_por_fp(d1: date, d2: date):
         "OTROS": D(0),
         "TOTAL": D(0),
     }
-    unknown = {}
     with ENGINE.begin() as cx:
         for medio, total in cx.execute(text(sql), {"d1": d1, "d2": d2}):
             s = D(total)
             key = norm_fp(medio or "")
-            if key in res:
-                res[key] += s
-            else:
-                res["OTROS"] += s
-                unknown[key] = unknown.get(key, D(0)) + s
+            res[key] = res.get(key, D(0)) + s
             res["TOTAL"] += s
-
-    # Debug opcional: ver qué textos no están mapeados
-    if os.getenv("REPORT_DEBUG", "").lower() in ("1","true","yes","y") and unknown:
-        print("Formas de pago no mapeadas:", unknown, file=sys.stderr)
-
     return res
 
+
 def sum_saldo_periodo(d1: date, d2: date) -> Decimal:
-    # Tenés venta.saldo -> sumamos directo
     sql = f"""
     SELECT COALESCE(SUM(v.saldo),0) saldo
     FROM venta v
@@ -161,65 +284,59 @@ def sum_saldo_periodo(d1: date, d2: date) -> Decimal:
     with ENGINE.begin() as cx:
         return D(cx.execute(text(sql), {"d1": d1, "d2": d2}).scalar())
 
+
 def sum_saldo_year(any_date: date) -> Decimal:
     y1, y2 = period_year(any_date)
     return sum_saldo_periodo(y1, y2)
 
+
 def _line_expr():
-    # Si tu IVA en compra_detalle es MONTO adicional, podés sumar " + COALESCE(cd.iva,0)".
-    # Si IVA es porcentaje, sería "* (1 + COALESCE(cd.iva,0)/100.0)".
     return "COALESCE(cd.cantidad,0) * COALESCE(cd.preciounitario,0)"
+
 
 def sum_compras_insumos_productos(d1: date, d2: date) -> Decimal:
     line = _line_expr()
     sql = f"""
     SELECT COALESCE(SUM({line}),0) total
     FROM compra_detalle cd
-    JOIN compra c         ON c.idcompra = cd.idcompra
-    LEFT JOIN item i      ON i.iditem = cd.iditem
+    JOIN compra c ON c.idcompra = cd.idcompra
+    LEFT JOIN item i ON i.iditem = cd.iditem
     LEFT JOIN item_tipo t ON t.iditemtipo = i.iditemtipo
     WHERE c.fecha BETWEEN :d1 AND :d2
       AND COALESCE(c.anulada, FALSE) = FALSE
-      AND (
-            t.nombre IN ('PRODUCTO','INSUMO','AMBOS')
-            OR cd.iditem IS NOT NULL
-          )
+      AND (t.nombre IN ('PRODUCTO','INSUMO','AMBOS') OR cd.iditem IS NOT NULL)
     """
     with ENGINE.begin() as cx:
         return D(cx.execute(text(sql), {"d1": d1, "d2": d2}).scalar())
+
 
 def sum_gastos_daisy(d1: date, d2: date) -> Decimal:
     line = _line_expr()
     sql = f"""
     SELECT COALESCE(SUM({line}),0) total
     FROM compra_detalle cd
-    JOIN compra c         ON c.idcompra = cd.idcompra
-    LEFT JOIN item i      ON i.iditem = cd.iditem
+    JOIN compra c ON c.idcompra = cd.idcompra
+    LEFT JOIN item i ON i.iditem = cd.iditem
     WHERE c.fecha BETWEEN :d1 AND :d2
       AND COALESCE(c.anulada, FALSE) = FALSE
-      AND (
-            (i.nombre ILIKE 'Gastos Daisy%%')
-         OR (cd.observaciones ILIKE 'Gastos Daisy%%')
-          )
+      AND ((i.nombre ILIKE 'Gastos Daisy%%') OR (cd.observaciones ILIKE 'Gastos Daisy%%'))
     """
     with ENGINE.begin() as cx:
         return D(cx.execute(text(sql), {"d1": d1, "d2": d2}).scalar())
 
+
 # ---------------- email ----------------
 from email.message import EmailMessage
 
-def build_email_text(rep_date: date,
-                     ventas_dia: Decimal, cobros_dia: dict, saldo_dia: Decimal,
+
+def build_email_text(rep_date: date, ventas_dia: Decimal, cobros_dia: dict, saldo_dia: Decimal,
                      compras_dia_ip: Decimal, compras_dia_gd: Decimal,
                      ventas_mes: Decimal, cobros_mes: dict, saldo_mes: Decimal,
                      compras_mes_ip: Decimal, compras_mes_gd: Decimal,
                      saldo_anual: Decimal) -> str:
     ddmmyyyy = rep_date.strftime("%d-%m-%Y")
     L = []
-    L.append(f"📅 INFORME DEL DÍA: {ddmmyyyy}")
-    L.append("")
-
-    # Día
+    L.append(f"📅 INFORME DEL DÍA: {ddmmyyyy}\n")
     L.append("📊 RESUMEN DEL DÍA")
     L.append(f"• 🧾 Ventas del día: {money(ventas_dia)}")
     L.append(f"• 💵 Efectivo del día: {money(cobros_dia['EFECTIVO'])}")
@@ -229,16 +346,10 @@ def build_email_text(rep_date: date,
     L.append(f"• 🧾 Cheque: {money(cobros_dia['CHEQUE'])}")
     L.append(f"• 📥 Total ingreso del día: {money(cobros_dia['TOTAL'])}")
     L.append(f"• 🧮 Saldo del día: {money(saldo_dia)}")
-    L.append("")
-    L.append("🛒 COMPRAS DEL DÍA")
+    L.append("\n🛒 COMPRAS DEL DÍA")
     L.append(f"  • 📦 Insumos y Productos: {money(compras_dia_ip)}")
     L.append(f"  • 🌼 Gastos Daisy: {money(compras_dia_gd)}")
-
-    L.append("")
-    L.append("")
-
-    # Mes
-    L.append("📈 RESUMEN DEL MES")
+    L.append("\n📈 RESUMEN DEL MES")
     L.append(f"• 🧾 Ventas del mes: {money(ventas_mes)}")
     L.append(f"• 💵 Efectivo del mes: {money(cobros_mes['EFECTIVO'])}")
     L.append(f"• 🔁 Transferencia del mes: {money(cobros_mes['TRANSFERENCIA'])}")
@@ -247,29 +358,12 @@ def build_email_text(rep_date: date,
     L.append(f"• 🧾 Cheque del mes: {money(cobros_mes['CHEQUE'])}")
     L.append(f"• 📥 Total ingreso del mes: {money(cobros_mes['TOTAL'])}")
     L.append(f"• 🧮 Saldo del mes: {money(saldo_mes)}")
-    L.append("")
-    L.append("🛒 COMPRAS DEL MES")
+    L.append("\n🛒 COMPRAS DEL MES")
     L.append(f"  • 📦 Insumos y Productos: {money(compras_mes_ip)}")
     L.append(f"  • 🌼 Gastos Daisy: {money(compras_mes_gd)}")
-    L.append("")
-    L.append(f"🏦 SALDO ANUAL: {money(saldo_anual)}")
-
+    L.append(f"\n🏦 SALDO ANUAL: {money(saldo_anual)}")
     return "\n".join(L)
 
-def _imap_append_to_sent(raw_bytes: bytes):
-    if os.getenv("IMAP_SAVE_SENT", "false").lower() not in ("1","true","yes","y"):
-        return
-    host = os.getenv("IMAP_HOST", "imap.gmail.com")
-    port = int(os.getenv("IMAP_PORT", "993"))
-    user = os.getenv("IMAP_USER")
-    password = os.getenv("IMAP_PASS")
-    sent_box = os.getenv("IMAP_SENT_FOLDER", "[Gmail]/Sent Mail")
-    if not (host and user and password):
-        return  # sin config IMAP
-    with imaplib.IMAP4_SSL(host, port) as M:
-        M.login(user, password)
-        M.append(sent_box, "\\Seen", imaplib.Time2Internaldate(time.time()), raw_bytes)
-        M.logout()
 
 def send_email(subject: str, body: str, to_addr: str):
     host = os.getenv("SMTP_HOST")
@@ -285,7 +379,7 @@ def send_email(subject: str, body: str, to_addr: str):
     msg["Subject"] = subject
     msg.set_content(body)
 
-    if os.getenv("SMTP_TLS", "true").lower() in ("1","true","yes","y") and port in (587, 25):
+    if os.getenv("SMTP_TLS", "true").lower() in ("1", "true", "yes", "y") and port in (587, 25):
         with smtplib.SMTP(host, port) as s:
             s.ehlo()
             s.starttls()
@@ -296,21 +390,21 @@ def send_email(subject: str, body: str, to_addr: str):
             s.login(user, password)
             s.send_message(msg)
 
-    # Guardar copia en Enviados (si está configurado)
-    try:
-        _imap_append_to_sent(msg.as_bytes())
-    except Exception:
-        pass
 
 # ---------------- main ----------------
 def main(argv=None):
     import argparse
     p = argparse.ArgumentParser(description="Enviar Informe del día (PostgreSQL)")
     p.add_argument("--date", default=None, help="YYYY-MM-DD (por defecto: hoy)")
-    p.add_argument("--tz", default=os.getenv("REPORT_TZ","America/Asuncion"))
-    p.add_argument("--to", default=os.getenv("SMTP_TO","Daisy Ramírez <dradaisyramirez@gmail.com>"))
+    p.add_argument("--tz", default=os.getenv("REPORT_TZ", "America/Asuncion"))
+    p.add_argument("--to", default=os.getenv("SMTP_TO", "Daisy Ramírez <dradaisyramirez@gmail.com>"))
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--diag", action="store_true", help="Ejecuta diagnóstico de conexión y sale")
     a = p.parse_args(argv)
+
+    if a.diag:
+        _diag_connection()
+        return
 
     rep_date = datetime.strptime(a.date, "%Y-%m-%d").date() if a.date else asu_now(a.tz).date()
     d1, d2 = period_day(rep_date)
@@ -319,14 +413,11 @@ def main(argv=None):
     try:
         ventas_dia = sum_ventas(d1, d2)
         ventas_mes = sum_ventas(m1, m2)
-
         cobros_dia = sum_cobros_por_fp(d1, d2)
         cobros_mes = sum_cobros_por_fp(m1, m2)
-
         saldo_dia = sum_saldo_periodo(d1, d2)
         saldo_mes = sum_saldo_periodo(m1, m2)
         saldo_anual = sum_saldo_year(rep_date)
-
         compras_dia_ip = sum_compras_insumos_productos(d1, d2)
         compras_mes_ip = sum_compras_insumos_productos(m1, m2)
         compras_dia_gd = sum_gastos_daisy(d1, d2)
@@ -339,12 +430,17 @@ def main(argv=None):
                                 saldo_anual)
         subject = f"Informe del día: {rep_date.strftime('%d-%m-%Y')}"
         if a.dry_run:
-            print(subject); print("="*len(subject)); print(body)
+            print(subject)
+            print("=" * len(subject))
+            print(body)
         else:
-            send_email(subject, body, a.to); print(f"OK: Informe enviado a {a.to}")
+            send_email(subject, body, a.to)
+            print(f"OK: Informe enviado a {a.to}")
     except Exception as ex:
         print("ERROR durante el envío del informe:", ex, file=sys.stderr)
-        traceback.print_exc(); sys.exit(1)
+        traceback.print_exc()
+        sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

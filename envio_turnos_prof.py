@@ -67,7 +67,8 @@ class SingleInstance:
         try:
             if os.path.exists(self.lock_path):
                 os.remove(self.lock_path)
-        except: pass
+        except Exception as e:
+            logging.error(f"Error al intentar eliminar el archivo de bloqueo: {e}")
 
 def normalizar_telefono_py(telefono: str) -> str:
     if not telefono: return ""
@@ -411,11 +412,20 @@ def main():
         sys.exit(1)
     finally:
         try:
-            if session: session.close()
-        except: pass
+            if session:
+                session.close()
+        except:
+            pass
         try:
-            if driver: driver.quit()
-        except: pass
+            if driver:
+                driver.quit()
+        except:
+            pass
+        if chrome_proc:
+            try:
+                chrome_proc.terminate()  # Asegurarse de cerrar Chrome
+            except:
+                pass
         if FORCE_CLOSE_DEBUG_CHROME:
             pass
 

@@ -35,13 +35,13 @@ class Paciente(Base):
     estado = Column(Boolean, nullable=False, default=True, server_default=text("true"))
 
     observaciones = Column(String)
-
+    
     # Si realmente siempre es requerido, dejalo NOT NULL.
     # Si tu formulario permite guardar sin barrio todavía, cambiá a nullable=True.
     idbarrio = Column(Integer, ForeignKey('barrio.idbarrio'), nullable=False)
 
     barrio = relationship("Barrio", back_populates="pacientes")
-
+    ventas = relationship("Venta", back_populates="paciente")
     antecedentes_patologicos_personales = relationship(
         "AntecedentePatologicoPersonal", back_populates="paciente", cascade="all, delete-orphan"
     )
