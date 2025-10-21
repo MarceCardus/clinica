@@ -56,16 +56,27 @@ class InformeAtencionProfesionalDlg(QDialog):
         self.tbl.setEditTriggers(QTableWidget.NoEditTriggers)
         root.addWidget(self.tbl)
 
-        # ---- Resumen mes ----
+        # ---- Resumen / Detalle ----
         fila2 = QHBoxLayout()
         self.btn_resumen = QPushButton("Ver resumen del mes")
         fila2.addWidget(self.btn_resumen)
+
+        # NUEVO: botón para abrir el detalle
+        self.btn_detalle = QPushButton("Ver detalle…")
+        fila2.addWidget(self.btn_detalle)
+
         root.addLayout(fila2)
 
         # Señales
         self.btn_buscar.clicked.connect(self.buscar)
         self.btn_export.clicked.connect(self.exportar_excel)
         self.btn_resumen.clicked.connect(self.resumen_mes)
+
+        # NUEVO: abre el diálogo de detalle heredando filtros
+        self.btn_detalle.clicked.connect(self.ver_detalle)
+
+        # (Opcional) doble click en la tabla para ir al detalle
+        self.tbl.itemDoubleClicked.connect(self.ver_detalle)
 
         # Primer load
         self.buscar()
@@ -152,3 +163,35 @@ class InformeAtencionProfesionalDlg(QDialog):
             lineas.append(linea)
 
         QMessageBox.information(self, "Resumen mensual", "\n".join(lineas))
+
+    # NUEVO: abre el diálogo de detalle heredando filtros y profesional
+    def ver_detalle(self, *args, **kwargs):
+        # Import tardío para evitar dependencias circulares
+        from controllers.informe_detalle_prof import InformeDetalleProfesionalDlg
+
+        dlg = InformeDetalleProfesionalDlg(self)
+
+        # Heredar fechas
+        dlg.dt_desde.setDate(self.dt_desde.date())
+        dlg.dt_hasta.setDate(self.dt_hasta.date())
+
+        # Heredar profesional seleccionado (si no es "Todos")
+        pid = self.cb_prof.currentData()
+        if pid is not None:
+            idx = dlg.cb_prof.findData(pid)
+            if idx >= 0:
+                dlg.cb_prof.setCurrentIndex(idx)
+        else:
+            # Si venimos por doble click y la fila muestra un profesional específico,
+            # tratamos de detectarlo por texto:
+            cur = self.tbl.currentRow()
+            if cur >= 0:
+                prof_txt = self.tbl.item(cur, 1).text() if self.tbl.item(cur, 1) else ""
+                # buscar por texto
+                for i in range(dlg.cb_prof.count()):
+                    if dlg.cb_prof.itemText(i) == prof_txt:
+                        dlg.cb_prof.setCurrentIndex(i)
+                        break
+
+        dlg.buscar()
+        dlg.exec_()

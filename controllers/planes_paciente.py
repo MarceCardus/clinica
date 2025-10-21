@@ -458,10 +458,12 @@ class SesionesPlanDialog(QDialog):
 
         btns = QHBoxLayout()
         self.btn_programar = QPushButton("Programar…")
+        self.btn_reprogramar = QPushButton("Reprogramar…")
         self.btn_completar = QPushButton("Marcar completada")
         self.btn_guardar = QPushButton("Guardar cambios")
         self.btn_cerrar = QPushButton("Cerrar")
         btns.addWidget(self.btn_programar)
+        btns.addWidget(self.btn_reprogramar)
         btns.addWidget(self.btn_completar)
         btns.addStretch()
         btns.addWidget(self.btn_guardar)
@@ -469,6 +471,7 @@ class SesionesPlanDialog(QDialog):
         layout.addLayout(btns)
 
         self.btn_programar.clicked.connect(self.programar)
+        self.btn_reprogramar.clicked.connect(self.reprogramar)
         self.btn_completar.clicked.connect(self.toggle_completada)
         self.btn_cerrar.clicked.connect(self.reject)
         self.btn_guardar.clicked.connect(self.guardar)
@@ -477,6 +480,182 @@ class SesionesPlanDialog(QDialog):
         self._on_row_change(0, 0, -1, -1)
 
         self.cargar()
+
+    # --- agregá este método nuevo dentro de la clase SesionesPlanDialog ---
+    def reprogramar(self):
+        sid = self._selected_idsesion()
+        if not sid:
+            QMessageBox.information(self, "Sesión", "Seleccioná una sesión.")
+            return
+
+        s = self.session.get(PlanSesion, sid)
+        plan = self.session.get(PlanSesiones, s.idplan)
+
+        if plan.estado == PlanEstado.CANCELADO:
+            QMessageBox.warning(self, "Reprogramar", "No se puede reprogramar: el plan está CANCELADO.")
+            return
+        if s.estado == SesionEstado.COMPLETADA:
+            QMessageBox.warning(self, "Reprogramar", "La sesión ya está COMPLETADA.")
+            return
+
+        # --- diálogo de reprogramación ---
+        from PyQt5.QtWidgets import QDateTimeEdit, QCheckBox
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Reprogramar sesión {s.nro}")
+        lay = QVBoxLayout(dlg)
+        form = QFormLayout()
+        lay.addLayout(form)
+
+        dt = QDateTimeEdit()
+        dt.setCalendarPopup(True)
+        # fecha/hora sugerida = actual programada o ahora
+        if s.fecha_programada:
+            dt.setDateTime(QDateTime(s.fecha_programada))
+        else:
+            dt.setDateTime(QDateTime.currentDateTime())
+
+        cbp = QComboBox()
+        pros = [
+            (p.idprofesional, f"{p.apellido}, {p.nombre}")
+            for p in self.session.execute(
+                select(Profesional).where(Profesional.estado == True).order_by(Profesional.apellido)
+            ).scalars()
+        ]
+        for pid, txt in pros:
+            cbp.addItem(txt, pid)
+        if s.idterapeuta:
+            cbp.setCurrentIndex(cbp.findData(s.idterapeuta))
+
+        chk_mantener_prof = QCheckBox("Mantener terapeuta actual")
+        chk_mantener_prof.setChecked(True)
+
+        chk_shift = QCheckBox("Desplazar siguientes sesiones (en cadena)")
+        chk_shift.setChecked(False)
+
+        form.addRow("Nueva fecha y hora:", dt)
+        form.addRow("Terapeuta:", cbp)
+        form.addRow("", chk_mantener_prof)
+        form.addRow("", chk_shift)
+
+        # botones
+        hb = QHBoxLayout()
+        ok = QPushButton("Aplicar")
+        ca = QPushButton("Cancelar")
+        hb.addStretch()
+        hb.addWidget(ok)
+        hb.addWidget(ca)
+        lay.addLayout(hb)
+        ca.clicked.connect(dlg.reject)
+        ok.clicked.connect(dlg.accept)
+
+        if dlg.exec_() != QDialog.Accepted:
+            return
+
+        # Determinar terapeuta a usar
+        new_prof = s.idterapeuta if chk_mantener_prof.isChecked() else cbp.currentData()
+        if new_prof is None:
+            QMessageBox.warning(self, "Reprogramar", "Elegí un terapeuta.")
+            return
+
+        # Normalizar nueva fecha/hora (evitar domingo; sábado 08:00, L-V mantiene hora)
+        new_dt = dt.dateTime().toPyDateTime()
+        # si cae domingo -> mover al lunes a la misma hora (o 08:00 si era sábado-regla)
+        if new_dt.weekday() == 6:  # domingo
+            new_dt = new_dt + timedelta(days=1)
+
+        def _ajustar_horario(dtime: datetime) -> datetime:
+            # sábado a las 08:00; L-V respetar hora; domingo se trata afuera
+            if dtime.weekday() == 5:  # sábado
+                return datetime.combine(dtime.date(), time(8, 0))
+            return dtime
+
+        new_dt = _ajustar_horario(new_dt)
+
+        old_dt = s.fecha_programada or new_dt
+        delta = new_dt - old_dt
+
+        # --- actualizar la sesión seleccionada ---
+        s.fecha_programada = new_dt
+        s.idterapeuta = new_prof
+
+        # Upsert de cita para esta sesión
+        existing = self.session.execute(select(Cita).where(Cita.idsesion == s.idsesion)).scalar_one_or_none()
+        obs_txt = f"Plan #{plan.idplan} - Sesión {s.nro}"
+        if existing:
+            existing.idpaciente = plan.idpaciente
+            existing.idprofesional = new_prof
+            existing.fecha_inicio = new_dt
+            existing.duracion = getattr(existing, "duracion", 30) or 30
+            existing.observaciones = obs_txt
+            if hasattr(existing, "idplantipo"):
+                existing.idplantipo = plan.idplantipo
+        else:
+            c = Cita(
+                idpaciente=plan.idpaciente,
+                idprofesional=new_prof,
+                fecha_inicio=new_dt,
+                duracion=30,
+                observaciones=obs_txt,
+                idsesion=s.idsesion
+            )
+            if hasattr(c, "idplantipo"):
+                c.idplantipo = plan.idplantipo
+            self.session.add(c)
+
+        # --- desplazar siguientes en cadena (opcional) ---
+        if chk_shift.isChecked() and delta != timedelta(0):
+            siguientes = self.session.execute(
+                select(PlanSesion)
+                .where(
+                    PlanSesion.idplan == s.idplan,
+                    PlanSesion.nro > s.nro,
+                    PlanSesion.estado == SesionEstado.PROGRAMADA
+                )
+                .order_by(PlanSesion.nro)
+            ).scalars().all()
+
+            for sx in siguientes:
+                if not sx.fecha_programada:
+                    continue
+                cand = sx.fecha_programada + delta
+                # evitar domingos y ajustar horario de sábado
+                if cand.weekday() == 6:
+                    cand = cand + timedelta(days=1)
+                cand = _ajustar_horario(cand)
+
+                sx.fecha_programada = cand
+                # mantener su propio terapeuta si tiene; si no, usar el nuevo_prof
+                if not sx.idterapeuta:
+                    sx.idterapeuta = new_prof
+
+                ex = self.session.execute(select(Cita).where(Cita.idsesion == sx.idsesion)).scalar_one_or_none()
+                obs_txt2 = f"Plan #{plan.idplan} - Sesión {sx.nro}"
+                if ex:
+                    ex.idpaciente = plan.idpaciente
+                    ex.idprofesional = sx.idterapeuta or new_prof
+                    ex.fecha_inicio = cand
+                    ex.duracion = getattr(ex, "duracion", 30) or 30
+                    ex.observaciones = obs_txt2
+                    if hasattr(ex, "idplantipo"):
+                        ex.idplantipo = plan.idplantipo
+                else:
+                    c2 = Cita(
+                        idpaciente=plan.idpaciente,
+                        idprofesional=sx.idterapeuta or new_prof,
+                        fecha_inicio=cand,
+                        duracion=30,
+                        observaciones=obs_txt2,
+                        idsesion=sx.idsesion
+                    )
+                    if hasattr(c2, "idplantipo"):
+                        c2.idplantipo = plan.idplantipo
+                    self.session.add(c2)
+
+        self.session.commit()
+        self.cargar()
+        QMessageBox.information(self, "Reprogramar", "Reprogramación aplicada correctamente.")
+
+
 
     def _on_row_change(self, cr, cc, pr, pc):
         try:

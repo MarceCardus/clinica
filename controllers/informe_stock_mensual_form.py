@@ -238,6 +238,8 @@ class InformeStockMensualForm(QDialog):
             row_idx = 1
             for g in (info.grupos or []):
                 for it in (g.items or []):
+                    if not getattr(it, "genera_stock", True):
+                        continue
                     if not pasa_filtros(it):
                         continue
 
