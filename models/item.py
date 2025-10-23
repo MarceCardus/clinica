@@ -4,12 +4,12 @@ from sqlalchemy import (
     ForeignKey, DateTime, func
 )
 from sqlalchemy.orm import relationship
-from utils.db import Base  # ajustá el import según tu proyecto
+from utils.db import Base
+from .procedimiento_item import procedimiento_item  # <— IMPORTANTE
 
 class ItemTipo(Base):
     __tablename__ = "item_tipo"
     iditemtipo = Column(Integer, primary_key=True, autoincrement=True)
-    # Ejemplos: PRODUCTO / INSUMO / APARATO / SERVICIO / etc.
     nombre = Column(String(20), unique=True, nullable=False)
 
     items = relationship(
@@ -30,40 +30,35 @@ class Item(Base):
     activo = Column(Boolean, nullable=False, default=True)
     fecha_creacion = Column(DateTime, nullable=False, server_default=func.now())
     fecha_actualizacion = Column(DateTime)
-    genera_stock = Column(Boolean, nullable=False, default=True)  # << nuevo
-    # Código de barra
-    codigo_barra = Column(String(64), unique=True)  # EAN/UPC/QR (opcional, único si está presente)
+    genera_stock = Column(Boolean, nullable=False, default=True)
+    codigo_barra = Column(String(64), unique=True)
 
     # Clasificación general
     iditemtipo = Column(Integer, ForeignKey("item_tipo.iditemtipo", ondelete="RESTRICT"), nullable=False)
     tipo = relationship("ItemTipo", back_populates="items")
 
-    # Metadatos para planes de sesiones (si el item genera un plan al vender)
-    idplantipo = Column(
-        Integer,
-        ForeignKey("plan_tipo.idplantipo", ondelete="RESTRICT"),  # ← agrega la FK (solo en el modelo)
-        nullable=True                                             # ← sigue siendo opcional
-    )
+    # Plan/tipo (opcional)
+    idplantipo = Column(Integer, ForeignKey("plan_tipo.idplantipo", ondelete="RESTRICT"), nullable=True)
     sesiones_incluidas = Column(Integer)
 
-    # Si los usabas antes (producto/insumo) — opcionales
+    # Producto/insumo
     precio_venta = Column(Numeric(14, 2))
     idtipoproducto = Column(Integer, ForeignKey("tipoproducto.idtipoproducto", ondelete="RESTRICT"))
     idespecialidad = Column(Integer, ForeignKey("especialidad.idespecialidad", ondelete="RESTRICT"))
     requiere_recordatorio = Column(Boolean, default=False, nullable=False)
     dias_recordatorio = Column(Integer)
     mensaje_recordatorio = Column(String(160))
-    tipo_producto = Column(String(30))      # etiqueta libre si te sirve
+    tipo_producto = Column(String(30))
 
     unidad = Column(String(20))
-    categoria = Column(String(50))          # 'CONSUMO_INTERNO' / 'USO_PROCEDIMIENTO'
-    tipo_insumo = Column(String(50))        # 'MEDICAMENTO', 'DESCARTABLE', etc.
+    categoria = Column(String(50))
+    tipo_insumo = Column(String(50))
     stock_minimo = Column(Numeric(14, 2))
 
     uso_interno = Column(Boolean, nullable=False, default=False)
     uso_procedimiento = Column(Boolean, nullable=False, default=False)
 
-    # Relaciones de negocio (si existen esas tablas)
+    # Relaciones de negocio
     tipoproducto = relationship("TipoProducto", back_populates="items", foreign_keys=[idtipoproducto])
     especialidad  = relationship("Especialidad", back_populates="items", foreign_keys=[idespecialidad])
 
@@ -71,10 +66,24 @@ class Item(Base):
     compra_detalles = relationship("CompraDetalle", back_populates="item", passive_deletes=True)
     venta_detalles  = relationship("VentaDetalle",  back_populates="item", passive_deletes=True)
 
-    # Inversas con los modelos unificados
+    # Inversas
     indicaciones = relationship("Indicacion", back_populates="item", passive_deletes=True)
-    procedimientos = relationship("Procedimiento", back_populates="item", passive_deletes=True)
     plan_tipo = relationship("PlanTipo", back_populates="items")
+
+    # ⚠️ Separar las dos lógicas:
+    # 1) Procedimientos donde este ítem es el **principal** (FK directa en Procedimiento.iditem)
+    procedimientos_principales = relationship(
+        "Procedimiento",
+        back_populates="item",
+        foreign_keys="Procedimiento.iditem"
+    )
+
+    # 2) Procedimientos donde este ítem es un **insumo** (M2M)
+    procedimientos = relationship(
+        "Procedimiento",
+        secondary=procedimiento_item,    # <— variable Table, NO string
+        back_populates="items"
+    )
 
     def __repr__(self):
         return f"<Item id={self.iditem} nombre={self.nombre!r}>"

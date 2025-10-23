@@ -54,8 +54,8 @@ BASE_PROFILE_DIR = r"C:\selenium_ws_profile"
 PROFILE_NAME     = "Default"
 DEBUG_PORT       = 9226  # Puerto propio
 
-QR_WAIT_SECONDS          = 30
-CHAT_LOAD_TIMEOUT        = 35
+QR_WAIT_SECONDS           = 30
+CHAT_LOAD_TIMEOUT         = 35
 DELAY_BEFORE_QUIT_SECONDS = 10
 
 LOG_FILE = "envio_recordatorios.log"
@@ -169,7 +169,9 @@ def cerrar_popup_si_existe(driver, wait_time=0.8):
 def esperar_chat_cargado(driver):
     WebDriverWait(driver, CHAT_LOAD_TIMEOUT).until(
         EC.any_of(
+            # XPATH CRÍTICO: Título del chat
             EC.presence_of_element_located((By.XPATH, '//header//*[@data-testid="conversation-info-header-chat-title"]')),
+            # XPATH CRÍTICO: Caja de texto del footer
             EC.presence_of_element_located((By.XPATH, '//footer//*[@role="textbox" and @contenteditable="true"]'))
         )
     )
@@ -192,6 +194,7 @@ def enviar_mensaje_whatsapp(driver, wait, numero: str, mensaje: str) -> bool:
     box = None
     for _ in range(6):
         try:
+            # XPATH CRÍTICO: Caja de texto
             box = wait.until(EC.element_to_be_clickable((By.XPATH, '//footer//div[@contenteditable="true"]')))
             break
         except Exception:
@@ -214,6 +217,7 @@ def enviar_mensaje_whatsapp(driver, wait, numero: str, mensaje: str) -> bool:
 
         # Fallback: botón enviar
         try:
+            # XPATH CRÍTICO: Botón de enviar
             btn = WebDriverWait(driver, 5).until(
                 EC.element_to_be_clickable((By.XPATH, "//footer//button[@aria-label='Enviar']|//footer//span[@data-icon='send']"))
             )
@@ -262,11 +266,32 @@ def procesar_recordatorios():
             return
 
         driver = build_driver_via_debug(BASE_PROFILE_DIR, PROFILE_NAME, DEBUG_PORT)
-        wait = WebDriverWait(driver, 30)
+        
+        # --- MEJORA ---
+        # Usamos la constante CHAT_LOAD_TIMEOUT para el 'wait' principal
+        wait = WebDriverWait(driver, CHAT_LOAD_TIMEOUT)
+        # --- FIN MEJORA ---
 
         logging.info("Abriendo WhatsApp Web para iniciar sesión…")
         driver.get("https://web.whatsapp.com/")
-        time.sleep(QR_WAIT_SECONDS)  # QR la primera vez, luego directo
+
+        # --- MEJORA ---
+        # Reemplazamos el time.sleep() estático por una espera explícita
+        # Esperamos que cargue la interfaz principal (p.ej. la barra de búsqueda de chats)
+        try:
+            logging.info(f"Esperando que cargue la interfaz principal de WhatsApp ({QR_WAIT_SECONDS}s)...")
+            # Usamos un WebDriverWait dedicado para esta espera inicial con su propio timeout
+            WebDriverWait(driver, QR_WAIT_SECONDS).until(
+                # XPATH CRÍTICO: Barra de búsqueda principal de chats
+                EC.presence_of_element_located((By.XPATH, '//div[@contenteditable="true" and @data-tab="3"]'))
+            )
+            logging.info("WhatsApp Web cargado.")
+            time.sleep(1.5) # Damos un pequeño respiro extra para que todo "asiente"
+        except TimeoutException:
+            logging.error(f"No se pudo cargar la interfaz principal de WhatsApp en {QR_WAIT_SECONDS}s.")
+            logging.warning("Esto puede ser normal si se necesita escanear el QR. El script continuará...")
+        # time.sleep(QR_WAIT_SECONDS)  # <-- Línea original eliminada
+        # --- FIN MEJORA ---
 
         ventana_inicio_med = ahora - timedelta(hours=1)
 
@@ -353,7 +378,14 @@ def procesar_recordatorios():
             if driver:
                 logging.info(f"Esperando {DELAY_BEFORE_QUIT_SECONDS}s antes de cerrar Chrome…")
                 time.sleep(DELAY_BEFORE_QUIT_SECONDS)
+                
+                # --- NOTA ---
+                # driver.quit() cierra el navegador por completo.
+                # Si prefieres que Chrome quede ABIERTO (para que el script se conecte
+                # más rápido la próxima vez), puedes comentar la siguiente línea:
                 driver.quit()
+                # --- FIN NOTA ---
+                
         except: pass
 
 if __name__ == "__main__":

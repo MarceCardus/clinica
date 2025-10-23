@@ -27,10 +27,10 @@ BASE_PROFILE_DIR = r"C:\selenium_ws_profile"
 PROFILE_NAME     = "Default"
 DEBUG_PORT       = 9224  # <-- puerto propio de envioWs
 
-QR_WAIT_SECONDS          = 30
-CHAT_LOAD_TIMEOUT        = 35
-RETRY_SENDS              = 2
-LOG_FILE                 = "envioWs.log"
+QR_WAIT_SECONDS      = 30  # <-- Tiempo máximo para esperar el login (si pide QR)
+CHAT_LOAD_TIMEOUT    = 35
+RETRY_SENDS          = 2
+LOG_FILE             = "envioWs.log"
 # ===================================================
 
 # ---------- LOG a archivo y consola ----------
@@ -71,20 +71,10 @@ def normalizar_telefono_py(telefono: str) -> str:
     if not t.startswith("+"): return "+595" + t
     return t
 
-# ---------- Sanitizar mensaje ----------
-def sanitizar_mensaje(mensaje: str) -> str:
-    """Elimina caracteres fuera del Basic Multilingual Plane (BMP)"""
-    return ''.join(char for char in mensaje if ord(char) <= 0xFFFF)
-
-# ---------- Clasificador simple de respuesta ----------
-POSITIVOS = {"si", "sí", "ok", "dale", "voy", "perfecto", "listo", "de una", "seguro", "presente", "👍", "👏", "👌"}
-NEGATIVOS = {"no", "no voy", "cancelo", "no puedo", "no podré", "no asistire", "no asistiré", "❌", "🚫"}
-
-def clasificar_respuesta(texto: str):
-    t = (texto or "").strip().lower()
-    if any(p in t for p in POSITIVOS): return "Confirmada"
-    if any(n in t for n in NEGATIVOS): return "Cancelada"
-    return None
+# --- [ELIMINADO] ---
+# Se eliminó la función `sanitizar_mensaje`. Estaba bloqueando los emojis.
+# Se eliminó la función `clasificar_respuesta`. No se estaba utilizando.
+# -------------------
 
 # ---------- Chrome (depuración remota) ----------
 def find_chrome_binary():
@@ -213,53 +203,57 @@ def click_boton_enviar(driver) -> bool:
     return False
 
 def enviar_mensaje_en_chat(driver, mensaje: str) -> bool:
-    mensaje = sanitizar_mensaje(mensaje)
-    composer = esperar_caja_mensaje(driver)
+    # --- [CORREGIDO] ---
+    # Se eliminó la llamada a sanitizar_mensaje(mensaje)
+    # -------------------
+    
+    # composer = esperar_caja_mensaje(driver) # <-- CORRECCIÓN 1: Movido abajo
     intento = 0
     while intento <= RETRY_SENDS:
         try:
+            # --- INICIO CORRECCIÓN 1 ---
+            # Se busca el composer EN CADA reintento para evitar 'stale element'
+            composer = esperar_caja_mensaje(driver)
+            # --- FIN CORRECCIÓN 1 ---
+            
             driver.execute_script("""
                 const el = arguments[0];
                 el.focus();
                 try {
-                  document.execCommand('selectAll', false, null);
-                  document.execCommand('delete', false, null);
+                    document.execCommand('selectAll', false, null);
+                    document.execCommand('delete', false, null);
                 } catch(e) {}
             """, composer)
+            
             lines = mensaje.splitlines()
             for i, linea in enumerate(lines):
                 if linea: composer.send_keys(linea)
                 if i < len(lines) - 1:
                     composer.send_keys(Keys.SHIFT, Keys.ENTER)
                     time.sleep(0.02)
+            
             before = contar_salientes(driver)
+            
             if not click_boton_enviar(driver):
                 composer.send_keys(Keys.ENTER)
                 time.sleep(0.2)
                 composer.send_keys(Keys.ENTER)
+            
             WebDriverWait(driver, 12).until(lambda d: contar_salientes(d) > before)
             logging.info("Mensaje confirmado como enviado.")
             return True
+        
         except Exception as e:
             logging.warning(f"Reintento {intento+1} falló: {e}")
             intento += 1
             time.sleep(1.0)
+            
     logging.error("No se confirmó el envío tras reintentos.")
     return False
 
-def obtener_ultima_respuesta_entrante(driver) -> str | None:
-    XPATHS = [
-        '(//div[contains(@class,"message-in")]//*[self::span or self::div][@dir="ltr" or @role="paragraph"])[last()]',
-        '(//div[contains(@class,"message-in")]//div[@data-lexical-text="true"])[last()]',
-        '(//div[contains(@class,"message-in")]//*[contains(@class,"selectable-text")])[last()]',
-    ]
-    for xp in XPATHS:
-        try:
-            el = WebDriverWait(driver, 8).until(EC.presence_of_element_located((By.XPATH, xp)))
-            txt = (el.text or "").strip()
-            if txt: return txt
-        except: pass
-    return None
+# --- [ELIMINADO] ---
+# Se eliminó la función `obtener_ultima_respuesta_entrante`. No se estaba utilizando.
+# -------------------
 
 # ---------- Principal ----------
 def main():
@@ -278,19 +272,21 @@ def main():
         manana = (datetime.datetime.now() + datetime.timedelta(days=1)).date()
         logging.info(f"Consultando citas Programadas para: {manana}")
 
+        # <--- MODIFICADO: Se agrega filtro por estado_notificacion
         query = text("""
             SELECT c.idcita, c.fecha_inicio, p.nombre, p.apellido, p.sexo, p.telefono
             FROM cita c
             JOIN paciente p ON c.idpaciente = p.idpaciente
             WHERE CAST(c.fecha_inicio AS date) = :manana
               AND c.estado = 'Programada'
+              AND c.estado_notificacion = 'Pendiente' 
             ORDER BY c.fecha_inicio
         """)
         rows = session.execute(query, {'manana': manana}).fetchall()
-        logging.info(f"Citas encontradas: {len(rows)}")
+        logging.info(f"Citas encontradas para notificar: {len(rows)}")
 
         if not rows:
-            logging.info("No hay turnos para mañana. Fin.")
+            logging.info("No hay turnos pendientes de notificar para mañana. Fin.")
             return
 
         # Selenium: depuración remota
@@ -298,7 +294,25 @@ def main():
 
         logging.info("Abriendo WhatsApp Web…")
         driver.get("https://web.whatsapp.com/")
-        time.sleep(QR_WAIT_SECONDS)  # Si el perfil ya está logueado, no pide QR
+        
+        # --- [OPTIMIZADO] ---
+        # En lugar de un sleep(30) fijo, esperamos inteligentemente
+        # por un elemento clave de la UI (ej. la barra de búsqueda).
+        # Si ya está logueado, continúa al instante.
+        # Si no, espera hasta 30s (QR_WAIT_SECONDS) a que aparezca.
+        try:
+            logging.info("Esperando que cargue la interfaz principal de chats...")
+            XPATH_BUSQUEDA_PRINCIPAL = '//div[@role="textbox" and @title="Buscar un chat o iniciar uno nuevo"]'
+            WebDriverWait(driver, QR_WAIT_SECONDS).until(
+                EC.presence_of_element_located((By.XPATH, XPATH_BUSQUEDA_PRINCIPAL))
+            )
+            logging.info("WhatsApp cargado y logueado.")
+        except TimeoutException:
+            logging.error(f"No se cargó la interfaz en {QR_WAIT_SECONDS}s. ¿Necesita escanear QR?")
+            # Si no carga, no podemos continuar.
+            raise RuntimeError("No se pudo loguear a WhatsApp (posiblemente pida QR).")
+        # --- [FIN OPTIMIZACIÓN] ---
+
         cerrar_popup_si_existe(driver)
 
         for idcita, fecha_inicio, nombre, apellido, sexo, telefono in rows:
@@ -331,25 +345,68 @@ def main():
             try:
                 esperar_chat_cargado(driver)
             except TimeoutException:
-                logging.error(f"El chat de {telefono_norm} no cargó a tiempo.")
+                logging.error(f"El chat de {telefono_norm} no cargó a tiempo (posiblemente número inválido).")
+                # Cerramos el popup de "número inválido" si aparece
+                cerrar_popup_si_existe(driver, wait_time=0.2)
                 continue
 
             cerrar_popup_si_existe(driver)
 
-            # evitar duplicado: si el último saliente ya es igual al que voy a enviar
-            ultimo = obtener_ultima_respuesta_entrante(driver)
-            if _norm_min(ultimo) == _norm_min(mensaje):
-                logging.info(f"Ya hay un recordatorio idéntico como último mensaje para {telefono_norm}. Omito envío.")
-                continue
+            # <--- MODIFICADO: Se elimina el chequeo de _norm_min(ultimo)
+            # La nueva columna 'estado_notificacion' ya maneja esto.
 
-            if enviar_mensaje_en_chat(driver, mensaje):
-                logging.info(f"Mensaje de recordatorio enviado a {telefono_norm}.")
-                enviados_run.add(telefono_norm)
-            else:
-                logging.error(f"No se confirmó envío a {telefono_norm}.")
-                continue
+            # --- INICIO CORRECCIÓN 2 ---
+            # Se agrega try/except para capturar fallos (ej. Timeout si no tiene Ws)
+            # y continuar con el siguiente número.
+            try:
+                if enviar_mensaje_en_chat(driver, mensaje):
+                    logging.info(f"Mensaje de recordatorio enviado a {telefono_norm}.")
+                    enviados_run.add(telefono_norm)
+                    
+                    # Marcar como 'Enviado' en la DB
+                    try:
+                        update_sql = text("UPDATE cita SET estado_notificacion = 'Enviado' WHERE idcita = :id")
+                        session.execute(update_sql, {'id': idcita})
+                        session.commit()
+                        logging.info(f"Cita {idcita} marcada como 'Enviado'.")
+                    except Exception as db_e:
+                        logging.error(f"Error al actualizar estado de cita {idcita}: {db_e}")
+                        session.rollback() # Deshace si falla
 
-            logging.info(f"Proceso finalizado.")
+                else:
+                    logging.error(f"No se confirmó envío a {telefono_norm}.")
+                    
+                    # (Opcional) Marcar como 'Fallido' para reintentar
+                    try:
+                        update_sql = text("UPDATE cita SET estado_notificacion = 'Fallido' WHERE idcita = :id")
+                        session.execute(update_sql, {'id': idcita})
+                        session.commit()
+                        logging.info(f"Cita {idcita} marcada como 'Fallido'.")
+                    except Exception as db_e:
+                        logging.error(f"Error al actualizar estado (Fallido) de cita {idcita}: {db_e}")
+                        session.rollback()
+                        
+                    continue
+            
+            except Exception as e:
+                logging.error(f"Fallo irrecuperable al enviar a {telefono_norm}: {e}")
+                # Marcar como 'Fallido'
+                try:
+                    update_sql = text("UPDATE cita SET estado_notificacion = 'Fallido' WHERE idcita = :id")
+                    session.execute(update_sql, {'id': idcita})
+                    session.commit()
+                    logging.info(f"Cita {idcita} marcada como 'Fallido' por error irrecuperable.")
+                except Exception as db_e:
+                    logging.error(f"Error al actualizar estado (Fallido) de cita {idcita}: {db_e}")
+                    session.rollback()
+                continue # Continúa con el siguiente número
+            # --- FIN CORRECCIÓN 2 ---
+            
+            
+            # (Pequeña pausa humana entre envíos)
+            sleep_jitter(3.5, 6.0)
+
+        logging.info(f"Proceso finalizado.")
 
     except Exception as e:
         logging.error(f"Error general: {e}")
@@ -362,6 +419,7 @@ def main():
         try:
             if driver: driver.quit()
         except: pass
+        # La instancia _guard se libera sola al salir (atexit)
 
 if __name__ == "__main__":
     main()

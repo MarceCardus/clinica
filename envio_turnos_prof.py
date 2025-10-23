@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import os
 import sys
 import time
@@ -9,6 +8,7 @@ import datetime
 import subprocess
 import tempfile
 import atexit
+from zoneinfo import ZoneInfo  # <-- IMPORTANTE: Para zona horaria correcta
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
@@ -23,22 +23,18 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 # ===================== AJUSTES =====================
-QR_WAIT_SECONDS               = 30
-CHAT_LOAD_TIMEOUT             = 35
-AFTER_SEND_WAIT               = (8, 15)
-BETWEEN_RECIPIENTS_WAIT       = (15, 30)
-RETRY_SENDS                   = 2
+QR_WAIT_SECONDS           = 30
+CHAT_LOAD_TIMEOUT         = 35
+BETWEEN_RECIPIENTS_WAIT   = (10, 20) # Reducido para agilizar
+RETRY_SENDS               = 2
 
-INSERT_BLANK_LINE_BETWEEN     = False
-HEADER_PREFIX                 = ""
+HEADER_PREFIX             = ""
 
-BASE_PROFILE_DIR              = r"C:\selenium_ws_profile"
-PROFILE_NAME                  = "Default"
-DEBUG_PORT                    = 9223  # Puerto PROPIO para este script
+BASE_PROFILE_DIR          = r"C:\selenium_ws_profile"
+PROFILE_NAME              = "Default"
+DEBUG_PORT                = 9223  # Puerto PROPIO para este script
 
-FORCE_CLOSE_DEBUG_CHROME      = False  # No matar Chrome compartido
-
-LOG_FILE                      = "envio_turnos_prof.log"
+LOG_FILE                  = "envio_turnos_prof.log"
 # ===================================================
 
 # ---------- LOG ----------
@@ -147,11 +143,7 @@ def cerrar_popup_si_existe(driver, wait_time=0.8):
         time.sleep(wait_time)
         popups = driver.find_elements(By.XPATH, '//div[@role="dialog"]')
         for popup in popups:
-            for xp in ['.//button[@aria-label="Cerrar"]',
-                       './/button[.="Cerrar"]',
-                       './/button[.="OK"]',
-                       './/button[.="Aceptar"]',
-                       './/button[contains(.,"Entendido")]']:
+            for xp in ['.//button[@aria-label="Cerrar"]', './/button[.="Cerrar"]', './/button[.="OK"]', './/button[.="Aceptar"]', './/button[contains(.,"Entendido")]']:
                 try:
                     btn = popup.find_element(By.XPATH, xp)
                     btn.click(); time.sleep(0.3); return
@@ -189,14 +181,9 @@ def esperar_caja_mensaje(driver):
 
 def contar_salientes(driver) -> int:
     try:
-        bubbles = driver.find_elements(
-            By.XPATH,
-            '(//div[contains(@class,"message-out")]//div[@data-pre-plain-text])'
-            ' | (//div[@data-pre-plain-text][ancestor::div[contains(@class,"message-out")]])'
-            ' | (//div[contains(@class,"message-out")])'
-        )
+        bubbles = driver.find_elements(By.XPATH, '(//div[contains(@class,"message-out")])')
         return len(bubbles)
-    except Exception:
+    except:
         return 0
 
 def click_boton_enviar(driver) -> bool:
@@ -211,69 +198,45 @@ def click_boton_enviar(driver) -> bool:
     for xp in XPATHS_BTN:
         try:
             btn = WebDriverWait(driver, 2).until(EC.element_to_be_clickable((By.XPATH, xp)))
-            driver.execute_script("arguments[0].scrollIntoView({block:\'center\'});", btn)
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
             btn.click()
             return True
         except: pass
     return False
 
-def insertar_linea_js(driver, composer, linea: str):
-    driver.execute_script("""
-        const el = arguments[0];
-        const s  = arguments[1];
-        el.focus();
-        try {
-          if (!document.execCommand('insertText', false, s)) {
-            const esc = s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-            document.execCommand('insertHTML', false, esc);
-          }
-        } catch(e) {}
-    """, composer, linea)
-
 def enviar_mensaje_en_chat(driver, mensaje: str) -> bool:
     composer = esperar_caja_mensaje(driver)
-
     intento = 0
     while intento <= RETRY_SENDS:
         try:
-            # limpiar editor
             driver.execute_script("""
                 const el = arguments[0];
                 el.focus();
                 try {
-                  document.execCommand('selectAll', false, null);
-                  document.execCommand('delete', false, null);
+                    document.execCommand('selectAll', false, null);
+                    document.execCommand('delete', false, null);
                 } catch(e) {}
             """, composer)
 
-            # construir texto: líneas y párrafos
-            paragraphs = mensaje.split("\n\n")   # doble salto = nuevo párrafo
-            for p_idx, para in enumerate(paragraphs):
-                lines = para.split("\n")
-                for l_idx, line in enumerate(lines):
-                    insertar_linea_js(driver, composer, line)
-                    if l_idx < len(lines) - 1:
-                        composer.send_keys(Keys.SHIFT, Keys.ENTER)
-                if p_idx < len(paragraphs) - 1:
+            lines = mensaje.splitlines()
+            for i, linea in enumerate(lines):
+                if linea:
+                    composer.send_keys(linea)
+                if i < len(lines) - 1:
                     composer.send_keys(Keys.SHIFT, Keys.ENTER)
-                    composer.send_keys(Keys.SHIFT, Keys.ENTER)
-
+            
             time.sleep(0.2)
-
             before = contar_salientes(driver)
-
             if not click_boton_enviar(driver):
                 composer.send_keys(Keys.ENTER)
 
             WebDriverWait(driver, 12).until(lambda d: contar_salientes(d) > before)
             logging.info("Mensaje confirmado como enviado.")
             return True
-
         except Exception as e:
             logging.warning(f"Reintento {intento+1} falló: {e}")
             intento += 1
             time.sleep(1.0)
-
     logging.error("No se confirmó el envío tras reintentos.")
     return False
 
@@ -283,6 +246,10 @@ def main():
     driver = None
     chrome_proc = None
     session = None
+    
+    # <-- DEFINIR ZONA HORARIA CORRECTA
+    PYT_TZ = ZoneInfo("America/Asuncion")
+    
     try:
         _guard = SingleInstance("envio_turnos_prof")
 
@@ -290,14 +257,14 @@ def main():
         Session = sessionmaker(bind=engine)
         session = Session()
 
-        manana = (datetime.datetime.now() + datetime.timedelta(days=1)).date()
+        manana = (datetime.datetime.now(PYT_TZ) + datetime.timedelta(days=1)).date()
         logging.info(f"Buscando turnos para: {manana}")
 
         query = text("""
             WITH rango AS (
-              SELECT
-                (TIMESTAMP :manana AT TIME ZONE 'America/Asuncion') AS d0_utc,
-                ((TIMESTAMP :manana + INTERVAL '1 day') AT TIME ZONE 'America/Asuncion') AS d1_utc
+                SELECT
+                  (TIMESTAMP :manana AT TIME ZONE 'America/Asuncion') AS d0_utc,
+                  ((TIMESTAMP :manana + INTERVAL '1 day') AT TIME ZONE 'America/Asuncion') AS d1_utc
             )
             SELECT pr.idprofesional,
                    pr.nombre   AS nombre_prof,
@@ -307,20 +274,16 @@ def main():
                    pa.apellido AS apellido_pac,
                    COALESCE(pa.sexo,'') AS sexo,
                    c.fecha_inicio,
-                   CASE
-                       WHEN c.iditem IS NOT NULL THEN 'ITEM'
-                       WHEN c.idplantipo IS NOT NULL THEN 'PLAN'
-                       ELSE 'PROD'
-                   END AS origen,
-                   COALESCE(NULLIF(i.nombre, ''), NULLIF(pt.nombre, ''), NULLIF(prod.descripcion, '')) AS tratamiento
+                   COALESCE(i.nombre, pt.nombre, prod.descripcion, '') AS tratamiento
             FROM cita c
-            JOIN rango r ON TRUE
+            CROSS JOIN rango r -- Sintaxis un poco más clara que "JOIN ... ON TRUE"
             JOIN profesional pr ON c.idprofesional = pr.idprofesional
-            JOIN paciente    pa ON c.idpaciente     = pa.idpaciente
-            LEFT JOIN item       i   ON i.iditem      = c.iditem
-            LEFT JOIN plan_tipo  pt  ON pt.idplantipo = c.idplantipo
-            LEFT JOIN producto   prod ON prod.idproducto = c.idproducto
+            JOIN paciente      pa ON c.idpaciente     = pa.idpaciente
+            LEFT JOIN item       i  ON i.iditem       = c.iditem
+            LEFT JOIN plan_tipo  pt ON pt.idplantipo  = c.idplantipo
+            LEFT JOIN producto   prod ON prod.idproducto  = c.idproducto
             WHERE c.fecha_inicio >= r.d0_utc AND c.fecha_inicio < r.d1_utc
+              AND c.estado IN ('Programada', 'Confirmada') -- Consideramos ambas
             ORDER BY pr.idprofesional, c.fecha_inicio
         """)
         rows = session.execute(query, {'manana': manana}).fetchall()
@@ -328,27 +291,21 @@ def main():
 
         profesionales = {}
         for r in rows:
-            (idprof, nprof, aprof, tel_prof,
-             npac, apac, sexo, f_ini, origen, tratamiento) = r
-
+            (idprof, nprof, aprof, tel_prof, npac, apac, sexo, f_ini, tratamiento) = r
             d = profesionales.setdefault(idprof, {
                 'nombre': (nprof or "").strip(),
                 'apellido': (aprof or "").strip(),
                 'telefono': tel_prof,
                 'pacientes': []
             })
-            hora = f_ini.strftime("%H:%M") if hasattr(f_ini, "strftime") else str(f_ini)[11:16]
+            
+            # <-- HORA CORREGIDA USANDO ZONEINFO
+            hora = f_ini.astimezone(PYT_TZ).strftime("%H:%M") 
+            
             d['pacientes'].append({
-                'nombre': npac,
-                'apellido': apac,
-                'sexo': (sexo or "").lower(),
-                'hora': hora,
-                'origen': origen,
-                'tratamiento': (tratamiento or "").strip()
+                'nombre': npac, 'apellido': apac, 'sexo': (sexo or "").lower(),
+                'hora': hora, 'tratamiento': (tratamiento or "").strip()
             })
-
-        for pid, d in profesionales.items():
-            logging.info(f"{d['nombre']} {d['apellido']}: {len(d['pacientes'])} pacientes")
 
         if not profesionales:
             logging.info("No hay turnos para mañana. Fin.")
@@ -357,9 +314,43 @@ def main():
         driver, chrome_proc = build_driver_via_debug(BASE_PROFILE_DIR, PROFILE_NAME, DEBUG_PORT)
         logging.info("Abriendo WhatsApp Web…")
         driver.get("https://web.whatsapp.com/")
-        time.sleep(QR_WAIT_SECONDS)
+        
+        # Espera manual para escanear QR si es necesario (el script se adherirá si ya está logueado)
+        try:
+             WebDriverWait(driver, QR_WAIT_SECONDS).until(
+                EC.presence_of_element_located((By.XPATH, '//canvas[@aria-label="Scan me!"]'))
+            )
+             logging.info(f"Esperando {QR_WAIT_SECONDS} segundos para escaneo de QR...")
+             time.sleep(QR_WAIT_SECONDS)
+        except TimeoutException:
+             logging.info("Canvas de QR no detectado, asumiendo que ya está logueado.")
 
-        for _, datos in profesionales.items():
+        # Espera a que la interfaz principal cargue
+        try:
+            WebDriverWait(driver, CHAT_LOAD_TIMEOUT).until(
+                EC.presence_of_element_located((By.ID, 'side'))
+            )
+            logging.info("WhatsApp Web cargado.")
+        except TimeoutException:
+            logging.error("No se pudo cargar la interfaz principal de WhatsApp Web a tiempo.")
+            raise
+
+        for id_prof, datos in profesionales.items():
+            
+            # <--- PASO 1 - CHEQUEAR SI YA SE ENVIÓ
+            try:
+                check_q = text("""
+                    SELECT COUNT(*) FROM notificacion_profesional
+                    WHERE idprofesional = :id_prof AND fecha_notificacion = :fecha
+                """)
+                resultado = session.execute(check_q, {'id_prof': id_prof, 'fecha': manana}).scalar_one()
+                if resultado > 0:
+                    logging.info(f"Notificación para {datos['nombre']} {datos['apellido']} ({id_prof}) para la fecha {manana} ya fue enviada. Omitiendo.")
+                    continue
+            except Exception as e:
+                logging.error(f"Error al verificar la notificación para el profesional {id_prof}: {e}")
+                continue # Mejor saltar que enviar doble
+            
             nombre_prof = datos['nombre']; apellido_prof = datos['apellido']
             telefono_prof = normalizar_telefono_py(str(datos['telefono'] or "").strip())
             if not telefono_prof or not telefono_prof.startswith("+595"):
@@ -370,38 +361,51 @@ def main():
             pac_lines = []
             for pac in datos['pacientes']:
                 emoji = "👨" if pac['sexo'].startswith("m") else "👩‍🦰"
-                if pac['origen'] == 'PLAN' and pac['tratamiento']:
-                    tto = f"Plan: {pac['tratamiento']}"
-                else:
-                    tto = pac['tratamiento'] if pac['tratamiento'] else "—"
-                pac_lines.append(f"{emoji} {pac['nombre']} {pac['apellido']}: {tto} a las {pac['hora']}")
-            sep = "\n\n" if INSERT_BLANK_LINE_BETWEEN else "\n"
-            mensaje = header + "\n" + sep.join(pac_lines)
+                tto = pac['tratamiento'] if pac['tratamiento'] else "—"
+                pac_lines.append(f"{emoji} *{pac['hora']}hs* - {pac['nombre']} {pac['apellido']} ({tto})")
+            
+            sep = "\n"
+            mensaje = header + "\n\n" + sep.join(pac_lines)
 
             url = f"https://web.whatsapp.com/send?phone={telefono_prof}"
-            logging.info(f"Abrir chat: {url}")
+            logging.info(f"Abriendo chat con {nombre_prof} {apellido_prof}...")
             driver.get(url)
 
             try:
                 esperar_chat_cargado(driver)
             except TimeoutException:
-                logging.error("El chat no cargó a tiempo.")
+                logging.error(f"El chat de {telefono_prof} no cargó a tiempo.")
+                # Chequear si es un número inválido
+                try:
+                    driver.find_element(By.XPATH, '//*[contains(text(),"El número de teléfono compartido")]')
+                    logging.error("El número de teléfono es inválido según WhatsApp.")
+                except:
+                    pass # Era un timeout normal
                 continue
 
             cerrar_popup_si_existe(driver)
 
-            if not enviar_mensaje_en_chat(driver, mensaje):
-                logging.info("Segundo intento tras refresco suave…")
-                time.sleep(1.0)
-                cerrar_popup_si_existe(driver)
-                if not enviar_mensaje_en_chat(driver, mensaje):
-                    logging.error(f"No se confirmó envío a {telefono_prof}.")
-                else:
-                    logging.info(f"Enviado a {telefono_prof} (2° intento).")
-            else:
+            if enviar_mensaje_en_chat(driver, mensaje):
                 logging.info(f"Enviado a {telefono_prof}.")
 
-            sleep_jitter(AFTER_SEND_WAIT)
+                # <--- PASO 2 - INSERTAR REGISTRO DE ENVÍO
+                try:
+                    insert_q = text("""
+                        INSERT INTO notificacion_profesional (idprofesional, fecha_notificacion)
+                        VALUES (:id_prof, :fecha)
+                    """)
+                    session.execute(insert_q, {'id_prof': id_prof, 'fecha': manana})
+                    session.commit()
+                    logging.info(f"Registro de notificación insertado para profesional {id_prof} para la fecha {manana}.")
+                except Exception as e:
+                    logging.error(f"¡FALLO CRÍTICO! El mensaje se envió pero no se pudo registrar en la BD para el prof {id_prof}: {e}")
+                    logging.error("Esto podría causar un envío duplicado en el futuro. Revisar la BD.")
+                    session.rollback()
+
+            else:
+                logging.error(f"No se confirmó envío a {telefono_prof}.")
+            
+            logging.info("Esperando antes del siguiente profesional...")
             sleep_jitter(BETWEEN_RECIPIENTS_WAIT)
 
         logging.info("Proceso finalizado.")
@@ -412,22 +416,15 @@ def main():
         sys.exit(1)
     finally:
         try:
-            if session:
-                session.close()
-        except:
-            pass
+            if session: session.close()
+        except: pass
         try:
-            if driver:
-                driver.quit()
-        except:
-            pass
+            if driver: driver.quit()
+        except: pass
         if chrome_proc:
             try:
-                chrome_proc.terminate()  # Asegurarse de cerrar Chrome
-            except:
-                pass
-        if FORCE_CLOSE_DEBUG_CHROME:
-            pass
+                chrome_proc.terminate()
+            except: pass
 
 if __name__ == "__main__":
     main()

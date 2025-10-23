@@ -1,4 +1,3 @@
-# controllers/abm_items.py
 import sys, os, pathlib
 from PyQt5.QtWidgets import (
     QApplication, QDialog, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
@@ -18,7 +17,8 @@ from models.tipoproducto import TipoProducto
 from models.especialidad import Especialidad
 from models.compra_detalle import CompraDetalle
 from models.venta_detalle  import VentaDetalle
-from models.plan_tipo import PlanTipo  # si lo usás en otro lado
+from models.plan_tipo import PlanTipo
+from models.item_composicion import ItemComposicion  # <<--- NUEVO
 
 # --- util rutas de icono (con fallback) ---
 def resource_path(*parts):
@@ -82,18 +82,15 @@ class ABMItems(QDialog):
         self.table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
 
-        # Autoajuste de columnas
         hdr = self.table.horizontalHeader()
         hdr.setSectionResizeMode(QHeaderView.ResizeToContents)
         hdr.setStretchLastSection(False)
         hdr.setMinimumSectionSize(60)
         self.table.setWordWrap(False)
 
-        # Doble clic para editar
         self.table.itemDoubleClicked.connect(lambda *_: self.abrir_dialogo_editar(self.table.currentRow()))
         self.table.setAlternatingRowColors(True)
 
-        # Altura de filas
         fm = self.table.fontMetrics()
         self.table.verticalHeader().setDefaultSectionSize(int(fm.height() * 1.9))
         layout.addWidget(self.table)
@@ -116,7 +113,6 @@ class ABMItems(QDialog):
         return int(self.table.item(r, 0).text())
 
     def _select_row_by_id(self, iditem, col=None):
-        """Selecciona por ID y centra la fila. Si col viene, enfoca esa columna."""
         if iditem is None:
             return
         for r in range(self.table.rowCount()):
@@ -144,20 +140,14 @@ class ABMItems(QDialog):
     def _fmt_precio(self, v):
         try:
             n = int(v or 0)
-            # Formato “1.234.567”
             return f"{n:,}".replace(",", ".")
         except Exception:
             return str(v or "0")
 
     def _auto_fit_columns(self):
-        """Auto-ajusta todas, y a 'Nombre' (col 1) la limita a un rango razonable
-        para que NO tome toda la pantalla."""
         self.table.resizeColumnsToContents()
-
         fm = self.table.fontMetrics()
-        adv = getattr(fm, "horizontalAdvance", fm.width)  # PyQt5 compat
-
-        # calcular el ancho máximo del texto de la col 'Nombre'
+        adv = getattr(fm, "horizontalAdvance", fm.width)
         maxw = adv(self.table.horizontalHeaderItem(1).text())
         for r in range(self.table.rowCount()):
             it = self.table.item(r, 1)
@@ -165,12 +155,9 @@ class ABMItems(QDialog):
                 w = adv(it.text())
                 if w > maxw:
                     maxw = w
-
         padding = 40
-        ancho = max(220, min(maxw + padding, 480))  # <- rango [220..480] px
+        ancho = max(220, min(maxw + padding, 480))
         self.table.setColumnWidth(1, ancho)
-
-        # asegurar un mínimo para 'Acciones' (última col)
         last = self.table.columnCount() - 1
         self.table.setColumnWidth(last, max(90, self.table.columnWidth(last)))
 
@@ -186,7 +173,6 @@ class ABMItems(QDialog):
         self.filtro_tipo.blockSignals(False)
 
     def load_data(self):
-        # ↓ bloquea repaints mientras rellena (más fluido y rápido)
         self.table.setUpdatesEnabled(False)
         self.table.setSortingEnabled(False)
         try:
@@ -222,7 +208,6 @@ class ABMItems(QDialog):
                 self.table.setItem(r, 1, QTableWidgetItem(it.nombre or ""))
                 self.table.setItem(r, 2, QTableWidgetItem(tipo_general or ""))
 
-                # Precio alineado a la derecha
                 it_precio = QTableWidgetItem(self._fmt_precio(it.precio_venta))
                 it_precio.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self.table.setItem(r, 3, it_precio)
@@ -231,7 +216,6 @@ class ABMItems(QDialog):
                 self.table.setItem(r, 5, QTableWidgetItem(especialidad or ""))
                 self.table.setItem(r, 6, QTableWidgetItem(it.tipo_insumo or ""))
 
-                # Sí/No centrados
                 it_uso_int = QTableWidgetItem("Sí" if it.uso_interno else "No")
                 it_uso_int.setTextAlignment(Qt.AlignCenter)
                 self.table.setItem(r, 7, it_uso_int)
@@ -240,17 +224,14 @@ class ABMItems(QDialog):
                 it_uso_proc.setTextAlignment(Qt.AlignCenter)
                 self.table.setItem(r, 8, it_uso_proc)
 
-                # Genera stock
                 it_gen = QTableWidgetItem("Sí" if getattr(it, "genera_stock", True) else "No")
                 it_gen.setTextAlignment(Qt.AlignCenter)
                 self.table.setItem(r, 9, it_gen)
 
-                # Activo
                 it_activo = QTableWidgetItem("Sí" if it.activo else "No")
                 it_activo.setTextAlignment(Qt.AlignCenter)
                 self.table.setItem(r, 10, it_activo)
 
-                # Acciones
                 cell = QWidget(); h = QHBoxLayout(cell); h.setContentsMargins(0,0,0,0)
                 btn_editar = QPushButton(); ico = resource_path("editar.png")
                 if ico: btn_editar.setIcon(QIcon(ico))
@@ -323,7 +304,6 @@ class ABMItems(QDialog):
             return
         state = self._save_view_state()
         dlg = FormularioItem(self.session, parent=self, item=it)
-
         if dlg.exec_() == QDialog.Accepted:
             QApplication.setOverrideCursor(Qt.WaitCursor)
             try:
@@ -341,10 +321,8 @@ class ABMItems(QDialog):
     def eliminar_item(self, row):
         if row < 0 or row >= self.table.rowCount():
             return
-
         iditem = self._row_id(row)
 
-        # Elegir a quién seleccionar después (siguiente si existe; si no, el anterior)
         next_sel_id = None
         if self.table.rowCount() > 1:
             if row < self.table.rowCount() - 1:
@@ -381,7 +359,6 @@ class ABMItems(QDialog):
         finally:
             QApplication.restoreOverrideCursor()
 
-        # Restaurar scroll y selección “inteligente”
         if next_sel_id is not None:
             self._select_row_by_id(next_sel_id, state.get("col"))
             self.table.verticalScrollBar().setValue(state.get("vpos", 0))
@@ -399,11 +376,13 @@ class FormularioItem(QDialog):
         self.session = session
         self.item = item
         self.setWindowTitle("Editar Ítem" if item else "Agregar Ítem")
-        self.setMinimumWidth(600)
-        self._locale = QLocale(QLocale.Spanish, QLocale.Paraguay)  # miles '.' coma ','
+        self.setMinimumWidth(720)
+        self._locale = QLocale(QLocale.Spanish, QLocale.Paraguay)
         self.init_ui()
         self.load_combos()
-        if self.item: self.cargar_datos()
+        if self.item:
+            self.cargar_datos()
+            self._cargar_composicion()
 
     def init_ui(self):
         layout = QVBoxLayout(self)
@@ -417,11 +396,10 @@ class FormularioItem(QDialog):
         self.txt_codigo.setClearButtonEnabled(True)
         self.txt_codigo.setMaxLength(64)
 
-        self.cbo_tipo_general = QComboBox()  # ItemTipo (PRODUCTO/INSUMO/AMBOS/SERVICIO...)
+        self.cbo_tipo_general = QComboBox()
         self.txt_descripcion = QTextEdit()
         self.chk_activo = QCheckBox("Activo"); self.chk_activo.setChecked(True)
 
-        # NUEVO: flag genera stock
         self.chk_genera_stock = QCheckBox("Genera stock")
         self.chk_genera_stock.setChecked(True)
 
@@ -466,17 +444,48 @@ class FormularioItem(QDialog):
         li.addWidget(self.chk_uso_interno); li.addWidget(self.chk_uso_proc)
         tab_ins.setLayout(li)
 
+        # === Tab Composición (NUEVA) ===
+        tab_comp = QWidget(); lc = QVBoxLayout(tab_comp)
+
+        # fila alta rápida
+        barra = QHBoxLayout()
+        self.cbo_insumo = QComboBox()
+        self.sp_cantidad_comp = QDoubleSpinBox()
+        self.sp_cantidad_comp.setDecimals(3)
+        self.sp_cantidad_comp.setRange(0.001, 1_000_000)
+        self.sp_cantidad_comp.setValue(1.000)
+        btn_add_comp = QPushButton("Agregar")
+        btn_add_comp.clicked.connect(self._agregar_insumo_composicion)
+
+        barra.addWidget(QLabel("Insumo / componente"))
+        barra.addWidget(self.cbo_insumo, 2)
+        barra.addWidget(QLabel("Cantidad"))
+        barra.addWidget(self.sp_cantidad_comp)
+        barra.addWidget(btn_add_comp)
+        lc.addLayout(barra)
+
+        # tabla composición
+        self.tbl_comp = QTableWidget(0, 4)
+        self.tbl_comp.setHorizontalHeaderLabels(["ID", "Nombre", "Cantidad", "Acciones"])
+        self.tbl_comp.verticalHeader().setVisible(False)
+        self.tbl_comp.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tbl_comp.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tbl_comp.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.tbl_comp.horizontalHeader().setStretchLastSection(False)
+        lc.addWidget(self.tbl_comp)
+        tab_comp.setLayout(lc)
+
         self.tabs.addTab(tab_prod, "Producto")
         self.tabs.addTab(tab_ins, "Insumo")
+        self.tabs.addTab(tab_comp, "Composición")
 
-        # Header comunes (orden: Nombre → Código → Tipo → Descripción → GeneraStock → Activo)
+        # Header comunes
         head = QVBoxLayout()
         head.addWidget(QLabel("Nombre")); head.addWidget(self.txt_nombre)
-        head.addWidget(QLabel("Código de barra"))
-        head.addWidget(self.txt_codigo)
+        head.addWidget(QLabel("Código de barra")); head.addWidget(self.txt_codigo)
         head.addWidget(QLabel("Tipo (GENERAL)")); head.addWidget(self.cbo_tipo_general)
         head.addWidget(QLabel("Descripción")); head.addWidget(self.txt_descripcion)
-        head.addWidget(self.chk_genera_stock)  # NUEVO
+        head.addWidget(self.chk_genera_stock)
         head.addWidget(self.chk_activo)
 
         cont = QWidget(); cont.setLayout(head)
@@ -492,7 +501,6 @@ class FormularioItem(QDialog):
         btns.addStretch(); btns.addWidget(self.btn_guardar); btns.addWidget(self.btn_cancelar)
         layout.addLayout(btns)
 
-        # lógica de UI
         self.cbo_tipo_general.currentIndexChanged.connect(self._toggle_tabs_by_tipo)
 
     # Combos
@@ -512,16 +520,33 @@ class FormularioItem(QDialog):
         for e in self.session.query(Especialidad).order_by(Especialidad.nombre).all():
             self.cbo_especialidad.addItem(e.nombre, e.idespecialidad)
 
+        # Insumos disponibles para Composición (solo activos, que muevan stock o uso_procedimiento)
+        self._poblar_combo_insumo()
+
         self._toggle_tabs_by_tipo()
+
+    def _poblar_combo_insumo(self):
+        self.cbo_insumo.clear()
+        q = (self.session.query(Item)
+             .filter(Item.activo == True)
+             .filter(or_(Item.genera_stock == True, Item.uso_procedimiento == True))
+             .order_by(Item.nombre.asc()))
+        # Si estoy editando, evito que el padre se elija como su propio componente
+        if self.item:
+            q = q.filter(Item.iditem != self.item.iditem)
+        for it in q.all():
+            self.cbo_insumo.addItem(f"{it.nombre}", it.iditem)
 
     def _toggle_tabs_by_tipo(self):
         txt = (self.cbo_tipo_general.currentText() or "").upper()
         self.tabs.setTabEnabled(0, txt in ("PRODUCTO", "AMBOS"))
         self.tabs.setTabEnabled(1, txt in ("INSUMO", "AMBOS"))
+        # Composición: útil para SERVICIO / PRODUCTO / AMBOS
+        self.tabs.setTabEnabled(2, txt in ("SERVICIO", "PRODUCTO", "AMBOS"))
+
         if txt == "PRODUCTO" and not (self.chk_uso_interno.isChecked() or self.chk_uso_proc.isChecked()):
             self.chk_uso_proc.setChecked(True)
 
-        # Regla UX para genera_stock
         if txt == "SERVICIO":
             self.chk_genera_stock.setChecked(False)
             self.chk_genera_stock.setEnabled(False)
@@ -540,7 +565,6 @@ class FormularioItem(QDialog):
             ix = self.cbo_tipo_general.findText(it.tipo.nombre, Qt.MatchFixedString)
             self.cbo_tipo_general.setCurrentIndex(ix if ix != -1 else 0)
 
-        # Producto
         if it.precio_venta is not None: self.sp_precio.setValue(int(it.precio_venta))
         if it.idtipoproducto:
             ix = self.cbo_tipoproducto.findData(it.idtipoproducto)
@@ -552,7 +576,6 @@ class FormularioItem(QDialog):
         self.sp_dias.setValue(int(it.dias_recordatorio or 0))
         self.txt_msg.setText(it.mensaje_recordatorio or "")
 
-        # Insumo
         self.txt_unidad.setText(it.unidad or "")
         if it.tipo_insumo:
             ix = self.cbo_tipo_insumo.findText(it.tipo_insumo, Qt.MatchFixedString)
@@ -561,8 +584,93 @@ class FormularioItem(QDialog):
 
         self.chk_uso_interno.setChecked(bool(it.uso_interno))
         self.chk_uso_proc.setChecked(bool(it.uso_procedimiento))
-        self._toggle_tabs_by_tipo()
 
+    # ----------- COMPOSICIÓN (UI) -----------
+    def _agregar_insumo_composicion(self):
+        insumo_id = self.cbo_insumo.currentData()
+        if insumo_id is None:
+            return
+        if self.item and insumo_id == self.item.iditem:
+            QMessageBox.warning(self, "Composición", "El ítem no puede componerse de sí mismo.")
+            return
+
+        # Si ya existe, sumo cantidades
+        for r in range(self.tbl_comp.rowCount()):
+            rid = int(self.tbl_comp.item(r, 0).text())
+            if rid == insumo_id:
+                sp: QDoubleSpinBox = self.tbl_comp.cellWidget(r, 2)
+                sp.setValue(sp.value() + float(self.sp_cantidad_comp.value()))
+                return
+
+        it = self.session.query(Item).get(insumo_id)
+        if not it:
+            return
+
+        r = self.tbl_comp.rowCount()
+        self.tbl_comp.insertRow(r)
+        self.tbl_comp.setItem(r, 0, QTableWidgetItem(str(insumo_id)))
+        self.tbl_comp.setItem(r, 1, QTableWidgetItem(it.nombre))
+
+        sp = QDoubleSpinBox()
+        sp.setDecimals(3); sp.setRange(0.001, 1_000_000); sp.setValue(float(self.sp_cantidad_comp.value()))
+        self.tbl_comp.setCellWidget(r, 2, sp)
+
+        btn = QPushButton("Quitar")
+        btn.clicked.connect(lambda *_: self._quitar_fila_composicion(r))
+        self.tbl_comp.setCellWidget(r, 3, btn)
+
+    def _quitar_fila_composicion(self, row):
+        if 0 <= row < self.tbl_comp.rowCount():
+            self.tbl_comp.removeRow(row)
+
+    def _cargar_composicion(self):
+        """Carga desde DB a la tabla si estoy editando un ítem existente."""
+        self.tbl_comp.setRowCount(0)
+        if not self.item:
+            return
+        comps = (self.session.query(ItemComposicion)
+                 .filter(ItemComposicion.iditem_padre == self.item.iditem)
+                 .all())
+        for c in comps:
+            r = self.tbl_comp.rowCount()
+            self.tbl_comp.insertRow(r)
+            self.tbl_comp.setItem(r, 0, QTableWidgetItem(str(c.iditem_insumo)))
+            self.tbl_comp.setItem(r, 1, QTableWidgetItem(c.insumo.nombre if c.insumo else str(c.iditem_insumo)))
+
+            sp = QDoubleSpinBox()
+            sp.setDecimals(3); sp.setRange(0.001, 1_000_000); sp.setValue(float(c.cantidad or 1))
+            self.tbl_comp.setCellWidget(r, 2, sp)
+
+            btn = QPushButton("Quitar")
+            # Corregido:
+            btn.clicked.connect(lambda _, _r=r: self._quitar_fila_composicion(_r))
+            self.tbl_comp.setCellWidget(r, 3, btn)
+
+    def _recoger_composicion_ui(self):
+        """Devuelve lista de dicts con {iditem_insumo, cantidad} desde la tabla UI."""
+        out = []
+        for r in range(self.tbl_comp.rowCount()):
+            iid = int(self.tbl_comp.item(r, 0).text())
+            sp: QDoubleSpinBox = self.tbl_comp.cellWidget(r, 2)
+            out.append({"iditem_insumo": iid, "cantidad": float(sp.value())})
+        return out
+
+    def _sync_composicion_db(self, iditem_padre: int):
+        """Sincroniza DB con lo que hay en la UI (delete + insert)."""
+        lista = self._recoger_composicion_ui()
+        # Eliminar existentes
+        self.session.query(ItemComposicion).filter(ItemComposicion.iditem_padre == iditem_padre).delete(synchronize_session=False)
+        # Insertar nuevos
+        for row in lista:
+            if row["iditem_insumo"] == iditem_padre:
+                continue
+            self.session.add(ItemComposicion(
+                iditem_padre=iditem_padre,
+                iditem_insumo=row["iditem_insumo"],
+                cantidad=row["cantidad"] or 1
+            ))
+
+    # ----------- GUARDAR -----------
     def guardar(self):
         nombre = (self.txt_nombre.text() or "").strip()
         if not nombre:
@@ -573,7 +681,6 @@ class FormularioItem(QDialog):
             QMessageBox.warning(self, "Validación", "Debe seleccionar el tipo general.")
             return
 
-        # validar código de barra único si viene cargado
         codigo = (self.txt_codigo.text() or "").strip() or None
         if codigo:
             q = self.session.query(Item).filter(Item.codigo_barra == codigo)
@@ -583,7 +690,6 @@ class FormularioItem(QDialog):
                 QMessageBox.warning(self, "Validación", "Ya existe otro ítem con ese código de barra.")
                 return
 
-        # Producto (precio entero)
         precio = int(self.sp_precio.value())
         idtp = self.cbo_tipoproducto.currentData()
         idesp = self.cbo_especialidad.currentData()
@@ -591,7 +697,6 @@ class FormularioItem(QDialog):
         dias = int(self.sp_dias.value())
         msg  = (self.txt_msg.text() or "").strip() or None
 
-        # Insumo
         unidad = (self.txt_unidad.text() or "").strip() or None
         tin = self.cbo_tipo_insumo.currentText()
         stock_min = self.sp_stock_min.value()
@@ -599,7 +704,6 @@ class FormularioItem(QDialog):
         uso_int = self.chk_uso_interno.isChecked()
         uso_proc = self.chk_uso_proc.isChecked()
 
-        # Derivar categoría desde flags (opcional)
         categoria = None
         if uso_int and uso_proc: categoria = "AMBOS"
         elif uso_int:            categoria = "CONSUMO_INTERNO"
@@ -612,7 +716,6 @@ class FormularioItem(QDialog):
         elif tipo_general == "INSUMO":
             precio = 0; idtp = None; idesp = None; req = False; dias = 0; msg = None
         elif tipo_general == "SERVICIO":
-            # coherencia: servicios no mueven stock
             self.chk_genera_stock.setChecked(False)
 
         data = dict(
@@ -622,7 +725,6 @@ class FormularioItem(QDialog):
             activo=self.chk_activo.isChecked(),
             iditemtipo=iditemtipo,
 
-            # producto
             precio_venta=precio,
             idtipoproducto=idtp,
             idespecialidad=idesp,
@@ -630,7 +732,6 @@ class FormularioItem(QDialog):
             dias_recordatorio=dias,
             mensaje_recordatorio=msg,
 
-            # insumo
             unidad=unidad,
             categoria=categoria,
             tipo_insumo=tin,
@@ -638,20 +739,24 @@ class FormularioItem(QDialog):
             uso_interno=uso_int,
             uso_procedimiento=uso_proc,
 
-            # NUEVO
             genera_stock=self.chk_genera_stock.isChecked(),
         )
 
         try:
             if self.item is None:
-                self.session.add(Item(**data))
+                it = Item(**data)
+                self.session.add(it)
+                self.session.flush()  # obtener id para composición
+                self._sync_composicion_db(it.iditem)
             else:
                 for k, v in data.items():
                     setattr(self.item, k, v)
+                self._sync_composicion_db(self.item.iditem)
+
             self.session.commit()
-        except IntegrityError:
+        except IntegrityError as e:
             self.session.rollback()
-            QMessageBox.warning(self, "Error", "No se pudo guardar. El código de barra ya existe.")
+            QMessageBox.warning(self, "Error", f"No se pudo guardar. {str(e.orig) if hasattr(e, 'orig') else ''}")
             return
 
         self.accept()

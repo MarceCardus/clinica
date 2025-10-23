@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 import os
-import sys
+# import sys  <-- MODIFICADO: Eliminado por no usarse
 import time
-import random
+# import random  <-- MODIFICADO: Eliminado por no usarse
 import logging
 import datetime
 import subprocess
@@ -26,9 +26,9 @@ BASE_PROFILE_DIR = r"C:\selenium_ws_profile"
 PROFILE_NAME     = "Default"
 DEBUG_PORT       = 9225  # Puerto propio para este script
 
-QR_WAIT_SECONDS   = 30
+QR_WAIT_SECONDS   = 60 # <-- MODIFICADO: Aumentado a 60s por si tienes que escanear QR
 CHAT_LOAD_TIMEOUT = 35
-RETRY_SENDS       = 2
+# RETRY_SENDS       = 2 <-- MODIFICADO: Eliminado por no usarse
 LOG_FILE          = "envio_resumen_grupo.log"
 # ===================================================
 
@@ -44,7 +44,7 @@ console.setLevel(logging.INFO)
 console.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
 logging.getLogger("").addHandler(console)
 
-def sleep_jitter(a,b): time.sleep(random.uniform(a,b))
+# def sleep_jitter(a,b): time.sleep(random.uniform(a,b)) <-- MODIFICADO: Eliminado por no usarse
 
 # ---------- Utils ----------
 def _is_process_running(pid: int) -> bool:
@@ -169,14 +169,48 @@ def build_driver_via_debug(profile_dir: str, profile_name: str, port: int, wait_
     raise RuntimeError(f"No se pudo adherir a Chrome con depuración remota: {last}")
 
 # ---------- WhatsApp helpers ----------
-def esperar_whatsapp_listo(driver):
-    WebDriverWait(driver, 30).until(
-        EC.any_of(
-            EC.presence_of_element_located((By.XPATH, '//div[@data-testid="chat-list-search"]')),
-            EC.presence_of_element_located((By.XPATH, '//footer//*[@role="textbox" and @contenteditable="true"]')),
-            EC.presence_of_element_located((By.XPATH, '//header//*[@data-testid="conversation-info-header-chat-title"]'))
+
+# <-- MODIFICADO: Función mejorada para detectar QR
+def esperar_login_o_qr(driver, qr_wait_timeout=60):
+    """
+    Espera a que WhatsApp cargue. Detecta si la sesión está iniciada (lista de chats)
+    o si pide escanear un código QR.
+    """
+    XPATH_LISTA_CHATS = '//div[@data-testid="chat-list-search"]'
+    XPATH_QR_CODE = '//div[@data-testid="qr-code"]'
+    
+    try:
+        WebDriverWait(driver, 30).until(
+            EC.any_of(
+                # 1. Ya está logueado (espera lista de chats)
+                EC.presence_of_element_located((By.XPATH, XPATH_LISTA_CHATS)),
+                
+                # 2. Pide QR
+                EC.presence_of_element_located((By.XPATH, XPATH_QR_CODE))
+            )
         )
-    )
+        
+        # Si estamos aquí, encontró algo. Verifiquemos si es el QR.
+        try:
+            driver.find_element(By.XPATH, XPATH_QR_CODE)
+            # Si lo encuentra, significa que debemos esperar
+            logging.warning(f"Se detectó Código QR. Esperando {qr_wait_timeout} segundos para escaneo manual...")
+            
+            # Ahora esperamos a que el QR desaparezca y aparezca la lista de chats
+            WebDriverWait(driver, qr_wait_timeout).until(
+                EC.presence_of_element_located((By.XPATH, XPATH_LISTA_CHATS))
+            )
+            logging.info("Escaneo de QR exitoso. WhatsApp cargado.")
+            
+        except:
+            # Si falla en encontrar el QR, es porque ya estaba logueado
+            logging.info("WhatsApp Web ya está cargado (sesión activa).")
+            
+    except TimeoutException:
+        # Si falla la espera inicial (ni QR ni chats) o la espera del escaneo
+        logging.error("No se pudo cargar WhatsApp Web (ni QR ni lista de chats) o no se escaneó el QR a tiempo.")
+        raise # Volvemos a lanzar la excepción para que el main() falle
+
 
 def cerrar_popup_si_existe(driver, wait_time=0.8):
     try:
@@ -226,7 +260,20 @@ def buscar_y_abrir_chat_por_nombre(driver, nombre_chat: str) -> bool:
         search.click()
         for _ in range(40): search.send_keys(Keys.BACKSPACE)  # limpiar si quedó texto
         search.send_keys(nombre_chat)
-        time.sleep(2.0)
+        
+        # <-- MODIFICADO: Reemplazado time.sleep(2.0) por una espera explícita
+        try:
+            # Esperar a que aparezca el primer resultado en la lista de búsqueda
+            WebDriverWait(driver, 7).until(
+                EC.presence_of_element_located((
+                    By.XPATH, 
+                    "//div[@aria-label='Resultados de búsqueda']//span[@title]"
+                ))
+            )
+            time.sleep(0.3) # Pequeña pausa para que se asiente
+        except TimeoutException:
+            logging.warning(f"No aparecieron resultados de búsqueda para '{nombre_chat}', se intentará ENTER de todas formas.")
+        
         search.send_keys(Keys.ENTER)
         esperar_chat_cargado(driver)
         return True
@@ -247,7 +294,7 @@ def esperar_caja_mensaje(driver):
             el = WebDriverWait(driver, CHAT_LOAD_TIMEOUT).until(
                 EC.element_to_be_clickable((By.XPATH, xp))
             )
-            driver.execute_script("arguments[0].scrollIntoView({block:\'center\'});", el)
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
             el.click()
             return el
         except Exception as e:
@@ -278,7 +325,7 @@ def click_boton_enviar(driver) -> bool:
     for xp in XPATHS_BTN:
         try:
             btn = WebDriverWait(driver, 2).until(EC.element_to_be_clickable((By.XPATH, xp)))
-            driver.execute_script("arguments[0].scrollIntoView({block:\'center\'});", btn)
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
             btn.click()
             return True
         except: pass
@@ -317,9 +364,9 @@ def obtener_resumen_confirmaciones(session, fecha_cita: datetime.date) -> str:
         """), {'fecha_cita': fecha_cita}
     ).fetchall()
 
-    confirmados    = [f"{r.nombre} {r.apellido}" for r in rows if (r.estado or "").lower() == "confirmada"]
-    cancelados     = [f"{r.nombre} {r.apellido}" for r in rows if (r.estado or "").lower() == "cancelada"]
-    sin_respuesta  = [f"{r.nombre} {r.apellido}" for r in rows if (r.estado or "").lower() in ("", "programada", "pendiente")]
+    confirmados   = [f"{r.nombre} {r.apellido}" for r in rows if (r.estado or "").lower() == "confirmada"]
+    cancelados    = [f"{r.nombre} {r.apellido}" for r in rows if (r.estado or "").lower() == "cancelada"]
+    sin_respuesta = [f"{r.nombre} {r.apellido}" for r in rows if (r.estado or "").lower() in ("", "programada", "pendiente")]
 
     mensaje = (
         f"📋 *Resumen de confirmaciones* – {fecha_cita.strftime('%d/%m/%Y')}\n\n"
@@ -351,11 +398,14 @@ def main():
         driver, chrome_proc = build_driver_via_debug(BASE_PROFILE_DIR, PROFILE_NAME, DEBUG_PORT)
         driver.get("https://web.whatsapp.com/")
         try:
-            esperar_whatsapp_listo(driver)
+            # <-- MODIFICADO: Se llama a la nueva función que maneja el QR
+            esperar_login_o_qr(driver, QR_WAIT_SECONDS)
         except TimeoutException:
-            logging.error("WhatsApp Web no cargó a tiempo.")
+            logging.error("WhatsApp Web no cargó a tiempo (ni login ni QR).")
             return
-        time.sleep(QR_WAIT_SECONDS)
+        
+        # <-- MODIFICADO: Se eliminó el time.sleep(QR_WAIT_SECONDS) redundante
+        
         cerrar_popup_si_existe(driver)
 
         if not buscar_y_abrir_chat_por_nombre(driver, grupo_nombre):

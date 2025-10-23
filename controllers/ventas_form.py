@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QIcon, QKeySequence
 from PyQt5.QtCore import Qt, QDate, QEvent, QTimer
 from decimal import Decimal
-from sqlalchemy import select, or_, func
+from sqlalchemy import select, or_,func
 from sqlalchemy.orm import joinedload
 from utils.db import SessionLocal
 from controllers.ventas_controller import VentasController
@@ -18,8 +18,13 @@ from models.venta import Venta
 from controllers.buscar_venta_dialog import BuscarVentaDialog
 # === impresión TXT (preimpreso) ===
 from printing.factura_txt import render_factura_txt, DEFAULT_LAYOUT
+from services.venta_consumo_service import (
+    confirmar_venta_generar_consumo,
+    anular_venta_revertir_consumo,
+)
+from typing import Optional,ContextManager, Any
 import os, datetime
-
+from contextlib import nullcontext
 # ====== NUEVO: imports tolerantes de Cobro y CobroVenta ======
 try:
     from models.cobro import Cobro
@@ -101,8 +106,16 @@ class ABMVenta(QWidget):
         self.cargar_ventas()
         self.modo_edicion = False
         self._update_buttons_state()
-
-    def _detalle_id_seleccionado(self) -> int | None:
+    
+    def _txn_ctx(self) -> ContextManager[Any]:
+        return self.session.begin() if not self.session.in_transaction() else nullcontext()
+    
+    def _safe_rb(self):
+        try:
+            self._safe_rb()
+        except Exception:
+            pass
+    def _detalle_id_seleccionado(self) -> Optional[int]:
         r = self.grilla.currentRow()
         if r < 0:
             return None
@@ -178,15 +191,17 @@ class ABMVenta(QWidget):
         combo.setCompleter(comp)
 
     def _venta_tiene_cobros_activos(self, idventa: int) -> bool:
-        from models.cobro import Cobro
-        from models.cobro_venta import CobroVenta
+        # Si no existen los modelos, asumimos que no hay cobros activos
+        if Cobro is None or CobroVenta is None:
+            return False
+
         row = self.session.execute(
             select(1)
             .select_from(CobroVenta)
             .join(Cobro, Cobro.idcobro == CobroVenta.idcobro)
             .where(
                 CobroVenta.idventa == int(idventa),
-                func.lower(Cobro.estado) != "anulado"
+                or_(Cobro.estado.is_(None), func.lower(func.trim(Cobro.estado)) != "anulado")
             )
             .limit(1)
         ).first()
@@ -227,6 +242,7 @@ class ABMVenta(QWidget):
         self.fecha = QDateEdit(QDate.currentDate()); self.fecha.setCalendarPopup(True)
         left_layout.addRow(QLabel("Fecha:"), self.fecha)
         self.txt_nro_factura = QLineEdit()
+        self.txt_nro_factura.setInputMask("000-000-0000000;_")  # 001-001-0000001
         left_layout.addRow(QLabel("N° Factura:"), self.txt_nro_factura)
         self.cbo_paciente = QComboBox(); left_layout.addRow(QLabel("Paciente:"), self.cbo_paciente)
         self.cbo_profesional = QComboBox(); left_layout.addRow(QLabel("Profesional:"), self.cbo_profesional)
@@ -423,7 +439,7 @@ class ABMVenta(QWidget):
             self.cbo_paciente.addItem(f"{p.apellido}, {p.nombre}", p.idpaciente)
         self._enable_search_on_combobox(self.cbo_paciente)
         self.cbo_profesional.clear()
-        for pr in s.execute(select(Profesional).where(Profesional.estado == True).order_by(Profesional.apellido)).scalars():
+        for pr in s.execute(select(Profesional).where(Profesional.estado.is_(True)).order_by(Profesional.apellido)).scalars():
             self.cbo_profesional.addItem(f"{pr.apellido}, {pr.nombre}", pr.idprofesional)
         self.cbo_clinica.clear()
         for c in s.execute(select(Clinica).order_by(Clinica.nombre)).scalars():
@@ -575,14 +591,12 @@ class ABMVenta(QWidget):
         if self.ventas: self.mostrar_venta(len(self.ventas) - 1)
 
     def buscar_y_agregar_item(self):
-        from sqlalchemy import select, func
         from models.item import Item, ItemTipo
         texto = (self.busca_item.text() or "").strip()
         if not texto:
             return
         s = self.session
-        try: s.rollback()
-        except Exception: pass
+        self._safe_rb()
         want = (self.cbo_tipo.currentText() or "").strip().lower()
         tipo_ci = func.lower(func.trim(ItemTipo.nombre))
         if want == "producto":
@@ -645,6 +659,7 @@ class ABMVenta(QWidget):
             QMessageBox.warning(self, "Clínica", "Debe seleccionar una clínica.")
             self.cbo_clinica.setFocus()
             return
+
         nro = (self.txt_nro_factura.text() or "").strip()
         if self._mask_vacia(nro):
             nro = None
@@ -652,6 +667,7 @@ class ABMVenta(QWidget):
             if not self.txt_nro_factura.hasAcceptableInput():
                 QMessageBox.warning(self, "N° Factura", "Formato inválido. Usá 001-001-0000001.")
                 return
+
         ctrl = VentasController(self.session, usuario_id=self.usuario_id)
         datos = {
             "fecha": self.fecha.date().toPyDate(), "nro_factura": nro,
@@ -660,9 +676,27 @@ class ABMVenta(QWidget):
             "items": self._collect_items()
         }
         try:
+            # 1) Crear la venta (tu controller suele commitear aquí)
             idventa = ctrl.crear_venta(datos)
-            QMessageBox.information(self, "Venta", f"Venta N° {idventa} guardada correctamente.")
-            
+
+            # 2) Generar consumo (stock/procedimiento)
+            consumo_ok = True
+            try:
+                with self._txn_ctx():
+                    confirmar_venta_generar_consumo(self.session, idventa)
+            except Exception as ex:
+                consumo_ok = False
+                self._safe_rb()
+                QMessageBox.warning(self, "Atención",
+                    f"La venta N° {idventa} se guardó, pero no se pudo generar el consumo.\n\n{ex}")
+
+            if consumo_ok:
+                QMessageBox.information(self, "Venta", f"Venta N° {idventa} guardada correctamente.")
+            else:
+                QMessageBox.information(self, "Venta", f"Venta N° {idventa} guardada (consumo pendiente).")
+
+
+            # --- (opcional) Impresión como ya tenías ---
             resp = QMessageBox.question(
                 self, "Imprimir", "¿Desea imprimir la factura ahora?",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
@@ -672,11 +706,8 @@ class ABMVenta(QWidget):
                 if venta:
                     try:
                         path = self._generar_txt_factura(venta)
-                        
                         from printing.factura_txt import print_file_by_name
                         print_file_by_name(path, "ELX350")
-
-                        
                     except Exception as ex:
                         QMessageBox.critical(self, "Error de Impresión", f"No se pudo enviar a la impresora:\n\n{ex}")
 
@@ -684,8 +715,9 @@ class ABMVenta(QWidget):
             self.cargar_ventas()
             self.limpiar_formulario(editable=False)
             self._update_buttons_state()
+
         except Exception as e:
-            self.session.rollback()
+            self._safe_rb()
             QMessageBox.critical(self, "Error", str(e))
 
     def anular_venta_actual(self):
@@ -703,20 +735,33 @@ class ABMVenta(QWidget):
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No
         ) == QMessageBox.No:
             return
+
         ctrl = VentasController(self.session, usuario_id=self.usuario_id)
         try:
+            # 1) Anular estado
             ctrl.anular_venta(self.idventa_actual)
+
+            # 2) Revertir consumos con begin/nullcontext
+            try:
+                with self._txn_ctx():
+                    anular_venta_revertir_consumo(self.session, self.idventa_actual)
+            except Exception as ex:
+                self._safe_rb()
+                QMessageBox.warning(self, "Atención",
+                    "La venta se marcó como ANULADA, pero no se pudo revertir el consumo de stock/procedimiento.\n\n" + str(ex))
+
             QMessageBox.information(self, "Éxito", "Venta anulada correctamente.")
             self.cargar_ventas()
             self.limpiar_formulario(editable=False)
             self._update_buttons_state()
+
         except Exception as e:
-            self.session.rollback()
-            QMessageBox.critical(self, "Error", str(e))
+            self._safe_rb()
+            QMessageBox.critical(self, "Error", str(e)) 
 
     def setup_focus(self):
         for w in [self.txt_nro_factura, self.cbo_paciente, self.cbo_profesional,
-                  self.cbo_clinica, self.observaciones, self.busca_item]:
+                self.cbo_clinica, self.observaciones, self.busca_item]:
             w.installEventFilter(self)
 
     def eventFilter(self, obj, event):
@@ -821,7 +866,7 @@ class ABMVenta(QWidget):
                 QMessageBox.warning(self, "N° Factura", "Formato inválido. Usá 001-001-0000001.")
                 return
         try:
-            v = self.session.query(Venta).get(int(self.idventa_actual))
+            v = self.session.get(Venta, int(self.idventa_actual))
             if not v:
                 QMessageBox.warning(self, "Guardar", "Venta no encontrada.")
                 return
@@ -834,7 +879,7 @@ class ABMVenta(QWidget):
             self.cargar_venta_por_id(cur_id)
             self.set_modo_edicion_minima(False)
         except Exception as e:
-            self.session.rollback()
+            self._safe_rb()
             QMessageBox.critical(self, "Error", f"Ocurrió un error al guardar: {e}")
 
     def _collect_items(self):
@@ -923,7 +968,7 @@ class ABMVenta(QWidget):
             )
             return v
         except Exception as e:
-            try: self.session.rollback()
+            try: self._safe_rb()
             except Exception: pass
             print("Error load venta:", e)
             return None
