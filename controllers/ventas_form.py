@@ -24,7 +24,6 @@ from services.venta_consumo_service import (
 )
 from typing import Optional,ContextManager, Any
 import os, datetime
-from contextlib import nullcontext
 # ====== NUEVO: imports tolerantes de Cobro y CobroVenta ======
 try:
     from models.cobro import Cobro
@@ -76,7 +75,8 @@ class ABMVenta(QWidget):
         self.modo_nuevo = False
         self.idventa_actual = None
         self.idx_actual = -1
-
+        self._is_anulada = False
+        self.modo_edicion = False
         self.setWindowTitle("Ventas")
         self.resize(980, 540)      # <<< igual que Compras
 
@@ -91,7 +91,6 @@ class ABMVenta(QWidget):
         self.btn_guardar.clicked.connect(self._on_guardar_click)
         self.btn_anular.clicked.connect(self.anular_venta_actual)
         self.btn_imprimir.clicked.connect(self._on_imprimir_clicked)
-        self.btn_anular.setEnabled(False)
         self.btn_primero.clicked.connect(self.ir_primero)
         self.btn_anterior.clicked.connect(self.ir_anterior)
         self.btn_siguiente.clicked.connect(self.ir_siguiente)
@@ -104,17 +103,31 @@ class ABMVenta(QWidget):
         self.setup_focus()
         self.cbo_paciente.setFocus()
         self.cargar_ventas()
-        self.modo_edicion = False
-        self._update_buttons_state()
+       
+        # self._update_buttons_state()
     
     def _txn_ctx(self) -> ContextManager[Any]:
-        return self.session.begin() if not self.session.in_transaction() else nullcontext()
+        return self.session.begin_nested() if self.session.in_transaction() else self.session.begin()
     
     def _safe_rb(self):
         try:
-            self._safe_rb()
+            self.session.rollback()
         except Exception:
             pass
+
+    # --- Helpers numéricos ---
+    @staticmethod
+    def _fmt(n: int) -> str:
+        return f"{n:,.0f}".replace(",", ".")
+
+    @staticmethod
+    def _parse(txt: str) -> int:
+        t = (txt or "").strip().replace(".", "").replace(",", ".")
+        try:
+            return int(float(t or "0"))
+        except Exception:
+            return 0
+        
     def _detalle_id_seleccionado(self) -> Optional[int]:
         r = self.grilla.currentRow()
         if r < 0:
@@ -163,7 +176,7 @@ class ABMVenta(QWidget):
     def _pintar_estado(self, v: Venta):
         est = (getattr(v, "estadoventa", "") or "").strip().lower()
         anulada = getattr(v, "anulada", False)
-
+        self._is_anulada = bool(est == "anulada" or anulada)  # <<< NUEVO
         if est == "anulada" or anulada:
             self.lbl_estado.setText("Anulada")
             self.lbl_estado.setStyleSheet("font-weight:bold; color:#dc3545; margin-bottom:6px;")
@@ -358,11 +371,14 @@ class ABMVenta(QWidget):
             self.grilla.blockSignals(False)
 
     def _update_buttons_state(self):
+        if not hasattr(self, "btn_planes"):
+            return
         has_loaded = self.idventa_actual is not None
         modo_ed = getattr(self, "modo_edicion", False)
         modo_nuevo = getattr(self, "modo_nuevo", False)
-        self.btn_planes.setEnabled(modo_ed and has_loaded)
 
+        self.btn_planes.setEnabled(modo_ed and has_loaded)
+        
         if modo_nuevo:
             self.btn_guardar.setEnabled(True)
             self.btn_nuevo.setEnabled(False)
@@ -379,9 +395,24 @@ class ABMVenta(QWidget):
             self.btn_guardar.setEnabled(False)
             self.btn_nuevo.setEnabled(True)
             self.btn_editar.setEnabled(has_loaded)
-            self.btn_anular.setEnabled(has_loaded)
+            # <<< CAMBIO: respetar si la venta está anulada
+            self.btn_anular.setEnabled(has_loaded and not self._is_anulada)
             self._toggle_nav(True)
-        self.btn_imprimir.setEnabled(has_loaded and not (modo_nuevo or modo_ed))
+        self.btn_imprimir.setEnabled(
+            has_loaded and not (modo_nuevo or modo_ed) and not self._is_anulada
+        )
+
+    def _lock_and_align_row(self, row: int):
+        # columnas solo lectura
+        for col in (0, 1, 4, 5):
+            it = self.grilla.item(row, col)
+            if it:
+                it.setFlags(it.flags() & ~Qt.ItemIsEditable)
+        # alinear numéricas a la derecha
+        for col in (2, 3, 4, 5):
+            it = self.grilla.item(row, col)
+            if it:
+                it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
     def agregar_item_a_grilla(self, it):
         tipo, _id, nombre, pv = it
@@ -394,7 +425,7 @@ class ABMVenta(QWidget):
                     cant_item = QTableWidgetItem("0")
                     self.grilla.setItem(row, 2, cant_item)
                 try:
-                    cant_actual = int((cant_item.text() or "0").replace(".", "").replace(",", ""))
+                    cant_actual = self._parse(cant_item.text())
                 except Exception:
                     cant_actual = 0
                 cant_item.setText(str(cant_actual + 1))
@@ -414,11 +445,12 @@ class ABMVenta(QWidget):
         self.grilla.setItem(row, 0, cod_item)
         self.grilla.setItem(row, 1, QTableWidgetItem(nombre))
         self.grilla.setItem(row, 2, QTableWidgetItem("1"))
-        self.grilla.setItem(row, 3, QTableWidgetItem(f"{pv:,.0f}".replace(",", ".")))
+        self.grilla.setItem(row, 3, QTableWidgetItem(self._fmt(pv)))
         total = int(round(float(pv)))
         iva = round(total / 11)
-        self.grilla.setItem(row, 4, QTableWidgetItem(f"{total:,.0f}".replace(",", ".")))
-        self.grilla.setItem(row, 5, QTableWidgetItem(f"{iva:,.0f}".replace(",", ".")))
+        self.grilla.setItem(row, 4, QTableWidgetItem(self._fmt(total)))
+        self.grilla.setItem(row, 5, QTableWidgetItem(self._fmt(iva)))
+        self._lock_and_align_row(row)
         self.grilla.blockSignals(False)
         self.actualizar_total_pie()
         self.grilla.setCurrentCell(row, 2)
@@ -434,16 +466,22 @@ class ABMVenta(QWidget):
 
     def cargar_maestros(self):
         s = self.session
+
         self.cbo_paciente.clear()
         for p in s.execute(select(Paciente).order_by(Paciente.apellido)).scalars():
             self.cbo_paciente.addItem(f"{p.apellido}, {p.nombre}", p.idpaciente)
-        self._enable_search_on_combobox(self.cbo_paciente)
+
         self.cbo_profesional.clear()
         for pr in s.execute(select(Profesional).where(Profesional.estado.is_(True)).order_by(Profesional.apellido)).scalars():
             self.cbo_profesional.addItem(f"{pr.apellido}, {pr.nombre}", pr.idprofesional)
+
         self.cbo_clinica.clear()
         for c in s.execute(select(Clinica).order_by(Clinica.nombre)).scalars():
             self.cbo_clinica.addItem(c.nombre, c.idclinica)
+
+        # activar autocompletar (hacerlo después de cargar ítems)
+        for cb in (self.cbo_paciente, self.cbo_profesional, self.cbo_clinica):
+            self._enable_search_on_combobox(cb)
 
     def set_campos_enabled(self, estado: bool):
         self.fecha.setEnabled(estado)
@@ -472,6 +510,7 @@ class ABMVenta(QWidget):
         self.idx_actual = -1
         self.lbl_estado.setText("Activo")
         self.lbl_estado.setStyleSheet("font-weight:bold; color: green;")
+        self._is_anulada = False
         self._update_buttons_state()
         self._detalle_ids = []
         self.set_campos_enabled(editable)
@@ -507,7 +546,6 @@ class ABMVenta(QWidget):
         self.limpiar_formulario(editable=False)
 
     def mostrar_venta(self, idx):
-        from sqlalchemy import select
         from models.item import Item
         if not self.ventas or idx < 0 or idx >= len(self.ventas):
             return
@@ -560,15 +598,15 @@ class ABMVenta(QWidget):
             self.grilla.setItem(row, 0, QTableWidgetItem(codigo))
             self.grilla.setItem(row, 1, QTableWidgetItem(nombre))
             self.grilla.setItem(row, 2, QTableWidgetItem(str(cant)))
-            self.grilla.setItem(row, 3, QTableWidgetItem(f"{pu:,.0f}".replace(",", ".")))
-            self.grilla.setItem(row, 4, QTableWidgetItem(f"{sub_i:,.0f}".replace(",", ".")))
-            self.grilla.setItem(row, 5, QTableWidgetItem(f"{iva_i:,.0f}".replace(",", ".")))
+            self.grilla.setItem(row, 3, QTableWidgetItem(self._fmt(pu)))
+            self.grilla.setItem(row, 4, QTableWidgetItem(self._fmt(sub_i)))
+            self.grilla.setItem(row, 5, QTableWidgetItem(self._fmt(iva_i)))
+            self._lock_and_align_row(row)
             self._detalle_ids.append(int(idventadet))
 
         self.idx_actual = idx
         self.set_campos_enabled(False)
         self.btn_guardar.setEnabled(False)
-        self.btn_anular.setEnabled(True)
         self.btn_nuevo.setEnabled(True)
         self.set_modo_edicion_minima(False)
         self.actualizar_total_pie()
@@ -679,24 +717,25 @@ class ABMVenta(QWidget):
             # 1) Crear la venta (tu controller suele commitear aquí)
             idventa = ctrl.crear_venta(datos)
 
-            # 2) Generar consumo (stock/procedimiento)
-            consumo_ok = True
+            # 2) Generar movimientos de stock (solo ítems con genera_stock=True)
+            stock_ok = True
             try:
                 with self._txn_ctx():
                     confirmar_venta_generar_consumo(self.session, idventa)
             except Exception as ex:
-                consumo_ok = False
+                stock_ok = False
                 self._safe_rb()
-                QMessageBox.warning(self, "Atención",
-                    f"La venta N° {idventa} se guardó, pero no se pudo generar el consumo.\n\n{ex}")
+                QMessageBox.warning(
+                    self, "Atención",
+                    f"La venta N° {idventa} se guardó, pero no se pudo generar el movimiento de stock.\n\n{ex}"
+                )
 
-            if consumo_ok:
+            if stock_ok:
                 QMessageBox.information(self, "Venta", f"Venta N° {idventa} guardada correctamente.")
             else:
-                QMessageBox.information(self, "Venta", f"Venta N° {idventa} guardada (consumo pendiente).")
+                QMessageBox.information(self, "Venta", f"Venta N° {idventa} guardada (pendiente de stock).")
 
-
-            # --- (opcional) Impresión como ya tenías ---
+            # --- Impresión opcional ---
             resp = QMessageBox.question(
                 self, "Imprimir", "¿Desea imprimir la factura ahora?",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
@@ -741,14 +780,16 @@ class ABMVenta(QWidget):
             # 1) Anular estado
             ctrl.anular_venta(self.idventa_actual)
 
-            # 2) Revertir consumos con begin/nullcontext
+            # 2) Revertir movimientos de stock
             try:
                 with self._txn_ctx():
                     anular_venta_revertir_consumo(self.session, self.idventa_actual)
             except Exception as ex:
                 self._safe_rb()
-                QMessageBox.warning(self, "Atención",
-                    "La venta se marcó como ANULADA, pero no se pudo revertir el consumo de stock/procedimiento.\n\n" + str(ex))
+                QMessageBox.warning(
+                    self, "Atención",
+                    "La venta se marcó como ANULADA, pero no se pudo revertir el movimiento de stock.\n\n" + str(ex)
+                )
 
             QMessageBox.information(self, "Éxito", "Venta anulada correctamente.")
             self.cargar_ventas()
@@ -757,7 +798,7 @@ class ABMVenta(QWidget):
 
         except Exception as e:
             self._safe_rb()
-            QMessageBox.critical(self, "Error", str(e)) 
+            QMessageBox.critical(self, "Error", str(e))
 
     def setup_focus(self):
         for w in [self.txt_nro_factura, self.cbo_paciente, self.cbo_profesional,
@@ -810,14 +851,14 @@ class ABMVenta(QWidget):
         try:
             txt_cant = (self.grilla.item(row, 2).text() or "").strip()
             txt_prec = (self.grilla.item(row, 3).text() or "").strip()
-            cantidad = int((txt_cant.replace(".", "").replace(",", "")) or "0")
-            precio   = int((txt_prec.replace(".", "").replace(",", "")) or "0")
+            cantidad = self._parse(self.grilla.item(row, 2).text())
+            precio   = self._parse(self.grilla.item(row, 3).text())
             total = round(precio * cantidad)
             iva10 = round(total / 11)
             self.grilla.setItem(row, 2, QTableWidgetItem(str(cantidad)))
-            self.grilla.setItem(row, 3, QTableWidgetItem(f"{precio:,.0f}".replace(",", ".")))
-            self.grilla.setItem(row, 4, QTableWidgetItem(f"{total:,.0f}".replace(",", ".")))
-            self.grilla.setItem(row, 5, QTableWidgetItem(f"{iva10:,.0f}".replace(",", ".")))
+            self.grilla.setItem(row, 3, QTableWidgetItem(self._fmt(precio)))
+            self.grilla.setItem(row, 4, QTableWidgetItem(self._fmt(total)))
+            self.grilla.setItem(row, 5, QTableWidgetItem(self._fmt(iva10)))
         except Exception:
             self.grilla.setItem(row, 4, QTableWidgetItem("0"))
             self.grilla.setItem(row, 5, QTableWidgetItem("0"))
@@ -826,13 +867,13 @@ class ABMVenta(QWidget):
         total, total_iva = 0, 0
         for r in range(self.grilla.rowCount()):
             try:
-                v_total = (self.grilla.item(r, 4).text() if self.grilla.item(r, 4) else "0")
-                v_iva   = (self.grilla.item(r, 5).text() if self.grilla.item(r, 5) else "0")
-                total += float(v_total.replace(".", "").replace(",", "."))
-                total_iva += float(v_iva.replace(".", "").replace(",", "."))
+                v_total = self.grilla.item(r, 4).text() if self.grilla.item(r, 4) else "0"
+                v_iva   = self.grilla.item(r, 5).text() if self.grilla.item(r, 5) else "0"
+                total    += self._parse(v_total)
+                total_iva += self._parse(v_iva)
             except Exception:
                 pass
-        self.lbl_total.setText(f"Total: {total:,.0f}      IVA10: {int(round(total_iva)):,.0f}".replace(",", "."))
+        self.lbl_total.setText(f"Total: {self._fmt(int(total))}      IVA10: {self._fmt(int(round(total_iva)))}")
 
     def editar_actual(self):
         if self.modo_nuevo:
@@ -889,10 +930,10 @@ class ABMVenta(QWidget):
             try: iditem = int(iditem_txt)
             except Exception: continue
             tipo = self.grilla.item(r, 0).data(Qt.UserRole) or "producto"
-            txt_cant = (self.grilla.item(r, 2).text() or "").strip()
-            txt_prec = (self.grilla.item(r, 3).text() or "").strip()
-            cantidad = int((txt_cant.replace(".", "").replace(",", "")) or "0")
-            precio   = int((txt_prec.replace(".", "").replace(",", "")) or "0")
+            txt_cant = (self.grilla.item(r, 2).text() or "")
+            txt_prec = (self.grilla.item(r, 3).text() or "")
+            cantidad = self._parse(txt_cant)
+            precio   = self._parse(txt_prec)
             if iditem and cantidad > 0:
                 if tipo == "paquete":
                     items.append({
@@ -968,8 +1009,7 @@ class ABMVenta(QWidget):
             )
             return v
         except Exception as e:
-            try: self._safe_rb()
-            except Exception: pass
+            self._safe_rb()
             print("Error load venta:", e)
             return None
 

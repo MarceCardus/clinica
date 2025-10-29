@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['envioWS.py'],
+    ['envioWs.py'],
     pathex=[],
     binaries=[],
     datas=[],
@@ -22,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='envioWS',
+    name='envioWs',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

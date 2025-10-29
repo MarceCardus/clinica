@@ -15,7 +15,10 @@ from PyQt5.QtCore import QDate, Qt, QSize, QTime
 from sqlalchemy.orm import joinedload
 from sqlalchemy import func, or_
 from contextlib import contextmanager
-
+from sqlalchemy import case
+from models.item_composicion import ItemComposicion
+from models.procedimiento_item import procedimiento_item
+import math
 from utils.db import SessionLocal
 
 # Modelos
@@ -94,15 +97,69 @@ def gs(n):
             return f"Gs {float(n):,.0f}".replace(",", ".")
         except Exception:
             return ""
-        
+class MoneyItem(QTableWidgetItem):
+    def __init__(self, val):
+        try:
+            f = float(val) if val is not None else None
+        except Exception:
+            f = None
+        self._val = f if f is not None else float("-inf")
+        super().__init__("" if f is None else gs(f))
+        self.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
+    def __lt__(self, other):
+        if isinstance(other, MoneyItem):
+            return self._val < other._val
+        try:
+            txt = other.text().replace("Gs", "").replace(".", "").strip()
+            return self._val < float(txt or "0")
+        except Exception:
+            return super().__lt__(other)        
+class DateItem(QTableWidgetItem):
+    def __init__(self, val):
+        from datetime import datetime, date
+        key = float("-inf"); txt = ""
+        try:
+            if isinstance(val, (datetime, date)):
+                d = val.date() if isinstance(val, datetime) else val
+                key = d.toordinal(); txt = d.strftime("%d/%m/%y")
+            else:
+                s = str(val or "").strip()
+                parsed = None
+                for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+                    try:
+                        parsed = datetime.strptime(s, fmt); break
+                    except Exception:
+                        pass
+                if not parsed:
+                    try:
+                        parsed = datetime.fromisoformat(s.replace("Z", ""))
+                    except Exception:
+                        parsed = None
+                if parsed:
+                    key = parsed.date().toordinal(); txt = parsed.strftime("%d/%m/%y")
+                else:
+                    txt = s
+        except Exception:
+            txt = str(val or "")
+        super().__init__(txt)
+        self._key = key
+        self.setTextAlignment(Qt.AlignCenter | Qt.AlignVCenter)
+
+    def __lt__(self, other):
+        if isinstance(other, DateItem):
+            return self._key < other._key
+        return super().__lt__(other)
+            
 class FichaClinicaForm(QDialog):
-    def __init__(self, idpaciente, parent=None, solo_control=False):
+    def __init__(self, idpaciente, parent=None, solo_control=False,acciones_proc_en_solo=False):
         super().__init__(parent)
         self.setWindowTitle("Ficha Clínica del Paciente")
         self.setMinimumWidth(1100)
 
         self.idpaciente = idpaciente
         self.solo_control = solo_control
+        self.acciones_proc_en_solo = acciones_proc_en_solo  # ← NUEVO
         self.session = SessionLocal()
 
         self.control_editando_id = None
@@ -185,7 +242,46 @@ class FichaClinicaForm(QDialog):
         main_layout.addWidget(self.btn_guardar)
         self.btn_guardar.setVisible(not self.solo_control)
 
-
+    def _unidad_es_discreta(self, unidad: str) -> bool:
+        """
+        Heurística simple para decidir redondeo:
+        - Líquidos y fraccionables (ml/cc/l/g/mg/kg/oz) => NO discreta (permite decimales).
+        - Ampollas, jeringas, bisturí, frasco, vial, tableta, comprimido => DISCRETA (CEIL).
+        - Si no reconoce, por defecto la tratamos como discreta para evitar fracciones raras.
+        """
+        u = (unidad or "").strip().lower()
+        tokens_liquidos = ["ml", "cc", "l", "litro", "g", "mg", "kg", "oz"]
+        if any(tok in u for tok in tokens_liquidos):
+            return False
+        tokens_discretos = ["amp", "unidad", "u", "ud", "jering", "bistur", "kit", "vial", "frasco", "table", "compri", "pz", "pieza"]
+        if any(tok in u for tok in tokens_discretos):
+            return True
+        return True  # por defecto, discreta
+    
+    def _ml_a_unidad(self, value_ml: float, unidad: str) -> float:
+        u = (unidad or "").strip().lower()
+        if "ml" in u or "cc" in u:
+            return value_ml
+        if u.startswith("l"):              # l, litro, litros
+            return value_ml / 1000.0
+        if u.startswith("kg"):
+            return value_ml / 1_000_000.0  # solo si asumís densidad≈1
+        if u.startswith("g"):
+            return value_ml / 1000.0       # idem nota densidad
+        return value_ml                    # fallback
+    
+    def _unidad_a_ml(self, value: float, unidad: str) -> float:
+        u = (unidad or "").strip().lower()
+        if "ml" in u or "cc" in u:
+            return value
+        if u.startswith("l"):
+            return value * 1000.0
+        # lo demás solo si asumís densidad≈1
+        if u.startswith("kg"):
+            return value * 1_000_000.0
+        if u.startswith("g"):
+            return value * 1000.0
+        return value
     # ================== DATOS BÁSICOS ==================
     def ui_tab_basicos(self):
         layout = QFormLayout(self.tab_basicos)
@@ -487,13 +583,51 @@ class FichaClinicaForm(QDialog):
         hl.addWidget(self.btn_cancelar_edicion)
         hl.addStretch()
         layout.addLayout(hl)
+    
+    def _on_proc_combo_changed(self, _idx):
+        if not hasattr(self, "lbl_cantidad"):
+            return
+        iditem = self.proc_combo.currentData()
+        if not iditem:
+            self.lbl_cantidad.setText("Cantidad:")
+            self.proc_cantidad.setSuffix("")
+            self.proc_cantidad.setDecimals(0)
+            self.proc_cantidad.setMinimum(1)
+            self.proc_cantidad.setSingleStep(1)
+            return
 
+        # ¿tiene composición?
+        tiene_comp = self.session.query(ItemComposicion).filter(
+            ItemComposicion.iditem_padre == iditem
+        ).first() is not None
+
+        it = self.session.get(Item, iditem)
+        unidad = (getattr(it, "unidad", "") or "").strip()
+        es_discreta = self._unidad_es_discreta(unidad)
+
+        if tiene_comp:
+            # El volumen se interpreta en ml
+            self.lbl_cantidad.setText("Volumen (ml):")
+            self.proc_cantidad.setSuffix(" ml")
+            self.proc_cantidad.setDecimals(2)
+            self.proc_cantidad.setMinimum(0.01)
+            self.proc_cantidad.setSingleStep(10)  # cómodo para volúmenes
+        else:
+            self.lbl_cantidad.setText("Cantidad:")
+            # mostrar la unidad real del ítem cuando sea útil
+            self.proc_cantidad.setSuffix(f" {unidad}" if unidad else "")
+            self.proc_cantidad.setDecimals(0 if es_discreta else 2)
+            self.proc_cantidad.setMinimum(1 if es_discreta else 0.01)
+            self.proc_cantidad.setSingleStep(1 if es_discreta else 0.5)
+        
     # ================== PROCEDIMIENTOS ==================
     def ui_tab_procedimientos(self):
         layout = QVBoxLayout(self.tab_procedimientos)
 
         self.table_procedimientos = QTableWidget(0, 5)
-        self.table_procedimientos.setHorizontalHeaderLabels(["Fecha", "Item", "Comentario", "", ""])
+        self.table_procedimientos.setHorizontalHeaderLabels(
+             ["Fecha", "Item", "Comentario", "Editar", "Eliminar"]
+        )
         self.table_procedimientos.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table_procedimientos.setAlternatingRowColors(True)
         layout.addWidget(self.table_procedimientos)
@@ -506,22 +640,28 @@ class FichaClinicaForm(QDialog):
         self.proc_combo.clear()
         self.proc_combo.addItem("Seleccionar...", None)
 
-        # Ítems de procedimiento/servicio
+        # Ítems de procedimiento/servicio + Ítems compuestos (tienen composición)
+        subq_comp = (self.session.query(ItemComposicion.iditem_padre)
+                    .distinct()
+                    .subquery())
+
         q = (self.session.query(Item)
-             .filter(
-                 Item.activo.is_(True),
-                 or_(
-                     Item.uso_procedimiento.is_(True),
-                     Item.categoria == 'USO_PROCEDIMIENTO',
-                     func.lower(Item.tipo_producto).in_(['procedimiento', 'procedimientos', 'servicio'])
-                 )
-             )
-             .order_by(Item.nombre.asc()))
+            .filter(
+                Item.activo.is_(True),
+                or_(
+                    Item.uso_procedimiento.is_(True),
+                    Item.categoria == 'USO_PROCEDIMIENTO',
+                    func.lower(Item.tipo_producto).in_(['procedimiento', 'procedimientos', 'servicio']),
+                    Item.iditem.in_(self.session.query(subq_comp.c.iditem_padre))  # <= compuestos
+                )
+            )
+            .order_by(Item.nombre.asc()))
+
         for it in q.all():
             self.proc_combo.addItem(it.nombre, it.iditem)
 
         self._setup_contains_completer(self.proc_combo)
-
+        
         self.proc_cantidad = QDoubleSpinBox()
         self.proc_cantidad.setDecimals(2)
         self.proc_cantidad.setMinimum(0.01)
@@ -531,7 +671,10 @@ class FichaClinicaForm(QDialog):
         self.proc_comentario = QLineEdit()
         form.addRow("Fecha:", self.proc_fecha)
         form.addRow("Item:", self.proc_combo)
-        form.addRow("Cantidad:", self.proc_cantidad)
+        self.lbl_cantidad = QLabel("Cantidad:")
+        form.addRow(self.lbl_cantidad, self.proc_cantidad)
+        self.proc_combo.currentIndexChanged.connect(self._on_proc_combo_changed)
+        self._on_proc_combo_changed(self.proc_combo.currentIndex())
         form.addRow("Comentario:", self.proc_comentario)
         layout.addLayout(form)
 
@@ -577,6 +720,7 @@ class FichaClinicaForm(QDialog):
         self.tblHistorial.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.tblHistorial.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tblHistorial.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.tblHistorial.setSortingEnabled(True)
         layout.addWidget(self.tblHistorial)
 
         # ----- Totales -----
@@ -631,24 +775,23 @@ class FichaClinicaForm(QDialog):
         with _painting_suspended(self.tblHistorial):
             self.tblHistorial.setRowCount(len(data))
             for r, row in enumerate(data):
-                fecha_txt = ""
-                try:
-                    dt = row.get("fecha")
-                    fecha_txt = dt.strftime("%d/%m/%y") if hasattr(dt, "strftime") else (dt or "")
-                except Exception:
-                    fecha_txt = str(row.get("fecha") or "")
-                self._set_hist_cell(r, 0, fecha_txt)
+                # Fecha (usa DateItem para ordenar por valor real)
+                self.tblHistorial.setItem(r, 0, DateItem(row.get("fecha")))
+                # Tipo / Ítem
                 self._set_hist_cell(r, 1, row.get("tipo_evento") or "")
                 self._set_hist_cell(r, 2, row.get("item_nombre") or "")
-                # Cantidad siempre numérica si hay
-                cant = row.get("cantidad")
-                self._set_hist_cell(r, 3, f"{cant:.2f}" if cant is not None else "")
+                # Cantidad
+                self.tblHistorial.setItem(r, 3, NumericItem(row.get("cantidad")))
                 # Monetarios
-                self._set_hist_cell(r, 4, gs(row.get("precio_unitario")) if row.get("precio_unitario") else "")
-                self._set_hist_cell(r, 5, gs(row.get("subtotal")) if row.get("subtotal") else "")
-                self._set_hist_cell(r, 6, gs(row.get("saldo")) if row.get("saldo") is not None else gs(0))
+                self.tblHistorial.setItem(r, 4, MoneyItem(row.get("precio_unitario")))
+                self.tblHistorial.setItem(r, 5, MoneyItem(row.get("subtotal")))
+                self.tblHistorial.setItem(r, 6, MoneyItem(0 if row.get("saldo") is None else row.get("saldo")))
+                # Obs
                 self._set_hist_cell(r, 7, row.get("observacion") or "")
             self.tblHistorial.resizeColumnsToContents()
+        
+        # 👉 Orden inicial por fecha (columna 0), descendente
+        self.tblHistorial.sortItems(0, Qt.DescendingOrder)
 
         # Totales (ventas/cobros/saldo) desde tabla venta
         resumen = get_resumen_financiero_paciente(self.session, self.idpaciente)
@@ -738,39 +881,245 @@ class FichaClinicaForm(QDialog):
 
 
     def _crear_movimiento_procedimiento(self, proc, cantidad) -> bool:
-        it = self.session.get(Item, proc.iditem)
-        if not it:
-            QMessageBox.warning(self, "Stock", "No se encontró el ítem del procedimiento.")
-            return False
+            """
+            Si el ítem del procedimiento es 'compuesto' (tiene composición en ItemComposicion),
+            explota la mezcla y descuenta stock de sus componentes en proporción a 'cantidad' (ml).
+            Si no es compuesto, mantiene el comportamiento anterior (un movimiento por el ítem).
+            Además, registra el detalle en la tabla intermedia 'procedimiento_item' para trazabilidad.
+            """
+            # 1) Ítem principal del procedimiento
+            it_padre = self.session.get(Item, proc.iditem)
+            if not it_padre:
+                QMessageBox.warning(self, "Stock", "No se encontró el ítem del procedimiento.")
+                return False
 
-        mov = StockMovimiento(
-            fecha=proc.fecha,
-            iditem=proc.iditem,
-            cantidad=cantidad,
-            tipo='EGRESO',
-            motivo='PROCEDIMIENTO',
-            idorigen=proc.id,
-            observacion=f"Proc #{proc.id} - {it.nombre}"
-        )
-        self.session.add(mov)
-        return True
+            # 2) Traer la composición (si existe)
+            compos = (self.session.query(ItemComposicion)
+                    .filter(ItemComposicion.iditem_padre == proc.iditem)
+                    .all())
+
+            # === CASO NO COMPUESTO: comportamiento original ===
+            if not compos:
+                cant_mov = cantidad
+                if self._unidad_es_discreta(it_padre.unidad or ""):
+                    cant_mov = math.ceil(cantidad - 1e-9)
+                mov = StockMovimiento(
+                    fecha=proc.fecha, iditem=proc.iditem, cantidad=cant_mov,
+                    tipo='EGRESO', motivo='PROCEDIMIENTO', idorigen=proc.id,
+                    observacion=f"Proc #{proc.id} - {it_padre.nombre}"
+                )
+                self.session.add(mov)
+                return True
+
+            # === CASO COMPUESTO ===
+            # Interpretamos 'cantidad' como VOLUMEN (ml) del ítem compuesto (p. ej., KLEIN 1700 ml)
+            try:
+                volumen_ml = float(cantidad or 0)
+            except Exception:
+                volumen_ml = 0.0
+            if volumen_ml <= 0:
+                QMessageBox.warning(self, "Cantidad inválida", "El volumen (ml) debe ser mayor que cero.")
+                return False
+
+            # Antes de insertar nada, borro el detalle anterior del procedimiento (si lo hubiera)
+            # Esto es especialmente útil al EDITAR un procedimiento existente
+            self.session.execute(
+                procedimiento_item.delete().where(
+                    procedimiento_item.c.idprocedimiento == proc.id
+                )
+            )
+
+            # 3) Pre-calcular consumos por componente y validar stock
+            consumo_componentes = []  # [(insumo_item, consumo_final, consumo_calc, ratio_por_ml), ...]
+            faltantes = []
+
+            for comp in compos:
+                # Compat: el id del componente puede llamarse iditem_insumo, iditem o iditem_hijo según tu modelo
+                comp_id = getattr(comp, "iditem_insumo", None)
+                if comp_id is None:
+                    comp_id = getattr(comp, "iditem", None)
+                if comp_id is None:
+                    comp_id = getattr(comp, "iditem_hijo", None)
+                if comp_id is None:
+                    continue
+
+                insumo = self.session.get(Item, comp_id)
+                if not insumo:
+                    continue
+
+                # 'cantidad' en ItemComposicion es "por 1 litro" del padre (Opción B)
+                ratio_por_litro = float(getattr(comp, "cantidad", 0.0) or 0.0)
+
+                # Convertir ratio por litro → por ml y multiplicar por volumen (ml)
+                consumo_calc = (ratio_por_litro / 1000.0) * volumen_ml   # consumo teórico en ml
+
+                # Convertir ese consumo (ml) a la UNIDAD del insumo antes de validar/descontar
+                unidad = (insumo.unidad or "").strip().lower()
+                consumo_en_unidad = self._ml_a_unidad(consumo_calc, unidad)
+
+                # Redondeo según unidad (discreta vs fraccionable)
+                consumo_final = float(consumo_en_unidad)  # sin redondeo
+
+                if consumo_final <= 0:
+                    continue
+
+                # Stock disponible del insumo (INGRESO - EGRESO)
+                disp = (self.session.query(
+                            func.coalesce(func.sum(
+                                case(
+                                    (StockMovimiento.tipo == 'INGRESO', StockMovimiento.cantidad),
+                                    else_=-StockMovimiento.cantidad
+                                )
+                            ), 0)
+                        )
+                        .filter(StockMovimiento.iditem == insumo.iditem)
+                        .scalar() or 0)
+
+                stock_actual = float(disp)
+                faltante = max(0.0, float(consumo_final) - stock_actual)  # sin redondeo
+                if faltante > 0:
+                    faltantes.append(
+                        f"• {insumo.nombre}: falta {faltante:.3f} {insumo.unidad or ''} "
+                        f"(necesita {consumo_final}, hay {stock_actual})"
+                )
+
+                consumo_componentes.append((insumo, consumo_final, consumo_calc, ratio_por_litro))
+
+            if faltantes:
+                QMessageBox.warning(
+                    self,
+                    "Stock insuficiente",
+                    "No hay stock suficiente para:\n" + "\n".join(faltantes)
+                )
+                return False
+
+            # 4) Insertar movimientos (EGRESO por componente) y detalle procedimiento_item
+            for insumo, consumo_final, consumo_calc, ratio_por_litro in consumo_componentes:
+                mov = StockMovimiento(
+                    fecha=proc.fecha,
+                    iditem=insumo.iditem,
+                    cantidad=consumo_final,
+                    tipo='EGRESO',
+                    motivo='PROCEDIMIENTO',
+                    idorigen=proc.id,
+                    observacion=f"Proc #{proc.id} - {it_padre.nombre} -> {insumo.nombre}"
+                )
+                self.session.add(mov)
+
+                # Detalle en la tabla intermedia para trazabilidad
+                self.session.execute(
+                    procedimiento_item.insert().values(
+                        idprocedimiento=proc.id,
+                        iditem=insumo.iditem,
+                        cantidad=consumo_final
+                    )
+                )
+
+            # (Opcional) Dejar snapshot en el comentario
+            # proc.comentario = (proc.comentario or "") + f" | Expl: {volumen_ml} ml"
+
+            return True
 
     def cargar_procedimiento_en_form(self, proc):
         self.procedimiento_editando_id = proc.id
         self.proc_fecha.setDate(QDate(proc.fecha.year, proc.fecha.month, proc.fecha.day))
         idx = self.proc_combo.findData(proc.iditem)
+        self.proc_combo.blockSignals(True)
         self.proc_combo.setCurrentIndex(idx if idx != -1 else 0)
+        self.proc_combo.blockSignals(False)
+        self._on_proc_combo_changed(self.proc_combo.currentIndex())
         self.proc_comentario.setText(proc.comentario or "")
 
-        try:
-            mov = (self.session.query(StockMovimiento)
-                   .filter_by(motivo='PROCEDIMIENTO', idorigen=proc.id)
-                   .order_by(StockMovimiento.idmovimiento.desc())
-                   .first())
-            if mov and mov.cantidad is not None:
-                self.proc_cantidad.setValue(float(mov.cantidad))
-            else:
+        # ¿Es compuesto? (tiene ItemComposicion)
+        compos = (self.session.query(ItemComposicion)
+                .filter(ItemComposicion.iditem_padre == proc.iditem)
+                .all())
+
+        if not compos:
+            # === comportamiento original: tomar el último movimiento de stock del proc ===
+            try:
+                mov = (self.session.query(StockMovimiento)
+                    .filter_by(motivo='PROCEDIMIENTO', idorigen=proc.id)
+                    .order_by(StockMovimiento.idmovimiento.desc())
+                    .first())
+                if mov and mov.cantidad is not None:
+                    self.proc_cantidad.setValue(float(mov.cantidad))
+                else:
+                    self.proc_cantidad.setValue(1.00)
+            except Exception:
                 self.proc_cantidad.setValue(1.00)
+            self.btn_agregar_procedimiento.setText("Guardar cambios")
+            self.btn_cancelar_procedimiento.setVisible(True)
+            return
+
+        # === Reconstruir VOL (ml) para compuestos ===
+        # Buscamos un componente "ancla" con unidad líquida (ml/cc/l) y ratio significativo
+        def _is_liquida(unidad: str) -> bool:
+            u = (unidad or "").lower()
+            return any(tok in u for tok in ["ml", "cc", "l", "litro"])
+
+        # Elegir el mejor ancla
+        ancla = None
+        for comp in compos:
+            comp_id = getattr(comp, "iditem_insumo", None)
+            if comp_id is None:
+                comp_id = getattr(comp, "iditem", None)
+            if comp_id is None:
+                comp_id = getattr(comp, "iditem_hijo", None)
+            if comp_id is None:
+                continue
+
+            insumo = self.session.get(Item, comp_id)
+            if insumo and _is_liquida(insumo.unidad or "") and float(getattr(comp, "cantidad", 0) or 0) > 0:
+                ratio_actual = float(getattr(comp, "cantidad", 0) or 0)
+                # preferí el que tenga ratio más cercano a 1.0
+                if not ancla:
+                    ancla = (insumo, ratio_actual)
+                else:
+                    if abs(ratio_actual - 1.0) < abs(ancla[1] - 1.0):
+                        ancla = (insumo, ratio_actual)
+
+        volumen_rec = None
+        if ancla:
+            insumo_ancla, ratio_ancla = ancla
+            mov = (self.session.query(StockMovimiento)
+                .filter_by(motivo='PROCEDIMIENTO', idorigen=proc.id, iditem=insumo_ancla.iditem)
+                .order_by(StockMovimiento.idmovimiento.desc())
+                .first())
+            if mov and mov.cantidad is not None and ratio_ancla > 0:
+                try:
+                    cons_ml = self._unidad_a_ml(float(mov.cantidad), insumo_ancla.unidad or "")
+                    volumen_rec = (cons_ml * 1000.0) / float(ratio_ancla)  # por litro → por ml
+                except Exception:
+                    volumen_rec = None
+
+        # Si no hubo suerte con el ancla, probá con cualquier componente
+        if volumen_rec is None:
+            mov_any = (self.session.query(StockMovimiento)
+                    .filter_by(motivo='PROCEDIMIENTO', idorigen=proc.id)
+                    .order_by(StockMovimiento.idmovimiento.desc())
+                    .first())
+            if mov_any:
+                # buscar su ratio en la composición (compat: iditem_insumo / iditem / iditem_hijo)
+                ratio = None
+                for comp in compos:
+                    comp_id = getattr(comp, "iditem_insumo", None)
+                    if comp_id is None:
+                        comp_id = getattr(comp, "iditem", None)
+                    if comp_id is None:
+                        comp_id = getattr(comp, "iditem_hijo", None)
+                    if comp_id == mov_any.iditem:
+                        ratio = float(getattr(comp, "cantidad", 0) or 0)
+                        break
+                if ratio and ratio > 0:
+                    try:
+                        volumen_rec = float(mov_any.cantidad) / float(ratio)
+                    except Exception:
+                        volumen_rec = None
+
+        # Setear el spin
+        try:
+            self.proc_cantidad.setValue(float(volumen_rec) if volumen_rec else 1.00)
         except Exception:
             self.proc_cantidad.setValue(1.00)
 
@@ -789,7 +1138,7 @@ class FichaClinicaForm(QDialog):
     def eliminar_procedimiento(self, idproc):
         from sqlalchemy.exc import IntegrityError
 
-        if self.solo_control:
+        if self.solo_control and not self.acciones_proc_en_solo:
             return
 
         reply = QMessageBox.question(self, "Confirmar", "¿Eliminar procedimiento?", QMessageBox.Yes | QMessageBox.No)
@@ -803,7 +1152,9 @@ class FichaClinicaForm(QDialog):
                 self.session.query(StockMovimiento).filter_by(
                     motivo='PROCEDIMIENTO', idorigen=proc.id
                 ).delete(synchronize_session=False)
-
+                self.session.execute(
+                    procedimiento_item.delete().where(procedimiento_item.c.idprocedimiento == proc.id)
+                )
                 self.session.delete(proc)
                 self.session.commit()
                 self.cargar_todo()
@@ -817,7 +1168,7 @@ class FichaClinicaForm(QDialog):
             except Exception as e:
                 self.session.rollback()
                 QMessageBox.critical(self, "Error inesperado", f"Ocurrió un error inesperado:\n{str(e)}")
-
+   
     # ================== CONTROLES (CRUD) ==================
     def agregar_o_editar_control(self):
         if self.control_editando_id:
@@ -1061,8 +1412,7 @@ class FichaClinicaForm(QDialog):
             item_cache = {}
 
             for i, ind in enumerate(indicaciones):
-                tbl.setItem(i, 0, QTableWidgetItem(str(ind.fecha)))
-
+                tbl.setItem(i, 0, DateItem(ind.fecha))
                 # Profesional
                 pid = ind.idprofesional
                 if pid not in prof_cache:
@@ -1247,17 +1597,16 @@ class FichaClinicaForm(QDialog):
         # ---------- Procedimientos ----------
         if hasattr(self, "table_procedimientos"):
             with _painting_suspended(self.table_procedimientos):
-                self.table_procedimientos.setRowCount(0)
-
-                can_edit_proc = not self.solo_control
+                self.table_procedimientos.setRowCount(0)  # ← volver a limpiar
+                can_edit_proc = (not self.solo_control) or self.acciones_proc_en_solo
                 self.table_procedimientos.setColumnHidden(3, not can_edit_proc)
                 self.table_procedimientos.setColumnHidden(4, not can_edit_proc)
-
                 for proc in (getattr(paciente, "procedimientos", []) or []):
                     row = self.table_procedimientos.rowCount()
                     self.table_procedimientos.insertRow(row)
 
-                    self.table_procedimientos.setItem(row, 0, QTableWidgetItem(str(proc.fecha)))
+                    # usar DateItem aquí
+                    self.table_procedimientos.setItem(row, 0, DateItem(proc.fecha))
 
                     it = self.session.get(Item, proc.iditem)
                     nombre_proc = it.nombre if it else "-"
@@ -1265,17 +1614,15 @@ class FichaClinicaForm(QDialog):
                     self.table_procedimientos.setItem(row, 2, QTableWidgetItem(proc.comentario or ""))
 
                     if can_edit_proc:
-                        btn_e = QPushButton()
-                        btn_e.setIcon(QIcon("imagenes/editar.png"))
-                        btn_e.setIconSize(QSize(24, 24))
-                        btn_e.setFlat(True)
+                        # Editar
+                        btn_e = QPushButton(); btn_e.setIcon(QIcon("imagenes/editar.png"))
+                        btn_e.setIconSize(QSize(24, 24)); btn_e.setFlat(True)
                         btn_e.clicked.connect(partial(self.cargar_procedimiento_en_form, proc))
                         self.table_procedimientos.setCellWidget(row, 3, btn_e)
 
-                        btn_d = QPushButton()
-                        btn_d.setIcon(QIcon("imagenes/eliminar.png"))
-                        btn_d.setIconSize(QSize(24, 24))
-                        btn_d.setFlat(True)
+                        # Eliminar
+                        btn_d = QPushButton(); btn_d.setIcon(QIcon("imagenes/eliminar.png"))
+                        btn_d.setIconSize(QSize(24, 24)); btn_d.setFlat(True)
                         btn_d.clicked.connect(partial(self.eliminar_procedimiento, proc.id))
                         self.table_procedimientos.setCellWidget(row, 4, btn_d)
 
@@ -1370,7 +1717,7 @@ class FichaClinicaForm(QDialog):
         # ---------- Controles ----------
         if hasattr(self, "table_controles"):
             with _painting_suspended(self.table_controles):
-                self.table_controles.setRowCount(0)
+                self.table_controles.setRowCount(0)  # ← volver a limpiar
 
                 can_edit_ctrl = not self.solo_control
                 self.table_controles.setColumnHidden(12, not can_edit_ctrl)
@@ -1380,7 +1727,8 @@ class FichaClinicaForm(QDialog):
                     row = self.table_controles.rowCount()
                     self.table_controles.insertRow(row)
 
-                    self.table_controles.setItem(row, 0,  QTableWidgetItem(str(ctrl.fecha)))
+                    # usar DateItem aquí
+                    self.table_controles.setItem(row, 0, DateItem(ctrl.fecha))
                     self.table_controles.setItem(row, 1,  NumericItem(ctrl.peso))
                     self.table_controles.setItem(row, 2,  NumericItem(ctrl.altura))
                     self.table_controles.setItem(row, 3,  NumericItem(ctrl.cint))
@@ -1394,17 +1742,13 @@ class FichaClinicaForm(QDialog):
                     self.table_controles.setItem(row, 11, NumericItem(ctrl.espalda))
 
                     if can_edit_ctrl:
-                        btn_editar = QPushButton()
-                        btn_editar.setIcon(QIcon("imagenes/editar.png"))
-                        btn_editar.setIconSize(QSize(24, 24))
-                        btn_editar.setFlat(True)
+                        btn_editar = QPushButton(); btn_editar.setIcon(QIcon("imagenes/editar.png"))
+                        btn_editar.setIconSize(QSize(24, 24)); btn_editar.setFlat(True)
                         btn_editar.clicked.connect(partial(self.cargar_control_en_form, ctrl))
                         self.table_controles.setCellWidget(row, 12, btn_editar)
 
-                        btn_eliminar = QPushButton()
-                        btn_eliminar.setIcon(QIcon("imagenes/eliminar.png"))
-                        btn_eliminar.setIconSize(QSize(24, 24))
-                        btn_eliminar.setFlat(True)
+                        btn_eliminar = QPushButton(); btn_eliminar.setIcon(QIcon("imagenes/eliminar.png"))
+                        btn_eliminar.setIconSize(QSize(24, 24)); btn_eliminar.setFlat(True)
                         btn_eliminar.clicked.connect(partial(self.eliminar_control, ctrl.id))
                         self.table_controles.setCellWidget(row, 13, btn_eliminar)
 
@@ -1498,7 +1842,7 @@ class FichaClinicaForm(QDialog):
 
             else:
                 # ============== UPDATE (paciente existente) ==============
-                pac = self.session.query(Paciente).get(self.idpaciente)
+                pac = self.session.get(Paciente, self.idpaciente)
                 if not pac:
                     QMessageBox.critical(self, "Error", "Paciente no encontrado para actualizar.")
                     return

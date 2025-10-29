@@ -1,214 +1,308 @@
+# -*- coding: utf-8 -*-
+"""
+leer_confirmaciones.py
+----------------------
+Lee respuestas de confirmación de WhatsApp Web para las sesiones (plan_sesion) del día de mañana
+y actualiza el estado de la CITA y un rastro en plan_sesion.parametros.
+
+Cambios respecto a la versión previa:
+- FIX: ps.estado es ENUM → usar sólo etiquetas válidas ('PROGRAMADA','REPROGRAMADA').
+- Cálculo de "mañana" con zona horaria America/Asuncion (zoneinfo).
+- WHERE de fecha robusto para timestamp/timestamptz (OR con AT TIME ZONE).
+- Filtro de CITA: excluye Confirmada/Cancelada.
+- Logs diagnósticos cuando no hay filas.
+"""
+import re
+import json
 import time
 import datetime
 import logging
+from typing import Optional, Tuple
+from zoneinfo import ZoneInfo
+
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
+
 from config import DATABASE_URI
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-# --- IMPORTACIONES NUEVAS ---
+from selenium.webdriver.chrome.options import Options as ChromeOptions
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException
 
-# --------------------------
-# CONFIGURACIÓN DE LOGS
-# --------------------------
-logging.basicConfig(
-    filename="leer_confirmaciones.log",
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
 
-# --------------------------
-# FUNCIONES AUXILIARES
-# --------------------------
-# (Lock eliminado, no se usaba)
+# ===================== AJUSTES =====================
 
-def normalizar_telefono_py(telefono):
-    """Normaliza el formato del número telefónico (Paraguay)."""
-    if not telefono:
-        return ""
-    telefono = (
-        str(telefono)
-        .strip()
-        .replace(" ", "")
-        .replace("-", "")
-        .replace("(", "")
-        .replace(")", "")
+LOCAL_TZ = ZoneInfo("America/Asuncion")
+
+BASE_PROFILE_DIR = r"C:\selenium_ws_profile"
+PROFILE_NAME = "Default"
+
+PAGELOAD_TIMEOUT = 60
+CHAT_LOAD_TIMEOUT = 35
+SEARCH_TIMEOUT = 20
+LAST_MSG_TIMEOUT = 20
+
+PATRON_SI = re.compile(r"\b(s[ií]|confirmo|sí)\b", re.IGNORECASE)
+PATRON_NO = re.compile(r"\b(no|cancel[oó]|cancelo|cancelar)\b", re.IGNORECASE)
+
+CSS_SIDE_SEARCH = "div[contenteditable='true'][data-tab='3']"
+CSS_CHAT_HEADER = "header[role='button']"
+CSS_MESSAGES_IN  = "div.message-in"
+CSS_MSG_TEXT_SPAN = "span.selectable-text.copyable-text"
+
+
+# ===================== LOGGING =====================
+
+def setup_logging():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
     )
-    if telefono.startswith("+595"):
-        return telefono
-    if telefono.startswith("595"):
-        return "+" + telefono
-    if telefono.startswith("0"):
-        return "+595" + telefono[1:]
-    if len(telefono) >= 9: # Asumimos que es un número local sin el 0
-        return "+595" + telefono
-    return telefono
 
 
-def actualizar_confirmacion(session, idpaciente, respuesta, fecha_cita):
-    """
-    Actualiza el estado de la cita.
-    OPTIMIZACIÓN: Se elimina el commit. El commit se hará al final del script.
-    """
-    nuevo_estado = "Confirmada" if respuesta == "SI" else "Cancelada"
+# ===================== DB =====================
+
+def get_session():
+    engine = create_engine(DATABASE_URI, pool_pre_ping=True, future=True)
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+    return SessionLocal()
+
+def db_timezone(session) -> Optional[str]:
     try:
-        session.execute(
-            text(""" 
-                UPDATE cita
-                SET estado = :nuevo_estado
-                WHERE idpaciente = :idpaciente
-                  AND date(fecha_inicio) = :fecha_cita
-            """),
-            {'nuevo_estado': nuevo_estado, 'idpaciente': idpaciente, 'fecha_cita': fecha_cita}
+        return session.execute(text("SHOW TIME ZONE")).scalar_one_or_none()
+    except Exception:
+        return None
+
+def sesiones_manana(session):
+    """
+    Devuelve filas para las sesiones programadas 'mañana' (hora local Asunción),
+    que aún no estén confirmadas/canceladas en CITA.
+    Columnas devueltas:
+      idsesion, fecha_programada, idpaciente, nombre, apellido, telefono
+    """
+    ahora_py = datetime.datetime.now(LOCAL_TZ)
+    manana = (ahora_py + datetime.timedelta(days=1)).date()
+
+    sql = text("""
+        SELECT
+            ps.idsesion,
+            ps.fecha_programada,
+            p.idpaciente, p.nombre, p.apellido, p.telefono
+        FROM plan_sesion ps
+        JOIN plan_sesiones pl   ON pl.idplan = ps.idplan
+        JOIN paciente p         ON p.idpaciente = pl.idpaciente
+        LEFT JOIN cita c        ON c.idsesion = ps.idsesion
+        WHERE (
+                CAST(ps.fecha_programada AS date) = :manana
+             OR CAST((ps.fecha_programada AT TIME ZONE 'America/Asuncion') AS date) = :manana
         )
-    except Exception as e:
-        logging.error(f"Error al preparar la actualización para {idpaciente}: {e}")
-        # Revertimos cambios de esta sesión si algo falla
-        session.rollback() 
+          AND ps.estado IN ('PROGRAMADA','REPROGRAMADA')   -- ENUM válido
+          AND COALESCE(c.estado, 'Pendiente') NOT IN ('Confirmada','Cancelada')
+        ORDER BY ps.fecha_programada
+    """)
+    rows = session.execute(sql, {"manana": manana}).all()
 
+    logging.info(f"Sesiones a verificar (mañana={manana}, TZ_Python={ahora_py.tzinfo}) = {len(rows)}")
+    tz_db = db_timezone(session)
+    if tz_db:
+        logging.info(f"DB TimeZone = {tz_db}")
 
-# --------------------------
-# PRINCIPAL
-# --------------------------
-def main():
-    logging.info("Iniciando lectura de confirmaciones...")
-    engine = create_engine(DATABASE_URI)
-    Session = sessionmaker(bind=engine)
-    session = Session()
-    driver = None # Definimos driver aquí para que exista en el finally
-
-    try:
-        manana = (datetime.datetime.now() + datetime.timedelta(days=1)).date()
-
-        # Traer teléfonos de pacientes con cita para mañana
-        pacientes = session.execute(
-            text(""" 
-                SELECT p.idpaciente, p.nombre, p.apellido, p.telefono
-                FROM cita c
-                JOIN paciente p ON c.idpaciente = p.idpaciente
-                WHERE date(c.fecha_inicio) = :manana
-                  AND (c.estado IS NULL OR c.estado = 'Pendiente') -- Opcional: solo leer los no confirmados
-            """),
-            {'manana': manana}
-        ).fetchall()
-
-        if not pacientes:
-            logging.info("No se encontraron pacientes con citas pendientes para mañana.")
-            return # Salimos si no hay nada que hacer
-
-        logging.info(f"Pacientes con cita para mañana: {len(pacientes)}")
-
-        profile_dir = r'C:\selenium_ws_profile'
-        options = Options()
-        options.add_argument(f'--user-data-dir={profile_dir}')
-        service = Service(executable_path='chromedriver.exe')
-        driver = webdriver.Chrome(service=service, options=options)
-
-        driver.get("https://web.whatsapp.com/")
-        
-        # --- OPTIMIZACIÓN: WebDriverWait ---
-        # Esperamos un máximo de 30 segundos a que aparezca el panel lateral (ID="side")
-        # Esto reemplaza a time.sleep(15)
+    if not rows:
         try:
-            WebDriverWait(driver, 30).until(
-                EC.presence_of_element_located((By.ID, "side"))
-            )
-            logging.info("WhatsApp Web cargado (sesión iniciada).")
-        except TimeoutException:
-            logging.error("Error: WhatsApp Web tardó demasiado en cargar o no se inició sesión.")
-            return # Salimos del script si no carga WA
+            total_cast_simple = session.execute(text("""
+                SELECT COUNT(*) FROM plan_sesion
+                WHERE CAST(fecha_programada AS date) = :manana
+                  AND estado IN ('PROGRAMADA','REPROGRAMADA')
+            """), {"manana": manana}).scalar_one()
+            total_cast_tz = session.execute(text("""
+                SELECT COUNT(*) FROM plan_sesion
+                WHERE CAST((fecha_programada AT TIME ZONE 'America/Asuncion') AS date) = :manana
+                  AND estado IN ('PROGRAMADA','REPROGRAMADA')
+            """), {"manana": manana}).scalar_one()
+            logging.info(f"[DIAG] plan_sesion mañana (CAST simple) = {total_cast_simple} | (AT TIME ZONE) = {total_cast_tz}")
+        except Exception as e:
+            logging.warning(f"[DIAG] No se pudo hacer diagnóstico de conteo: {e}")
 
-        # Posibles respuestas
-        respuestas_si = ("si", "sí", "sii", "síi", "s", "siii", "sip", "confirmo", "confirmado")
-        respuestas_no = ("no", "nop", "n", "cancelo", "cancelar")
+    return rows
 
-        for paciente in pacientes:
-            idpaciente, nombre, apellido, telefono = paciente
-            telefono_norm = normalizar_telefono_py(telefono)
-            
-            if not telefono_norm:
-                logging.warning(f"Paciente {nombre} {apellido} (ID: {idpaciente}) no tiene teléfono.")
+def actualizar_confirmacion(session, idsesion: int, fecha_sesion: datetime.datetime,
+                            respuesta: str, raw_text: str, msg_ref: Optional[str]):
+    """
+    respuesta: 'SI' o 'NO'
+    Actualiza cita.estado y deja traza JSON en plan_sesion.parametros->confirmacion_ws.
+    """
+    nuevo_estado = "Confirmada" if respuesta.upper() == "SI" else "Cancelada"
+    fecha_sesion_date = fecha_sesion.date()
+
+    # 1) Actualizar CITA
+    session.execute(
+        text("""
+            UPDATE cita
+               SET estado = :nuevo_estado
+             WHERE idsesion = :idsesion
+               AND CAST(fecha_inicio AS date) = :f
+        """),
+        {"nuevo_estado": nuevo_estado, "idsesion": idsesion, "f": fecha_sesion_date}
+    )
+
+    # 2) Upsert JSON en plan_sesion.parametros
+    payload = {
+        "estado": nuevo_estado,
+        "respuesta": respuesta,
+        "texto": raw_text,
+        "msg_ref": msg_ref,
+        "ts": datetime.datetime.now(LOCAL_TZ).isoformat()
+    }
+    session.execute(
+        text("""
+            UPDATE plan_sesion
+               SET parametros = COALESCE(parametros, '{}'::jsonb) || jsonb_build_object('confirmacion_ws', to_jsonb(:payload::json))
+             WHERE idsesion = :idsesion
+        """),
+        {"payload": json.dumps(payload), "idsesion": idsesion}
+    )
+
+
+# ===================== SELENIUM / WHATSAPP =====================
+
+def build_driver() -> webdriver.Chrome:
+    opts = ChromeOptions()
+    opts.add_argument(f"--user-data-dir={BASE_PROFILE_DIR}")
+    opts.add_argument(f"--profile-directory={PROFILE_NAME}")
+    opts.add_argument("--disable-dev-shm-usage")
+    opts.add_argument("--no-sandbox")
+    # opts.add_argument("--headless=new")  # si querés headless
+
+    driver = webdriver.Chrome(options=opts)
+    driver.set_page_load_timeout(PAGELOAD_TIMEOUT)
+    return driver
+
+def abrir_whatsapp(driver: webdriver.Chrome):
+    driver.get("https://web.whatsapp.com/")
+    try:
+        WebDriverWait(driver, PAGELOAD_TIMEOUT).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "div#app"))
+        )
+        time.sleep(2)
+    except TimeoutException:
+        raise RuntimeError("No se pudo cargar WhatsApp Web (¿sesión no logueada?).")
+
+def buscar_chat(driver: webdriver.Chrome, termino: str) -> bool:
+    try:
+        WebDriverWait(driver, SEARCH_TIMEOUT).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, CSS_SIDE_SEARCH))
+        )
+        buscador = driver.find_element(By.CSS_SELECTOR, CSS_SIDE_SEARCH)
+        buscador.clear()
+        buscador.send_keys(termino)
+        time.sleep(1.2)
+
+        resultados = driver.find_elements(By.CSS_SELECTOR, "div[role='listitem']")
+        if not resultados:
+            return False
+        resultados[0].click()
+
+        WebDriverWait(driver, CHAT_LOAD_TIMEOUT).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, CSS_CHAT_HEADER))
+        )
+        return True
+    except Exception:
+        return False
+
+def leer_ultima_respuesta(driver: webdriver.Chrome) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    try:
+        WebDriverWait(driver, LAST_MSG_TIMEOUT).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, CSS_MESSAGES_IN))
+        )
+    except TimeoutException:
+        return (None, None, None)
+
+    mensajes_in = driver.find_elements(By.CSS_SELECTOR, CSS_MESSAGES_IN)
+    if not mensajes_in:
+        return (None, None, None)
+
+    ultimo = mensajes_in[-1]
+    spans = ultimo.find_elements(By.CSS_SELECTOR, CSS_MSG_TEXT_SPAN)
+    raw_text = " ".join(s.text for s in spans).strip() if spans else ""
+    msg_id = ultimo.get_attribute("data-id") or ultimo.get_attribute("id")
+
+    if raw_text:
+        if PATRON_SI.search(raw_text):
+            return ("SI", raw_text, msg_id)
+        if PATRON_NO.search(raw_text):
+            return ("NO", raw_text, msg_id)
+
+    return (None, raw_text, msg_id)
+
+
+# ===================== MAIN =====================
+
+def main():
+    setup_logging()
+    logging.info("Iniciando lectura de confirmaciones (por plan_sesion)…")
+
+    session = get_session()
+    driver = None
+    try:
+        rows = sesiones_manana(session)
+        if not rows:
+            logging.info("No hay sesiones a verificar para mañana (o ya confirmadas).")
+            return
+
+        driver = build_driver()
+        abrir_whatsapp(driver)
+
+        for (idsesion, fecha_prog, idpac, nombre, apellido, telefono) in rows:
+            tel = (telefono or "").strip()
+            if not tel:
+                logging.warning(f"idsesion={idsesion}: Paciente sin teléfono, omitido.")
                 continue
 
-            url = f"https://web.whatsapp.com/send?phone={telefono_norm}"
-            driver.get(url)
+            ok = buscar_chat(driver, tel)
+            if not ok and tel.startswith("+"):
+                ok = buscar_chat(driver, tel[1:])
+            if not ok and tel.startswith("0"):
+                ok = buscar_chat(driver, tel[1:])
 
-            try:
-                # --- OPTIMIZACIÓN: WebDriverWait ---
-                # Esperamos a que cargue el cuadro de texto del chat
-                # Esto reemplaza a time.sleep(7)
-                WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((By.XPATH, '//div[@title="Escribe un mensaje aquí"]'))
-                )
-                time.sleep(1) # Pequeña pausa para que rendericen los mensajes
+            if not ok:
+                logging.warning(f"idsesion={idsesion}: No se encontró chat para el teléfono '{tel}'.")
+                continue
 
-            except TimeoutException:
-                # Esto suele pasar si el número de teléfono es inválido
-                logging.warning(f"No se pudo abrir el chat de {nombre} (Tel: {telefono_norm}). Probablemente número inválido.")
+            resp, raw, msg_id = leer_ultima_respuesta(driver)
+
+            if resp is None:
+                logging.info(f"idsesion={idsesion}: Sin respuesta categorizable (último mensaje='{raw}').")
                 continue
 
             try:
-                # Buscamos todos los mensajes entrantes
-                mensajes = driver.find_elements(By.XPATH, '//div[contains(@class,"message-in")]//span[@dir="ltr"]')
-                if not mensajes:
-                    logging.info(f"No hay mensajes entrantes de {nombre}.")
-                    continue
-
-                respuesta_encontrada = False
-                
-                # --- OPTIMIZACIÓN: Leer los últimos 3 mensajes ---
-                # Iteramos en reversa (del más nuevo al más viejo)
-                for mensaje in reversed(mensajes[-3:]): 
-                    ultimo = mensaje.text.strip().lower()
-
-                    if ultimo in respuestas_si:
-                        actualizar_confirmacion(session, idpaciente, "SI", manana)
-                        logging.info(f"{nombre} {apellido} CONFIRMÓ asistencia.")
-                        print(f"{nombre} {apellido} CONFIRMÓ asistencia.")
-                        respuesta_encontrada = True
-                        break # Salimos del bucle de mensajes
-                    
-                    elif ultimo in respuestas_no:
-                        actualizar_confirmacion(session, idpaciente, "NO", manana)
-                        logging.info(f"{nombre} {apellido} CANCELÓ asistencia.")
-                        print(f"{nombre} {apellido} CANCELÓ asistencia.")
-                        respuesta_encontrada = True
-                        break # Salimos del bucle de mensajes
-                
-                if not respuesta_encontrada:
-                    logging.info(f"No se encontró respuesta (SI/NO) en los últimos mensajes de {nombre}.")
-
+                actualizar_confirmacion(session, idsesion, fecha_prog, resp, raw or "", msg_id)
+                session.commit()
+                logging.info(f"idsesion={idsesion}: Actualizado => {resp} (msg_id={msg_id}).")
             except Exception as e:
-                logging.error(f"Error leyendo mensaje de {nombre}: {e}")
-                print(f"Error leyendo mensaje de {nombre}: {e}")
-
-            time.sleep(2) # Pausa entre pacientes
-
-        # --- OPTIMIZACIÓN: Commit Único ---
-        # Hacemos commit de TODOS los cambios a la base de datos a la vez.
-        session.commit()
-        logging.info("Actualizaciones de la base de datos confirmadas (commit).")
-        logging.info("Proceso finalizado correctamente.")
+                session.rollback()
+                logging.error(f"idsesion={idsesion}: Error actualizando en DB: {e}")
 
     except Exception as e:
-        logging.error(f"Error CRÍTICO en el proceso: {e}")
-        # Si algo falló, revertimos cualquier cambio que estuviera pendiente
-        if session:
+        logging.error(f"Error CRÍTICO: {e}")
+        try:
             session.rollback()
-    
+        except Exception:
+            pass
     finally:
-        # Aseguramos que se cierre la sesión de la BD y el navegador
-        if session:
+        try:
             session.close()
+        except Exception:
+            pass
         if driver:
-            driver.quit()
-        logging.info("Script terminado. Recursos cerrados.")
+            try:
+                driver.quit()
+            except Exception:
+                pass
+        logging.info("Recursos cerrados.")
 
 
 if __name__ == "__main__":

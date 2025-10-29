@@ -1,130 +1,104 @@
 # services/venta_consumo_service.py
 from decimal import Decimal
-from sqlalchemy import select, func
-from models import (
-    item, item_composicion, venta, venta_detalle,
-    StockMovimiento, procedimiento, procedimiento_item  # asumiendo nombres
-)
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
-def _buscar_o_crear_procedimiento(session, venta, vd):
-    # 1 procedimiento POR DETALLE facilita anulación
-    if vd.idprocedimiento:
-        return session.get(procedimiento, vd.idprocedimiento)
+from models.venta import Venta
+from models.venta_detalle import VentaDetalle
+from models.StockMovimiento import StockMovimiento
 
-    proc = procedimiento(
-        idpaciente = venta.idpaciente,
-        fecha      = venta.fecha,          # o datetime.now() si preferís
-        observacion= f"Generado por venta #{venta.idventa} / det #{vd.idventadetalle}: {vd.item.nombre}"
-        # idterapeuta si corresponde, etc.
-    )
-    session.add(proc)
-    session.flush()  # obtener id
-    vd.idprocedimiento = proc.id  # guardar enlace
-    return proc
 
-def anular_venta_revertir_consumo(session, idventa:int):
-    venta = session.get(venta, idventa)
-    assert venta is not None
+def _D(x) -> Decimal:
+    try:
+        return Decimal(str(x or 0))
+    except Exception:
+        return Decimal("0")
 
-    for vd in venta.detalles:
-        ref = f"VD-{vd.idventadetalle}"
 
-        # Reponer stock espejo de cada EGRESO original
-        sms = (session.query(StockMovimiento)
-               .filter(StockMovimiento.referencia == ref,
-                       StockMovimiento.tipo == "EGRESO")
-               .all())
-        for eg in sms:
-            session.add(StockMovimiento(
-                fecha      = venta.fecha_anulacion or venta.fecha,
-                tipo       = "INGRESO",
-                iditem     = eg.iditem,
-                cantidad   = eg.cantidad,
-                motivo     = "ANULACION_VENTA",
-                referencia = f"ANU-{vd.idventadetalle}",
-                idventa_detalle = vd.idventadetalle,
-                idusuario  = getattr(venta, "idusuario_anula", venta.idusuario)
-            ))
+def confirmar_venta_generar_consumo(session, idventa: int):
+    """
+    Genera SOLO el egreso del ítem vendido cuando 'genera_stock' es True.
+    NO descuenta componentes (sin composición / sin procedimiento_item).
+    """
+    venta = session.execute(
+        select(Venta)
+        .options(selectinload(Venta.detalles).selectinload(VentaDetalle.item))
+        .where(Venta.idventa == int(idventa))
+    ).scalar_one_or_none()
+    if not venta:
+        raise ValueError(f"Venta {idventa} no existe")
 
-        # Limpiar carga al procedimiento hecha por este detalle
-        session.query(procedimiento_item).filter(
-            procedimiento_item.idventa_detalle == vd.idventadetalle,
-            procedimiento_item.origen == "VENTA"
-        ).delete(synchronize_session=False)
-
-        # Si el procedimiento quedó vacío y lo creamos por esta venta, eliminarlo
-        if vd.idprocedimiento:
-            restantes = session.query(procedimiento_item).filter(
-                procedimiento_item.idprocedimiento == vd.idprocedimiento
-            ).count()
-            if restantes == 0:
-                proc = session.get(procedimiento, vd.idprocedimiento)
-                if proc:
-                    session.delete(proc)
-            vd.idprocedimiento = None
-
-def confirmar_venta_generar_consumo(session, idventa:int):
-    venta = session.get(venta, idventa)
-    assert venta is not None
-
-    for vd in venta.detalles:  # recorre VentaDetalle
-        item_padre = vd.item
-        ref = f"VD-{vd.idventadetalle}"
-
-        # Evitar doble generación (si ya existen SM con esta ref, saltar)
-        ya_existen = session.query(StockMovimiento).filter(StockMovimiento.referencia == ref).first()
-        if ya_existen:
+    for vd in (venta.detalles or []):
+        item = vd.item
+        if not item:
             continue
 
-        # buscar composición
-        comps = (session.query(item_composicion)
-                 .filter(item_composicion.iditem_padre == item_padre.iditem)
-                 .all())
+        # Solo productos/ítems que mueven stock
+        if not getattr(item, "genera_stock", True):
+            continue
 
-        if comps:
-            # 1) crear/reusar procedimiento
-            proc = _buscar_o_crear_procedimiento(session, venta, vd)
+        # Evitar duplicados (si ya se generó para este detalle)
+        ya_existe = (
+            session.query(StockMovimiento.idmovimiento)
+            .filter(
+                StockMovimiento.idorigen == int(vd.idventadet),
+                StockMovimiento.motivo == "VENTA",
+                StockMovimiento.tipo == "EGRESO",
+            )
+            .first()
+            is not None
+        )
+        if ya_existe:
+            continue
 
-            # 2) por cada componente, EGRESO y cargar al procedimiento_item
-            for c in comps:
-                cant = Decimal(vd.cantidad) * Decimal(c.cantidad)
+        cant = _D(vd.cantidad)
+        if cant <= 0:
+            continue
 
-                # Stock: EGRESO
-                sm = StockMovimiento(
-                    fecha      = venta.fecha,
-                    tipo       = "EGRESO",
-                    iditem     = c.iditem_insumo,
-                    cantidad   = cant,
-                    motivo     = "VENTA",
-                    referencia = ref,
-                    idventa_detalle = vd.idventadetalle,
-                    idusuario  = venta.idusuario  # si lo tenés
+        ref = f"VD-{vd.idventadet}"  # solo para rastreo humano en 'observacion'
+        session.add(
+            StockMovimiento(
+                fecha=venta.fecha,
+                tipo="EGRESO",
+                iditem=item.iditem,
+                cantidad=cant,
+                motivo="VENTA",
+                idorigen=int(vd.idventadet),
+                observacion=ref,
+            )
+        )
+    # sin commit: lo hace el caller (tu with self._txn_ctx())
+
+
+def anular_venta_revertir_consumo(session, idventa: int):
+    """
+    Reversa lo que generamos arriba: por cada EGRESO creado, crea un INGRESO espejo.
+    """
+    venta = session.get(Venta, int(idventa))
+    assert venta is not None
+
+    for vd in (venta.detalles or []):
+        ref = f"VD-{vd.idventadet}"
+
+        egresos = (
+            session.query(StockMovimiento)
+            .filter(
+                StockMovimiento.idorigen == int(vd.idventadet),
+                StockMovimiento.motivo == "VENTA",
+                StockMovimiento.tipo == "EGRESO",
+            )
+            .all()
+        )
+        for eg in egresos:
+            session.add(
+                StockMovimiento(
+                    fecha=getattr(venta, "fecha_anulacion", venta.fecha),
+                    tipo="INGRESO",
+                    iditem=eg.iditem,
+                    cantidad=eg.cantidad,
+                    motivo="ANULACION_VENTA",
+                    idorigen=int(vd.idventadet),
+                    observacion=f"ANU-{ref}",
                 )
-                session.add(sm)
-
-                # Procedimiento: detalle usado
-                pi = procedimiento_item(
-                    idprocedimiento = proc.id,
-                    iditem          = c.iditem_insumo,
-                    cantidad        = cant,
-                    idventa_detalle = vd.idventadetalle,
-                    origen          = "VENTA"
-                )
-                session.add(pi)
-
-        else:
-            # Sin composición → si genera stock, egreso del propio item
-            if getattr(item_padre, "genera_stock", True):
-                sm = StockMovimiento(
-                    fecha      = venta.fecha,
-                    tipo       = "EGRESO",
-                    iditem     = item_padre.iditem,
-                    cantidad   = Decimal(vd.cantidad),
-                    motivo     = "VENTA",
-                    referencia = ref,
-                    idventa_detalle = vd.idventadetalle,
-                    idusuario  = venta.idusuario
-                )
-                session.add(sm)
-
-    session.commit()
+            )
+    # sin commit

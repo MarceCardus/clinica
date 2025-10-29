@@ -253,7 +253,7 @@ class PacienteForm(QMainWindow):
 
     def ver_historial(self, idpaciente):
         from controllers.fichaClinica import FichaClinicaForm
-        dlg = FichaClinicaForm(idpaciente=idpaciente, parent=self, solo_control=True)
+        dlg = FichaClinicaForm(idpaciente=idpaciente, parent=self, solo_control=True, acciones_proc_en_solo=True)
         dlg.exec_()
 
     def ver_ficha_clinica(self, idpaciente):
