@@ -1,6 +1,6 @@
 # controllers/abm_turnos.py
 import sys
-from datetime import datetime
+from datetime import datetime, time, timedelta
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -277,8 +277,22 @@ class CitaForm(QMainWindow):
     def _cargar_citas(self):
         self.day_view.clear_events()
         self.week_view.clear_events()
+
+        # Rango visible = unión de la semana (week_view) y el día (day_view).
+        # Evita traer toda la tabla cita en cada navegación (saturaba la red/BD).
+        desde = min(self.day_view.start_date, self.week_view.start_date)
+        hasta = max(
+            self.day_view.start_date + timedelta(days=1),
+            self.week_view.start_date + timedelta(days=7),
+        )
+        inicio = datetime.combine(desde, time.min)
+        fin = datetime.combine(hasta, time.min)
+
         s = SessionLocal()
-        citas = s.query(Cita).all()
+        citas = (s.query(Cita)
+                   .filter(Cita.fecha_inicio >= inicio,
+                           Cita.fecha_inicio < fin)
+                   .all())
         self.day_view.add_eventos_batch(citas)
         self.week_view.add_eventos_batch(citas)
         s.close()
