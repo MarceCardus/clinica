@@ -31,21 +31,21 @@ class LoginDialog(QDialog):
         self.setFixedSize(420, 280)
         self.setStyleSheet("""
             QDialog {
-                background-color: #eaf1fb;
+                background-color: #FDF2F8;
                 border-radius: 18px;
             }
             QLabel {
-                color: #175ca4;
+                color: #BE185D;
                 font-size: 16px;
             }
             QLineEdit {
                 font-size: 16px;
                 padding: 8px;
                 border-radius: 8px;
-                border: 1px solid #b5cbe8;
+                border: 1px solid #F3D6E4;
             }
             QPushButton {
-                background-color: #175ca4;
+                background-color: #BE185D;
                 color: white;
                 font-size: 17px;
                 font-weight: bold;
@@ -53,7 +53,7 @@ class LoginDialog(QDialog):
                 padding: 10px 0;
             }
             QPushButton:hover {
-                background-color: #4688ce;
+                background-color: #DB2777;
             }
         """)
 
@@ -61,7 +61,7 @@ class LoginDialog(QDialog):
         lbl_title = QLabel("Sistema de Consultorio")
         lbl_title.setAlignment(Qt.AlignCenter)
         lbl_title.setFont(QFont("Arial", 22, QFont.Bold))
-        lbl_title.setStyleSheet("color: #175ca4; margin-bottom: 18px;")
+        lbl_title.setStyleSheet("color: #BE185D; margin-bottom: 18px;")
         layout.addWidget(lbl_title)
 
         layout.addWidget(QLabel("Usuario:"))

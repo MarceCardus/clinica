@@ -19,7 +19,7 @@ def get_historial_paciente(session: Session, idpaciente: int,
         where_filtros.append("h.fecha <= :hasta"); params["hasta"] = fecha_hasta
     if not incluir_anuladas:
         # si tu vista distingue anuladas por estado, mantenemos el filtro
-        where_filtros.append("(h.estado IS NULL OR UPPER(h.estado) <> 'ANULADO')")
+        where_filtros.append("(h.estado IS NULL OR UPPER(h.estado) NOT LIKE 'ANULAD%')")
 
     # Intento 1: la vista ya tiene columna SALDO
     sql_saldo = text(f"""

@@ -258,20 +258,20 @@ class CobroDialog(QDialog):
 
     def _style(self):
         self.setStyleSheet("""
-            QDialog { background: #f6f8fb; }
-            QLabel { color: #0d3a6a; }
+            QDialog { background: #FDF6FA; }
+            QLabel { color: #831843; }
             QLineEdit, QComboBox, QTextEdit, QDateEdit {
-                background:#fff; border:1px solid #c6d4ea; border-radius:6px; padding:4px 6px;
+                background:#fff; border:1px solid #F3C6DC; border-radius:6px; padding:4px 6px;
             }
             QLineEdit:focus, QComboBox:focus, QTextEdit:focus, QDateEdit:focus {
-                border: 1px solid #4a90e2; box-shadow: 0 0 0 2px rgba(74,144,226,.15);
+                border: 1px solid #EC4899; box-shadow: 0 0 0 2px rgba(74,144,226,.15);
             }
-            QTableWidget { background: #ffffff; border: 1px solid #c6d4ea; border-radius: 6px; }
-            QHeaderView::section { background: #e8f0fe; padding: 6px; border: none; color:#0d3a6a; }
+            QTableWidget { background: #ffffff; border: 1px solid #F3C6DC; border-radius: 6px; }
+            QHeaderView::section { background: #FDF2F8; padding: 6px; border: none; color:#831843; }
             QPushButton { background: #2e7d32; color: white; padding: 6px 10px; border: none; border-radius: 6px; }
             QPushButton:hover { background: #2a6e2d; }
             QPushButton#danger { background: #c62828; }
-            QPushButton#secondary { background: #245b9e; }
+            QPushButton#secondary { background: #BE185D; }
             #lblRestante { font-size:16px; font-weight:700; color: #b26a00; }
         """)
         self.btnRepartir.setObjectName("secondary")

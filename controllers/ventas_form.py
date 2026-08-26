@@ -185,7 +185,7 @@ class ABMVenta(QWidget):
 
         elif est in ("cerrada", "cerrado"):
             self.lbl_estado.setText("Generada")
-            self.lbl_estado.setStyleSheet("font-weight:bold; color:#0d6efd; margin-bottom:6px;")
+            self.lbl_estado.setStyleSheet("font-weight:bold; color:#DB2777; margin-bottom:6px;")
             self.btn_anular.setEnabled(True)
             self.set_campos_enabled(False)
 
@@ -263,9 +263,9 @@ class ABMVenta(QWidget):
         self.observaciones = QTextEdit(); left_layout.addRow(QLabel("Observaciones:"), self.observaciones)
         self.btn_planes = QPushButton("Planes…")
         self.btn_planes.setStyleSheet("""
-        QPushButton { background-color: #276ef1; color: white; font-weight: bold;
+        QPushButton { background-color: #DB2777; color: white; font-weight: bold;
                       border-radius: 6px; padding: 4px 12px; }
-        QPushButton:hover:!disabled { background-color: #5181f3; }
+        QPushButton:hover:!disabled { background-color: #EC4899; }
         QPushButton:disabled { background-color: #e9ecef; color: #6c757d; }
         """)
         left_layout.addRow(QLabel(""), self.btn_planes)
@@ -300,9 +300,9 @@ class ABMVenta(QWidget):
         pie_layout = QHBoxLayout()
         self.btn_buscar_venta = QPushButton(QIcon("imagenes/buscar.png"), "Buscar")
         self.btn_buscar_venta.setStyleSheet("""
-            QPushButton { background-color: #0d6efd; color: white; font-weight: bold;
+            QPushButton { background-color: #DB2777; color: white; font-weight: bold;
                           border-radius: 6px; padding: 4px 12px; }
-            QPushButton:hover:!disabled { background-color: #b6d4fe; color: #0d6efd; }
+            QPushButton:hover:!disabled { background-color: #FBCFE8; color: #DB2777; }
             QPushButton:disabled { background-color: #e9ecef; color: #6c757d; }
         """)
         pie_layout.addWidget(self.btn_buscar_venta)
@@ -312,9 +312,9 @@ class ABMVenta(QWidget):
         self.btn_ultimo    = QPushButton(QIcon("imagenes/ultimo.png"), "")
         for btn in [self.btn_primero, self.btn_anterior, self.btn_siguiente, self.btn_ultimo]:
             btn.setStyleSheet("""
-            QPushButton { background-color: #007bff; color: #007bff;
+            QPushButton { background-color: #DB2777; color: #DB2777;
                           border-radius: 6px; padding: 4px 10px; }
-            QPushButton:hover:!disabled { background-color: #b6d4fe; }
+            QPushButton:hover:!disabled { background-color: #FBCFE8; }
             QPushButton:disabled { background-color: #e9ecef; color: #6c757d; }
             """)
 
@@ -331,7 +331,7 @@ class ABMVenta(QWidget):
         QPushButton:disabled { background-color: #e9ecef; color: #6c757d; }
         """)
         self.btn_editar.clicked.connect(self.editar_actual)
-        for btn, fondo in [(self.btn_nuevo, "#007bff"),
+        for btn, fondo in [(self.btn_nuevo, "#DB2777"),
                            (self.btn_guardar, "#28a745"),
                            (self.btn_anular, "#dc3545")]:
             self.set_btn_style(btn, fondo)
@@ -353,7 +353,7 @@ class ABMVenta(QWidget):
                 border-radius: 6px;
                 padding: 4px 18px;
             }}
-            QPushButton:hover:!disabled {{ background-color: #b6d4fe; color: #0d6efd; }}
+            QPushButton:hover:!disabled {{ background-color: #FBCFE8; color: #DB2777; }}
             QPushButton:disabled {{ background-color: #e9ecef; color: #6c757d; }}
         """)
 

@@ -139,8 +139,8 @@ from sqlalchemy.engine import URL
 
 
 def _make_engine():
-    host = os.getenv("PGHOST", "181.1.152.126")
-    port = int(os.getenv("PGPORT", "5433"))
+    host = os.getenv("PGHOST", "192.168.1.32")
+    port = int(os.getenv("PGPORT", "5432"))
     user = os.getenv("PGUSER", "Cardus")
     pwd = os.getenv("PGPASSWORD", "S@nguines--23")
     db = os.getenv("PGDATABASE", "consultorio")

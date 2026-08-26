@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QIcon, QColor, QDoubleValidator
 from PyQt5.QtCore import QDate, Qt, QSize, QTime
 
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 from sqlalchemy import func, or_
 from contextlib import contextmanager
 from sqlalchemy import case
@@ -755,7 +755,7 @@ class FichaClinicaForm(QDialog):
         if fecha_hasta:
             where_filtros.append("h.fecha <= :hasta"); params["hasta"] = fecha_hasta
         if not incluir_anuladas:
-            where_filtros.append("(h.estado IS NULL OR UPPER(h.estado) <> 'ANULADO')")
+            where_filtros.append("(h.estado IS NULL OR UPPER(h.estado) NOT LIKE 'ANULAD%')")
 
         # 👉 Cambiá el nombre de la vista a la que “tiene cobros”.
         # Si la llamaste 'vw_historial_paciente' y YA incluye cobros, dejá igual.
@@ -1582,12 +1582,17 @@ class FichaClinicaForm(QDialog):
         paciente = (
             self.session.query(Paciente)
             .options(
-                joinedload(Paciente.antecedentes_patologicos_personales),
-                joinedload(Paciente.antecedentes_enfermedad_actual),
-                joinedload(Paciente.antecedentes_familiares),
-                joinedload(Paciente.encargados),
-                joinedload(Paciente.indicaciones),
-                joinedload(Paciente.procedimientos),
+                # selectinload en las COLECCIONES: cada una se trae en su propia
+                # consulta (1 query por colección). Con joinedload todas se
+                # combinaban en un solo JOIN => producto cartesiano (ej. 16 proc
+                # x 5 enf x 5 ind = 400 filas duplicadas por la red en vez de 26).
+                selectinload(Paciente.antecedentes_patologicos_personales),
+                selectinload(Paciente.antecedentes_enfermedad_actual),
+                selectinload(Paciente.antecedentes_familiares),
+                selectinload(Paciente.encargados),
+                selectinload(Paciente.indicaciones),
+                selectinload(Paciente.procedimientos),
+                # barrio->ciudad->departamento son a-uno: joinedload está bien.
                 joinedload(Paciente.barrio).joinedload(Barrio.ciudad).joinedload(Ciudad.departamento),
             )
             .filter_by(idpaciente=self.idpaciente).first()
@@ -1601,14 +1606,26 @@ class FichaClinicaForm(QDialog):
                 can_edit_proc = (not self.solo_control) or self.acciones_proc_en_solo
                 self.table_procedimientos.setColumnHidden(3, not can_edit_proc)
                 self.table_procedimientos.setColumnHidden(4, not can_edit_proc)
-                for proc in (getattr(paciente, "procedimientos", []) or []):
+
+                # Precargar los items de todos los procedimientos en UNA consulta
+                # (antes: 1 SELECT por procedimiento -> N+1 sobre la red).
+                procs = (getattr(paciente, "procedimientos", []) or [])
+                ids_items = {p.iditem for p in procs if p.iditem}
+                items_por_id = {}
+                if ids_items:
+                    items_por_id = {
+                        it.iditem: it
+                        for it in self.session.query(Item).filter(Item.iditem.in_(ids_items)).all()
+                    }
+
+                for proc in procs:
                     row = self.table_procedimientos.rowCount()
                     self.table_procedimientos.insertRow(row)
 
                     # usar DateItem aquí
                     self.table_procedimientos.setItem(row, 0, DateItem(proc.fecha))
 
-                    it = self.session.get(Item, proc.iditem)
+                    it = items_por_id.get(proc.iditem)
                     nombre_proc = it.nombre if it else "-"
                     self.table_procedimientos.setItem(row, 1, QTableWidgetItem(nombre_proc))
                     self.table_procedimientos.setItem(row, 2, QTableWidgetItem(proc.comentario or ""))

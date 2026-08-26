@@ -1,6 +1,6 @@
 from sqlalchemy import (
     Column, Integer, DateTime, Date, Time, Text, String,
-    ForeignKey, func, CheckConstraint
+    ForeignKey, func, CheckConstraint, Table
 )
 from sqlalchemy.orm import relationship
 
@@ -10,6 +10,15 @@ from .profesional import Profesional
 from .producto    import Producto          # legacy
 from .item        import Item              # nuevo
 from .plan_tipo   import PlanTipo          # nuevo
+
+
+# Tabla puente: un turno puede tener varias zonas (items del catálogo).
+# cita.iditem sigue siendo la "zona principal" (para planes/estadísticas).
+cita_item = Table(
+    'cita_item', Base.metadata,
+    Column('idcita', Integer, ForeignKey('cita.idcita', ondelete='CASCADE'), primary_key=True),
+    Column('iditem', Integer, ForeignKey('item.iditem'), primary_key=True),
+)
 
 
 class Cita(Base):
@@ -46,7 +55,8 @@ class Cita(Base):
     # --- Relaciones ---
     paciente      = relationship(Paciente,    lazy='joined')
     profesional   = relationship(Profesional, lazy='joined')
-    item          = relationship(Item,        lazy='joined')
+    item          = relationship(Item,        lazy='joined')          # zona principal
+    zonas         = relationship(Item, secondary=cita_item, lazy='selectin')  # todas las zonas
     plan_tipo     = relationship(PlanTipo,    lazy='joined')
     producto      = relationship(Producto,    lazy='joined')   # legacy
 

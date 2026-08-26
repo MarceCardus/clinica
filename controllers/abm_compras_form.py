@@ -170,7 +170,7 @@ class ABMCompra(QWidget):
             QPushButton {
                 background-color: #e9ecef; border: 1px solid #ced4da; border-radius: 5px;
             }
-            QPushButton:hover { background-color: #b6d4fe; }
+            QPushButton:hover { background-color: #FBCFE8; }
         """)
         btn_buscar.clicked.connect(self.buscar_y_agregar_insumo)
         search_layout.addWidget(self.busca_insumo)
@@ -188,8 +188,8 @@ class ABMCompra(QWidget):
         btns_detalle = QHBoxLayout()
         self.btn_agregar = QPushButton(QIcon("imagenes/agregar.png"), "Agregar")
         self.btn_agregar.setStyleSheet("""
-            QPushButton { background-color: #007bff; color: white; font-weight: bold; border-radius: 6px; padding: 4px 18px; }
-            QPushButton:hover { background-color: #0056b3; }
+            QPushButton { background-color: #DB2777; color: white; font-weight: bold; border-radius: 6px; padding: 4px 18px; }
+            QPushButton:hover { background-color: #A61B5A; }
         """)
         self.btn_eliminar = QPushButton(QIcon("imagenes/eliminar.png"), "Eliminar")
         self.btn_eliminar.setStyleSheet("""
@@ -215,8 +215,8 @@ class ABMCompra(QWidget):
         self.btn_ultimo = QPushButton(QIcon("imagenes/ultimo.png"), "")
         for btn in [self.btn_primero, self.btn_anterior, self.btn_siguiente, self.btn_ultimo]:
             btn.setStyleSheet("""
-                QPushButton { background-color: #007bff; color: #007bff; border-radius: 6px; padding: 4px 10px; }
-                QPushButton:hover { background-color: #b6d4fe; }
+                QPushButton { background-color: #DB2777; color: #DB2777; border-radius: 6px; padding: 4px 10px; }
+                QPushButton:hover { background-color: #FBCFE8; }
             """)
             pie_layout.addWidget(btn)
 
@@ -226,13 +226,13 @@ class ABMCompra(QWidget):
         self.btn_cancelar = QPushButton(QIcon("imagenes/cancelar.png"), "Cancelar")
 
         botones = [
-            (self.btn_nuevo, "#007bff", "white"), (self.btn_guardar, "#28a745", "white"),
+            (self.btn_nuevo, "#DB2777", "white"), (self.btn_guardar, "#28a745", "white"),
             (self.btn_anular, "#dc3545", "white"), (self.btn_cancelar, "#ffc9c9", "#dc3545"),
         ]
         for btn, fondo, color in botones:
             btn.setStyleSheet(f"""
                 QPushButton {{ background-color: {fondo}; color: {color}; font-weight: bold; border-radius: 6px; padding: 4px 18px; }}
-                QPushButton:hover {{ background-color: #b6d4fe; }}
+                QPushButton:hover {{ background-color: #FBCFE8; }}
             """)
             pie_layout.addWidget(btn)
 

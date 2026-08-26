@@ -3,7 +3,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QTableWidget, QTableWidgetItem, QMessageBox, QComboBox, QHeaderView
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QIcon
 from utils.db import SessionLocal
 from models.paciente import Paciente
@@ -23,6 +23,23 @@ class PacienteForm(QMainWindow):
         self.page_size = 20
         self.current_page = 0
 
+        # Lista filtrada actual (None = sin filtro, se usa self.pacientes)
+        self.filtrados = None
+
+        # Íconos de acción: se cargan UNA vez y se reutilizan (antes se leían
+        # del disco por cada celda de cada fila, en cada tecla del buscador).
+        self.ic_editar = QIcon("imagenes/editar.png")
+        self.ic_eliminar = QIcon("imagenes/eliminar.png")
+        self.ic_historial = QIcon("imagenes/historial.png")
+        self.ic_fotos = QIcon("imagenes/fotos.png")
+
+        # Debounce del buscador: no filtramos en cada tecla, esperamos a que
+        # el usuario deje de escribir ~250ms.
+        self._debounce = QTimer(self)
+        self._debounce.setSingleShot(True)
+        self._debounce.setInterval(250)
+        self._debounce.timeout.connect(self._aplicar_filtro)
+
         # --- Layout principal ---
         central = QWidget()
         layout = QVBoxLayout(central)
@@ -33,7 +50,7 @@ class PacienteForm(QMainWindow):
         buscador_layout.addWidget(QLabel("Buscar:"))
         self.input_buscar = QLineEdit()
         self.input_buscar.setPlaceholderText("Escriba para filtrar...")
-        self.input_buscar.textChanged.connect(self.filtrar_pacientes)
+        self.input_buscar.textChanged.connect(lambda _=None: self._debounce.start())
         buscador_layout.addWidget(self.input_buscar)
         buscador_layout.addStretch()
 
@@ -119,25 +136,25 @@ class PacienteForm(QMainWindow):
 
             # 8..11: botones
             btn_editar = QPushButton()
-            btn_editar.setIcon(QIcon("imagenes/editar.png"))
+            btn_editar.setIcon(self.ic_editar)
             btn_editar.setToolTip("Editar paciente")
             btn_editar.clicked.connect(lambda _, pid=pac.idpaciente: self.editar_paciente(pid))
             tbl.setCellWidget(i, 8, btn_editar)
 
             btn_eliminar = QPushButton()
-            btn_eliminar.setIcon(QIcon("imagenes/eliminar.png"))
+            btn_eliminar.setIcon(self.ic_eliminar)
             btn_eliminar.setToolTip("Eliminar (desactivar)")
             btn_eliminar.clicked.connect(lambda _, pid=pac.idpaciente: self.eliminar_paciente(pid))
             tbl.setCellWidget(i, 9, btn_eliminar)
 
             btn_historial = QPushButton()
-            btn_historial.setIcon(QIcon("imagenes/historial.png"))
+            btn_historial.setIcon(self.ic_historial)
             btn_historial.setToolTip("Ver ficha clínica")
             btn_historial.clicked.connect(lambda _, pid=pac.idpaciente: self.ver_historial(pid))
             tbl.setCellWidget(i, 10, btn_historial)
 
             btn_fotos = QPushButton()
-            btn_fotos.setIcon(QIcon("imagenes/fotos.png"))
+            btn_fotos.setIcon(self.ic_fotos)
             btn_fotos.setToolTip("Ver fotos")
             btn_fotos.clicked.connect(lambda _, pid=pac.idpaciente: self.abrir_fotos(pid))
             tbl.setCellWidget(i, 11, btn_fotos)
@@ -165,28 +182,42 @@ class PacienteForm(QMainWindow):
 
             result = query.order_by(Paciente.apellido.asc(), Paciente.nombre.asc()).all()
             self.pacientes = result
+            self.filtrados = None
             self.current_page = 0
             self.mostrar_pacientes_pagina()
         finally:
             session.close()
 
+    def _lista_actual(self):
+        """Lista sobre la que trabaja la paginación: filtrada si hay búsqueda."""
+        return self.pacientes if self.filtrados is None else self.filtrados
+
     def mostrar_pacientes_pagina(self):
         """Muestra solo la página actual usando poblar_tabla."""
-        total = len(self.pacientes)
+        lista = self._lista_actual()
+        total = len(lista)
         start = self.current_page * self.page_size
         end = min(start + self.page_size, total)
 
-        self.poblar_tabla(self.pacientes[start:end])
+        self.poblar_tabla(lista[start:end])
 
         total_paginas = max(1, (total + self.page_size - 1) // self.page_size)
-        self.lbl_pagina.setText(f"Página {self.current_page + 1} de {total_paginas}")
+        if self.filtrados is None:
+            self.lbl_pagina.setText(f"Página {self.current_page + 1} de {total_paginas}")
+        else:
+            self.lbl_pagina.setText(
+                f"{total} resultado(s) — Página {self.current_page + 1} de {total_paginas}"
+            )
         self.btn_prev.setEnabled(self.current_page > 0)
         self.btn_next.setEnabled(end < total)
 
-    def filtrar_pacientes(self):
-        """Filtra sobre self.pacientes (ya filtrado por estado) sin tocar columnas."""
+    def _aplicar_filtro(self):
+        """Recalcula la lista filtrada (una sola vez tras dejar de escribir) y
+        la muestra PAGINADA, para no renderizar cientos de filas con widgets."""
         texto = (self.input_buscar.text() or "").strip().lower()
         if not texto:
+            self.filtrados = None
+            self.current_page = 0
             self.mostrar_pacientes_pagina()
             return
 
@@ -203,10 +234,13 @@ class PacienteForm(QMainWindow):
             if any(texto in c for c in campos):
                 filtrados.append(pac)
 
-        self.poblar_tabla(filtrados)
-        self.lbl_pagina.setText(f"{len(filtrados)} resultado(s)")
-        self.btn_prev.setEnabled(False)
-        self.btn_next.setEnabled(False)
+        self.filtrados = filtrados
+        self.current_page = 0
+        self.mostrar_pacientes_pagina()
+
+    def filtrar_pacientes(self):
+        """Compat: dispara el filtro con debounce."""
+        self._debounce.start()
 
     # ===================== Navegación de páginas =====================
 
@@ -216,7 +250,7 @@ class PacienteForm(QMainWindow):
             self.mostrar_pacientes_pagina()
 
     def pag_siguiente(self):
-        if (self.current_page + 1) * self.page_size < len(self.pacientes):
+        if (self.current_page + 1) * self.page_size < len(self._lista_actual()):
             self.current_page += 1
             self.mostrar_pacientes_pagina()
 

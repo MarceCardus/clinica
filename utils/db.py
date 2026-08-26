@@ -9,7 +9,10 @@ engine = create_engine(
     future=True,
     echo=False,
     pool_pre_ping=True,     # evita conexiones muertas
-    pool_recycle=900,       # recicla cada 15 min
+    # WiFi/NAT cortan conexiones ociosas en silencio. Con recycle largo, SQLAlchemy
+    # intenta reusar la conexión muerta y se cuelga ~10s en el timeout de TCP.
+    # Con 60s, descarta las ociosas >1min y reconecta en ~0.1s sin intentar usarlas.
+    pool_recycle=60,        # antes 900
     pool_size=5,
     max_overflow=10,
     pool_timeout=30,
@@ -18,10 +21,12 @@ engine = create_engine(
     connect_args={
         "application_name": "clinica_app",
         "connect_timeout": 10,
+        # keepalives agresivos: Windows sondea la conexión durante el ocio y la
+        # marca muerta ANTES del próximo guardado (antes: 60/30/5 -> ~210s para detectar).
         "keepalives": 1,
-        "keepalives_idle": 60,
-        "keepalives_interval": 30,
-        "keepalives_count": 5,
+        "keepalives_idle": 15,       # antes 60
+        "keepalives_interval": 5,    # antes 30
+        "keepalives_count": 3,       # antes 5
         "options": "-c statement_timeout=30000",
         # "sslmode": "require",
     },

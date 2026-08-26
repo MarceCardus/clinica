@@ -12,7 +12,7 @@ from utils.db import SessionLocal
 from models.agenda import Cita
 
 COLORS = [
-    "#66cdaa", "#f8d74e", "#d066d6", "#66b5f0", "#f06666",
+    "#66cdaa", "#f8d74e", "#d066d6", "#F472B6", "#f06666",
     "#042f42", "#FC0AF0", "#fcf9f9", "#09f81d"
 ]
 SPANISH_DAYS = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"]

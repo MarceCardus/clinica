@@ -14,12 +14,12 @@ class ABMEspecialidad(QMainWindow):
         self.setWindowTitle("ABM de Especialidades")
         self.setGeometry(400, 150, 720, 480)
         self.setStyleSheet("""
-            QMainWindow {background-color: #eaf1fb;}
-            QLabel {font-size: 17px; color: #175ca4;}
+            QMainWindow {background-color: #FDF2F8;}
+            QLabel {font-size: 17px; color: #BE185D;}
             QPushButton {font-size: 16px; font-weight: bold; border-radius: 8px; padding: 6px 22px;}
             QPushButton#agregar {background: #198754; color: white;}
             QPushButton#agregar:disabled {background: #343a40; color: #bbb;}
-            QPushButton#editar {background: #0d6efd; color: white;}
+            QPushButton#editar {background: #DB2777; color: white;}
             QPushButton#editar:disabled {background: #343a40; color: #bbb;}
             QPushButton#eliminar {background: #dc3545; color: white;}
             QPushButton#eliminar:disabled {background: #343a40; color: #bbb;}

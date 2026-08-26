@@ -273,14 +273,14 @@ def exportar_cobros_pdf_resumen(datos, sumatorias, desde, hasta,
         ]
     )
     t.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#175ca4")),
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#BE185D")),
         ('TEXTCOLOR', (0,0), (-1,0), colors.white),
         ('ALIGN', (4,1), (-2,-2), 'RIGHT'),
         ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
         ('FONTSIZE', (0,0), (-1,0), 10),
         ('BOTTOMPADDING', (0,0), (-1,0), 10),
         ('GRID', (0,0), (-1,-2), 0.7, colors.grey),
-        ('BACKGROUND', (0,-1), (-1,-1), colors.HexColor("#eaf1fb")),
+        ('BACKGROUND', (0,-1), (-1,-1), colors.HexColor("#FDF2F8")),
         ('SPAN', (0,-1), (6,-1)),
         ('ALIGN', (7,-1), (7,-1), 'RIGHT'),
         ('FONTNAME', (0,-1), (-1,-1), 'Helvetica-Bold'),
@@ -391,7 +391,7 @@ def exportar_cobros_pdf_detallado(res: dict, desde, hasta, path_pdf="informe_cob
         )
         t.setStyle(TableStyle([
             ('GRID', (0,0), (-1,-2), 0.5, colors.grey),
-            ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#e9edf7")),
+            ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#FCE7F3")),
             ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
             ('ALIGN', (2,1), (2,-1), 'CENTER'),
             ('ALIGN', (3,1), (4,-2), 'RIGHT'),
@@ -436,7 +436,7 @@ def exportar_cobros_pdf_detallado(res: dict, desde, hasta, path_pdf="informe_cob
     t_tot = Table(data_totales, colWidths=[W*0.5, W*0.5])
     t_tot.setStyle(TableStyle([
         ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
-        ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#e9edf7")),
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#FCE7F3")),
         ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
         ('ALIGN', (1,0), (1,-1), 'RIGHT'),
     ]))

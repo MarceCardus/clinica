@@ -77,15 +77,15 @@ class AnularCobroDialog(QDialog):
 
     def _style(self):
         self.setStyleSheet("""
-            QDialog { background: #f6f8fb; }
-            QTableWidget { background: #ffffff; border: 1px solid #c6d4ea; border-radius: 6px; }
-            QHeaderView::section { background: #e8f0fe; padding: 6px; border: none; color:#0d3a6a; }
+            QDialog { background: #FDF6FA; }
+            QTableWidget { background: #ffffff; border: 1px solid #F3C6DC; border-radius: 6px; }
+            QHeaderView::section { background: #FDF2F8; padding: 6px; border: none; color:#831843; }
 
             QPushButton#primary {
-                background: #245b9e; color: #fff; border: none; border-radius: 6px;
+                background: #BE185D; color: #fff; border: none; border-radius: 6px;
                 padding: 6px 12px;
             }
-            QPushButton#primary:hover { background: #1f4f8a; }
+            QPushButton#primary:hover { background: #A61B5A; }
 
             QPushButton#danger {
                 background: #c62828; color: #fff; border: none; border-radius: 6px;

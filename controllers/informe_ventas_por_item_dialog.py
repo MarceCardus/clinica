@@ -230,7 +230,7 @@ class InformeVentasPorItemDialog(QDialog):
 
             t = Table(data, repeatRows=1)
             t.setStyle(TableStyle([
-                ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#E8EBF7")),
+                ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#FCE7F3")),
                 ('TEXTCOLOR', (0,0), (-1,0), colors.black),
                 ('GRID', (0,0), (-1,-1), 0.25, colors.grey),
                 ('ALIGN', (2,1), (-1,-1), 'RIGHT'),
@@ -257,7 +257,7 @@ class InformeVentasPorItemDialog(QDialog):
             wb = xlsxwriter.Workbook(fn)
             ws = wb.add_worksheet("Informe")
 
-            fmt_header = wb.add_format({'bold': True, 'bg_color': '#E8EBF7', 'border': 1})
+            fmt_header = wb.add_format({'bold': True, 'bg_color': '#FCE7F3', 'border': 1})
             fmt_text = wb.add_format({'border': 1})
             fmt_int = wb.add_format({'border': 1, 'num_format': '#,##0'})  # Excel aplicará separadores según configuración regional
 

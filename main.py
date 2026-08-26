@@ -2,11 +2,22 @@ import sys
 import os
 import models
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
+
+# IMPORTANTE: importar ctranslate2 ANTES que PyQt5.
+# El dictado por voz (faster-whisper) usa ctranslate2, que trae su propio
+# runtime OpenMP. Si Qt carga primero, se produce un choque de DLLs
+# (access violation) al construir el modelo. Cargándolo acá primero,
+# gana el OpenMP correcto. Si no está instalado, la app sigue igual.
+try:
+    import ctranslate2  # noqa: F401
+except Exception:
+    pass
+
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QMdiArea, QAction, QMdiSubWindow, QLabel, QStatusBar, QMessageBox, QDialog
 )
 from PyQt5.QtGui import QPalette, QColor, QIcon
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from controllers.ui_theme  import apply_theme
 from models.base import Base
 from models.clinica import Clinica
@@ -112,18 +123,71 @@ class MainWindow(QMainWindow):
         self.usuario_logueado = usuario
         # --- Colores institucionales ---
         palette = self.mdi_area.palette()
-        palette.setColor(QPalette.Window, QColor("#eaf1fb"))
+        palette.setColor(QPalette.Window, QColor("#FDF2F8"))
         self.mdi_area.setPalette(palette)
         self.mdi_area.setBackground(Qt.white)
 
         self.init_menu()
         self.init_status_bar()
 
+        # Ventana "index": agenda del día como pantalla de inicio del MDI.
+        self._agenda_sub = None
+        self.mdi_area.subWindowActivated.connect(self._on_sub_activado)
+        self.mostrar_agenda_home()
+
+    # ---------------------------------------------------- Agenda "index"
+    def mostrar_agenda_home(self):
+        """Muestra la agenda del día como ventana de inicio (si no hay otras)."""
+        if self._agenda_sub is not None:
+            self._agenda_sub.setFocus()
+            return
+        from controllers.panel_agenda_hoy import PanelAgendaHoy
+        panel = PanelAgendaHoy()
+        sub = QMdiSubWindow()
+        sub.setWidget(panel)
+        sub.setWindowTitle("Agenda de Hoy")
+        sub.setAttribute(Qt.WA_DeleteOnClose)
+        # Sin botón de maximizar: es una ventana compacta tipo tablero
+        sub.setWindowFlags(sub.windowFlags() & ~Qt.WindowMaximizeButtonHint)
+        self.mdi_area.addSubWindow(sub)
+        self._agenda_sub = sub
+        sub.destroyed.connect(self._on_agenda_cerrada)
+        sub.show()
+        # Diferido: recién cuando la ventana principal ya está maximizada el
+        # área MDI tiene su tamaño real y podemos centrar/dimensionar bien.
+        QTimer.singleShot(0, lambda: self._ajustar_agenda(sub, panel))
+
+    def _ajustar_agenda(self, sub, panel):
+        """Redimensiona y centra la ventana de la agenda según su contenido."""
+        if sub is None or self._agenda_sub is not sub:
+            return
+        area = self.mdi_area.viewport().geometry()
+        if area.width() < 200 or area.height() < 200:
+            # Área aún sin tamaño real: reintentar en un instante.
+            QTimer.singleShot(60, lambda: self._ajustar_agenda(sub, panel))
+            return
+        ancho = min(panel.ancho_preferido(), area.width() - 20)
+        alto = min(panel.alto_preferido(), area.height() - 20)
+        x = max(0, (area.width() - ancho) // 2)
+        y = max(0, (area.height() - alto) // 4)
+        sub.setGeometry(x, y, ancho, alto)
+
+    def _on_agenda_cerrada(self, *args):
+        self._agenda_sub = None
+
+    def _on_sub_activado(self, sub):
+        # Si el usuario abre/activa otra ventana, cerramos la agenda.
+        if self._agenda_sub is not None and sub is not None and sub is not self._agenda_sub:
+            self._agenda_sub.close()
+        # Si el área queda vacía, volvemos a mostrar la agenda (comportamiento "index").
+        elif sub is None and not self.mdi_area.subWindowList():
+            self.mostrar_agenda_home()
+
     def init_menu(self):
         menubar = self.menuBar()
         menubar.setStyleSheet("""
             QMenuBar {
-            background-color: #175ca4;
+            background-color: #BE185D;
             color: white;
             font-weight: bold;
             font-size: 20px;
@@ -134,7 +198,7 @@ class MainWindow(QMainWindow):
             margin: 0 4px;
             }
             QMenuBar::item:selected {
-                background: #4688ce;
+                background: #DB2777;
                 border-radius: 8px;
             }
             QMenu {
@@ -142,8 +206,8 @@ class MainWindow(QMainWindow):
                 font-size: 18px;
             }
             QMenu::item:selected {
-                background: #eaf1fb;
-                color: #175ca4;
+                background: #FDF2F8;
+                color: #BE185D;
             }
         """)
        
@@ -214,6 +278,10 @@ class MainWindow(QMainWindow):
         act_planes = QAction("Planes y Sesiones", self)
         act_planes.triggered.connect(self.abrir_buscar_paciente_planes)
         self.menu_agendar.addAction(act_planes)     # o el menú que prefieras
+
+        action_recordatorios = QAction("Recordatorios WhatsApp", self)
+        action_recordatorios.triggered.connect(self.abrir_recordatorios_wa)
+        self.menu_agendar.addAction(action_recordatorios)
         
 
         # Menú Compras
@@ -327,11 +395,16 @@ class MainWindow(QMainWindow):
         status_bar = QStatusBar()
         self.setStatusBar(status_bar)
         lbl_usuario = QLabel(f"Usuario: {self.usuario.usuario} | Rol: {self.rol.upper()}")
-        lbl_usuario.setStyleSheet("font-weight: bold; color: #175ca4; margin-right:20px;")
+        lbl_usuario.setStyleSheet("font-weight: bold; color: #BE185D; margin-right:20px;")
         status_bar.addPermanentWidget(lbl_usuario)
 
     def abrir_buscar_paciente_planes(self):
         dlg = BuscarPacientePlanesDlg(self)
+        dlg.exec_()
+
+    def abrir_recordatorios_wa(self):
+        from controllers.recordatorios_wa_dialog import RecordatoriosWADialog
+        dlg = RecordatoriosWADialog(self)
         dlg.exec_()
 
     def abrir_visor_graficos(self):
@@ -428,7 +501,8 @@ class MainWindow(QMainWindow):
         sub.show()
     
     def abrir_venta_cuotas(self):
-        self._abrir_plan_cuotas()
+        QMessageBox.information(self, "Venta Cuotas",
+                               "El plan de cuotas todavía no está implementado.")
 
     def abrir_compra(self):
         for subwin in self.mdi_area.subWindowList():

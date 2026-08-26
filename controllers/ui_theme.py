@@ -3,14 +3,14 @@ from PyQt5.QtWidgets import QApplication
 from PyQt5.QtGui import QPalette, QColor
 from PyQt5.QtCore import QLocale,Qt
 
-PRIMARY = "#4F46E5"   # índigo
-PRIMARY_D = "#4338CA"
-ACCENT   = "#22C55E"   # verde ok
-DANGER   = "#EF4444"
-BG       = "#F8FAFC"   # slate-50
-CARD     = "#FFFFFF"
-BORDER   = "#E5E7EB"
-TEXT     = "#0F172A"
+PRIMARY   = "#DB2777"   # rosa (pink-600)
+PRIMARY_D = "#BE185D"   # rosa oscuro (pink-700)
+ACCENT    = "#22C55E"   # verde ok
+DANGER    = "#EF4444"
+BG        = "#FDF2F8"   # rosa muy suave (pink-50)
+CARD      = "#FFFFFF"
+BORDER    = "#F3D6E4"   # rosa grisáceo suave
+TEXT      = "#3B0A25"   # ciruela oscuro para buen contraste
 
 QSS = f"""
 /* base */
@@ -50,7 +50,7 @@ QTabWidget::pane {{
 QTabBar::tab {{
   padding: 6px 12px; margin: 2px; border: 1px solid {BORDER};
   border-bottom: none; border-top-left-radius: 10px; border-top-right-radius: 10px;
-  background: #F1F5F9;
+  background: #FCE7F3;
 }}
 QTabBar::tab:selected {{
   background: {CARD}; border-color: {PRIMARY}; color: {TEXT};
@@ -61,11 +61,13 @@ QTableView {{
   gridline-color: {BORDER};
 }}
 QHeaderView::section {{
-  background: #EEF2FF;  /* leve violeta */
+  background: #FBE3F0;  /* leve rosa */
+  color: {PRIMARY_D};
   padding: 6px; border: none; font-weight: 600;
 }}
 QTableView::item:selected {{
-  background: #D15D0B;
+  background: {PRIMARY};
+  color: white;
 }}
 /* botones */
 QPushButton {{
@@ -82,7 +84,7 @@ QPushButton#DangerButton {{
 QPushButton[class~="icon"] {{
   padding: 4px; min-width: 36px; min-height: 36px; border-radius: 8px;
 }}
-QPushButton[class~="icon"]:hover {{ background: #F3F4F6; }}
+QPushButton[class~="icon"]:hover {{ background: #FCE7F3; }}
 QPushButton[class~="icon"][class~="danger"] {{
   border-color: #FECACA;
 }}
@@ -95,10 +97,10 @@ def apply_theme(app: QApplication):
     QLocale.setDefault(QLocale(QLocale.Spanish, QLocale.Paraguay))
     # paleta leve
     pal = app.palette()
-    pal.setColor(QPalette.Highlight, QColor("#6e3102"))        # ← color de selección (fondo)
+    pal.setColor(QPalette.Highlight, QColor(PRIMARY))          # ← color de selección (fondo)
     pal.setColor(QPalette.HighlightedText, Qt.white)           # ← color de texto seleccionado
     pal.setColor(QPalette.Window, QColor(BG))
     pal.setColor(QPalette.Base, QColor(CARD))
-    pal.setColor(QPalette.AlternateBase, QColor("#FCF8F6"))
+    pal.setColor(QPalette.AlternateBase, QColor("#FDF7FB"))
     app.setPalette(pal)
     app.setStyleSheet(QSS)
